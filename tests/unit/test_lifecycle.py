@@ -1,0 +1,153 @@
+"""Lifecycle math tests: tiers, retention, reinforcement, forgetting (PLAN.md §4.4/4.5)."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+from discord_memory.config import LifecycleConfig
+from discord_memory.lifecycle.strength import (
+    reinforced_strength,
+    retention,
+    should_forget,
+    strength_signal,
+)
+from discord_memory.lifecycle.tiers import assign_tier
+from discord_memory.models.facts import FactCategory
+
+
+class TestTierAssignment:
+    def test_manual_is_core_and_never_expires(self) -> None:
+        tier, expiry = assign_tier(
+            text="anything",
+            category=FactCategory.GENERAL,
+            confidence=0.6,
+            occurrences=1,
+            manual=True,
+            is_server_fact=False,
+            lifecycle=LifecycleConfig(),
+        )
+        assert tier.value == "core"
+        assert expiry is None
+
+    def test_server_rules_high_confidence_core(self) -> None:
+        tier, expiry = assign_tier(
+            text="no politics in general",
+            category=FactCategory.RULES,
+            confidence=0.9,
+            occurrences=1,
+            manual=False,
+            is_server_fact=True,
+            lifecycle=LifecycleConfig(),
+        )
+        assert tier.value == "core"
+        assert expiry is None
+
+    def test_time_horizon_short_term(self) -> None:
+        tier, expiry = assign_tier(
+            text="party at my place tomorrow",
+            category=FactCategory.EXPERIENCES,
+            confidence=0.9,
+            occurrences=1,
+            manual=False,
+            is_server_fact=False,
+            lifecycle=LifecycleConfig(),
+        )
+        assert tier.value == "short_term"
+        assert expiry is not None and expiry.days == 7
+
+    def test_tonight_horizon_three_days(self) -> None:
+        tier, expiry = assign_tier(
+            text="movie night tonight",
+            category=FactCategory.EXPERIENCES,
+            confidence=0.9,
+            occurrences=1,
+            manual=False,
+            is_server_fact=False,
+            lifecycle=LifecycleConfig(),
+        )
+        assert tier.value == "short_term"
+        assert expiry is not None and expiry.days == 3
+
+    def test_durable_category_long_term(self) -> None:
+        tier, _ = assign_tier(
+            text="works as a nurse",
+            category=FactCategory.PROFESSIONAL,
+            confidence=0.8,
+            occurrences=1,
+            manual=False,
+            is_server_fact=False,
+            lifecycle=LifecycleConfig(),
+        )
+        assert tier.value == "long_term"
+
+    def test_default_mid_term(self) -> None:
+        tier, expiry = assign_tier(
+            text="enjoys hiking",
+            category=FactCategory.INTERESTS,
+            confidence=0.7,
+            occurrences=1,
+            manual=False,
+            is_server_fact=False,
+            lifecycle=LifecycleConfig(),
+        )
+        assert tier.value == "mid_term"
+        assert expiry is not None and expiry.days == 45
+
+    def test_high_confidence_repeated_personal_graduates_core(self) -> None:
+        tier, expiry = assign_tier(
+            text="has two siblings",
+            category=FactCategory.PERSONAL,
+            confidence=0.96,
+            occurrences=4,
+            manual=False,
+            is_server_fact=False,
+            lifecycle=LifecycleConfig(),
+        )
+        assert tier.value == "core"
+        assert expiry is None
+
+
+class TestStrengthDecay:
+    NOW = datetime(2026, 8, 24, tzinfo=UTC)
+
+    def test_full_retention_immediately_after_reinforcement(self) -> None:
+        value = retention(
+            last_reinforced_at=self.NOW,
+            now=self.NOW,
+            strength=2.0,
+        )
+        assert value == 1.0
+
+    def test_decay_is_monotonic_in_time(self) -> None:
+        base = self.NOW
+        r1 = retention(last_reinforced_at=base, now=base + timedelta(days=1), strength=2.0)
+        r5 = retention(last_reinforced_at=base, now=base + timedelta(days=5), strength=2.0)
+        assert 0 < r5 < r1 < 1.0
+
+    def test_stronger_memory_decays_slower(self) -> None:
+        base = self.NOW
+        later = base + timedelta(days=10)
+        weak = retention(last_reinforced_at=base, now=later, strength=1.0)
+        strong = retention(last_reinforced_at=base, now=later, strength=8.0)
+        assert strong > weak
+
+    def test_reinforcement_adds_strength(self) -> None:
+        assert reinforced_strength(2.0) > 2.0
+
+    def test_forgetting_gate(self) -> None:
+        assert should_forget(
+            retention_value=0.01, tier="mid_term", manual=False, forget_retention_floor=0.05
+        )
+        assert not should_forget(
+            retention_value=0.01, tier="core", manual=False, forget_retention_floor=0.05
+        )
+        assert not should_forget(
+            retention_value=0.01, tier="mid_term", manual=True, forget_retention_floor=0.05
+        )
+        assert not should_forget(
+            retention_value=0.5, tier="mid_term", manual=False, forget_retention_floor=0.05
+        )
+
+    def test_strength_signal_bounded(self) -> None:
+        signal = strength_signal(strength=100.0, retention_value=1.0)
+        assert 0.0 <= signal <= 1.0
