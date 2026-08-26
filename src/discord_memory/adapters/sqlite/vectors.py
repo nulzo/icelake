@@ -28,7 +28,6 @@ class SqliteVectorIndex:
 
     def __init__(self, connection: SqliteConnection) -> None:
         self._db = connection
-        self._ensure_table_task = None
 
     async def setup(self) -> None:
         await self._db.execute(
@@ -86,8 +85,11 @@ class SqliteVectorIndex:
     ) -> tuple[VectorHit, ...]:
         if not embedding:
             return ()
+        # Recency-biased slice: an arbitrary unordered LIMIT slice silently
+        # degraded recall quality once a guild exceeded the candidate cap.
         rows = await self._db.query(
-            "SELECT fact_id, subject_id, dim, embedding FROM dm_vectors WHERE guild_id=? LIMIT ?",
+            "SELECT fact_id, subject_id, dim, embedding FROM dm_vectors "
+            "WHERE guild_id=? ORDER BY fact_id DESC LIMIT ?",
             (guild_id, candidate_cap),
         )
         allowed = set(subject_ids) if subject_ids is not None else None

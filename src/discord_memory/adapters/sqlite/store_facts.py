@@ -174,29 +174,35 @@ class FactsMixin:
         current = await self.get_fact(guild_id, fact_id)
         if current is None:
             return None
-        merged_citations = list(current.citations)
-        for citation in extra_citations:
-            merged_citations.append(citation)
-        merged_citations = merged_citations[:8]
-        update_values = (
-            current.occurrences + occurrences_delta,
-            strength,
-            iso(last_reinforced_at),
-            iso(expires_at),
-            tier,
-            confidence,
-            dumps([c.model_dump(mode="json") for c in merged_citations]),
-            int(current.version) + 1,
-            iso(last_reinforced_at),
-            guild_id,
-            fact_id,
+        merged_citations: list[SourceRef] = []
+        if extra_citations:
+            merged_citations = (list(current.citations) + list(extra_citations))[:8]
+        citation_sql = "citations=?, " if extra_citations else ""
+        citation_param = (
+            [dumps([c.model_dump(mode="json") for c in merged_citations])]
+            if extra_citations
+            else []
         )
+        # occurrences increments server-side: concurrent reinforcements cannot
+        # lose counts (optimistic concurrency on a read-modify-write would).
         await self._db.execute(
-            """UPDATE dm_facts SET occurrences=?, strength=?, last_reinforced_at=?,
-                 expires_at=?, tier=?, confidence=?, citations=?, version=?,
-                 updated_at=?
-               WHERE guild_id=? AND id=?""",
-            update_values,
+            f"""UPDATE dm_facts SET occurrences=occurrences+?, strength=?,
+                 last_reinforced_at=?, expires_at=?, tier=?, confidence=?,
+                 {citation_sql}version=version+1, updated_at=?
+               WHERE guild_id=? AND id=? AND valid_until IS NULL
+                 AND superseded_by_id IS NULL""",
+            (
+                occurrences_delta,
+                strength,
+                iso(last_reinforced_at),
+                iso(expires_at),
+                tier,
+                confidence,
+                *citation_param,
+                iso(last_reinforced_at),
+                guild_id,
+                fact_id,
+            ),
         )
         return await self.get_fact(guild_id, fact_id)
 
@@ -309,28 +315,32 @@ class FactsMixin:
         server_only: bool = False,
         limit: int = 10,
     ) -> tuple[FactRecord, ...]:
+        """Strength-ranked anchors with the scope predicate pushed into SQL.
+
+        Post-filtering after a global LIMIT starved subjects once a guild grew
+        past the cap — every user's anchors must be found regardless of guild
+        size.
+        """
+        conditions = ["guild_id=?", *_validity_sql(None)]
+        params: list[object] = [guild_id]
+        if server_only:
+            conditions.append("scope='server'")
+        elif subject_ids is not None and subject_ids:
+            placeholders = ",".join("?" * len(subject_ids))
+            conditions.append(
+                f"(subject_id IN ({placeholders})"
+                f" OR EXISTS (SELECT 1 FROM dm_links l"
+                f" WHERE l.memory_id=dm_facts.id AND l.node_type='user'"
+                f" AND l.node_id IN ({placeholders})))"
+            )
+            params.extend([*subject_ids, *subject_ids])
+        params.append(limit)
         rows = await self._db.query(
-            """SELECT * FROM dm_facts
-               WHERE guild_id=? AND valid_until IS NULL AND superseded_by_id IS NULL
-               ORDER BY strength DESC, confidence DESC LIMIT 400""",
-            (guild_id,),
+            f"SELECT * FROM dm_facts WHERE {' AND '.join(conditions)} "
+            f"ORDER BY strength DESC, confidence DESC LIMIT ?",
+            tuple(params),
         )
-        records = [record_from_row(r) for r in rows]
-        selected: list[FactRecord] = []
-        for record in records:
-            if server_only:
-                if record.is_server_fact:
-                    selected.append(record)
-                continue
-            if subject_ids is not None:
-                touched = record.subject_id in subject_ids or any(
-                    uid in record.related_user_ids for uid in subject_ids
-                )
-                if touched:
-                    selected.append(record)
-                continue
-            selected.append(record)
-        return tuple(selected[:limit])
+        return tuple(record_from_row(r) for r in rows)
 
     async def search_facts_text(
         self,
@@ -341,41 +351,34 @@ class FactsMixin:
         server_only: bool = False,
         limit: int = 20,
     ) -> tuple[tuple[FactRecord, float], ...]:
+        """One joined FTS query — the old per-hit N+1 fetched up to 201 rows."""
         safe_query = " ".join(
             token for token in "".join(ch if ch.isalnum() else " " for ch in query).split()
         )
         if not safe_query:
             return ()
-        try:
-            fts_rows = await self._db.query(
-                """SELECT rowid, bm25(dm_facts_fts) AS rank FROM dm_facts_fts
-                   WHERE dm_facts_fts MATCH ? LIMIT 200""",
-                (safe_query,),
+        conditions = ["f.guild_id=?", "f.valid_until IS NULL", "f.superseded_by_id IS NULL"]
+        params: list[object] = [guild_id]
+        if server_only:
+            conditions.append("f.scope='server'")
+        elif subject_ids is not None and subject_ids:
+            placeholders = ",".join("?" * len(subject_ids))
+            conditions.append(
+                f"(f.subject_id IN ({placeholders})"
+                f" OR EXISTS (SELECT 1 FROM dm_links l"
+                f" WHERE l.memory_id=f.id AND l.node_type='user'"
+                f" AND l.node_id IN ({placeholders})))"
             )
-        except Exception:
-            return ()
-        scored: list[tuple[FactRecord, float]] = []
-        allowed = set(subject_ids) if subject_ids is not None else None
-        for fts_row in fts_rows:
-            fact_row = await self._db.query_one(
-                "SELECT * FROM dm_facts WHERE seq=? AND guild_id=?",
-                (fts_row["rowid"], guild_id),
-            )
-            if fact_row is None:
-                continue
-            record = record_from_row(fact_row)
-            if not record.is_active:
-                continue
-            if server_only and not record.is_server_fact:
-                continue
-            if allowed is not None and not server_only:
-                touched = record.subject_id in allowed or any(
-                    uid in record.related_user_ids for uid in allowed
-                )
-                if not touched:
-                    continue
-            rank = abs(float(fts_row["rank"]))
-            scored.append((record, min(1.0, 1.0 / (1.0 + rank))))
+            params.extend([*subject_ids, *subject_ids])
+        params.append(limit)
+        rows = await self._db.query(
+            f"""SELECT f.*, bm25(dm_facts_fts) AS rank
+                FROM dm_facts_fts j JOIN dm_facts f ON f.seq=j.rowid
+                WHERE dm_facts_fts MATCH ? AND {" AND ".join(conditions)}
+                ORDER BY rank LIMIT ?""",
+            (safe_query, *params),
+        )
+        scored = [(record_from_row(r), min(1.0, 1.0 / (1.0 + abs(float(r["rank"]))))) for r in rows]
         scored.sort(key=lambda pair: -pair[1])
         return tuple(scored[:limit])
 
@@ -520,6 +523,10 @@ class FactsMixin:
         if dry_run:
             return report
         for row in fact_rows:
+            await self._db.execute(
+                "DELETE FROM dm_vectors WHERE fact_id=?",
+                (row["id"],),
+            )
             await self._db.execute("DELETE FROM dm_facts_fts WHERE rowid=?", (row["seq"],))
         await self._db.execute(
             "DELETE FROM dm_facts WHERE guild_id=? AND subject_id=?",
@@ -607,6 +614,118 @@ class FactsMixin:
         )
         facts = tuple(record_from_row(r) for r in fact_rows)
         return facts, entities, relations
+
+    async def sweep_expired(self, guild_id: str, now: datetime) -> int:
+        await self._db.execute(
+            """UPDATE dm_facts SET valid_until=?, updated_at=?, version=version+1
+               WHERE guild_id=? AND expires_at IS NOT NULL AND expires_at<=?
+                 AND valid_until IS NULL AND superseded_by_id IS NULL""",
+            (iso(now), iso(now), guild_id, iso(now)),
+        )
+        row = await self._db.query_one(
+            """SELECT COUNT(*) AS n FROM dm_facts WHERE guild_id=?
+                 AND valid_until=?""",
+            (guild_id, iso(now)),
+        )
+        return int(row["n"]) if row else 0
+
+    _PRUNE_ORDER = (
+        "CASE tier WHEN 'core' THEN 3 WHEN 'long_term' THEN 2"
+        " WHEN 'mid_term' THEN 1 ELSE 0 END, strength ASC, confidence ASC"
+    )
+
+    async def prune_to_caps(
+        self,
+        guild_id: str,
+        *,
+        max_per_user: int,
+        max_server: int,
+        now: datetime,
+    ) -> int:
+        pruned = 0
+        rows = await self._db.query(
+            """SELECT subject_id, COUNT(*) AS n FROM dm_facts
+               WHERE guild_id=? AND valid_until IS NULL
+                 AND superseded_by_id IS NULL
+               GROUP BY subject_id""",
+            (guild_id,),
+        )
+        caps: list[tuple[str | None, int]] = []
+        for row in rows:
+            subject_id = row["subject_id"]
+            count = int(row["n"])
+            if subject_id is None:
+                if count > max_server:
+                    caps.append((None, max_server))
+            elif count > max_per_user:
+                caps.append((subject_id, max_per_user))
+        for anchor, cap in caps:
+            if anchor is None:
+                scope_sql = "subject_id IS NULL"
+                params: list[object] = [guild_id]
+            else:
+                scope_sql = "subject_id=?"
+                params = [guild_id, anchor]
+            excess_rows = await self._db.query(
+                f"""SELECT id FROM dm_facts
+                    WHERE guild_id=? AND {scope_sql}
+                      AND valid_until IS NULL AND superseded_by_id IS NULL
+                      AND attribution NOT LIKE '%\"type\": \"manual\"%'
+                    ORDER BY {self._PRUNE_ORDER} LIMIT -1 OFFSET ?""",
+                (*params, cap),
+            )
+            for excess in excess_rows:
+                await self._db.execute(
+                    """UPDATE dm_facts SET valid_until=?, updated_at=?,
+                         version=version+1 WHERE id=?""",
+                    (iso(now), iso(now), excess["id"]),
+                )
+                pruned += 1
+        return pruned
+
+    async def apply_forgetting(
+        self,
+        guild_id: str,
+        *,
+        now: datetime,
+        retention_floor: float,
+    ) -> int:
+        import math
+
+        rows = await self._db.query(
+            """SELECT id, tier, attribution, strength, last_reinforced_at,
+                      created_at FROM dm_facts
+               WHERE guild_id=? AND valid_until IS NULL
+                 AND superseded_by_id IS NULL""",
+            (guild_id,),
+        )
+        forgotten = 0
+        for row in rows:
+            tier = row["tier"]
+            if tier == "core":
+                continue
+            attribution = json.loads(row["attribution"] or "{}")
+            if attribution.get("type") == "manual":
+                continue
+            last = parse_moment(row["last_reinforced_at"]) or parse_moment(
+                row["created_at"],
+            )
+            if last is None:
+                continue
+            delta_days = max(
+                0.0,
+                (now - last).total_seconds() / 86_400.0,
+            )
+            retention_value = math.exp(-delta_days / max(1.0, float(row["strength"])))
+            if retention_value >= retention_floor:
+                continue
+            await self._db.execute(
+                """UPDATE dm_facts SET valid_until=?, updated_at=?,
+                     version=version+1 WHERE id=?""",
+                (iso(now), iso(now), row["id"]),
+            )
+            forgotten += 1
+        return forgotten
 
     async def guild_stats(self, guild_id: str) -> GuildStats:
         total_row = await self._db.query_one(

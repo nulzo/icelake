@@ -6,6 +6,7 @@ parametrize another factory here.
 
 from __future__ import annotations
 
+import socket
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
@@ -45,13 +46,43 @@ def make_fact(**overrides) -> FactRecord:
     return FactRecord(**values)
 
 
-@pytest.fixture(params=["in_memory", "sqlite"])
-async def store(request) -> AsyncIterator[InMemoryStore | SqliteStore]:
+def _mongo_available() -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", 27017), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
+MONGO_AVAILABLE = _mongo_available()
+
+
+@pytest.fixture(params=["in_memory", "sqlite", "mongo"])
+async def store(request) -> AsyncIterator[InMemoryStore | SqliteStore | object]:
     if request.param == "in_memory":
         backend = InMemoryStore()
-    else:
+    elif request.param == "sqlite":
         backend = SqliteStore("sqlite://:memory:")
+    else:
+        if not MONGO_AVAILABLE:
+            pytest.skip("no MongoDB at localhost:27017")
+        from discord_memory.adapters.mongo import MongoStore
+
+        backend = MongoStore("mongodb://127.0.0.1:27017/discord_memory_test")
     await backend.setup()
+    if request.param == "mongo":
+        for collection in (
+            "dm_facts",
+            "dm_aliases",
+            "dm_links",
+            "dm_relations",
+            "dm_entities",
+            "dm_entity_aliases",
+            "dm_summaries",
+            "dm_optouts",
+            "dm_history",
+        ):
+            await backend.db[collection].delete_many({})
     yield backend
     await backend.close()
 

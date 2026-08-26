@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sqlite3
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -147,6 +149,17 @@ CREATE TABLE IF NOT EXISTS dm_optouts (
     user_id TEXT NOT NULL,
     PRIMARY KEY (guild_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS dm_batch_leases (
+    guild_id TEXT NOT NULL,
+    subject_key TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    lease_until TEXT NOT NULL,
+    PRIMARY KEY (guild_id, subject_key)
+);
+CREATE INDEX IF NOT EXISTS ix_dm_messages_lease
+    ON dm_messages (lease_until) WHERE status = 'claimed';
+CREATE INDEX IF NOT EXISTS ix_dm_messages_guild_created
+    ON dm_messages (guild_id, created_at DESC);
 """
 
 
@@ -244,6 +257,18 @@ class SqliteConnection:
         async with self._lock:
             await asyncio.to_thread(self._conn.executescript, script)
             await asyncio.to_thread(self._conn.commit)
+
+    @contextlib.asynccontextmanager
+    async def transaction_scope(self) -> AsyncIterator[SqliteConnection]:
+        """Async CM wrapping BEGIN IMMEDIATE / COMMIT / ROLLBACK."""
+        assert self._conn is not None
+        await asyncio.to_thread(self._conn.execute, "BEGIN IMMEDIATE", ())
+        try:
+            yield self
+            await asyncio.to_thread(self._conn.execute, "COMMIT", ())
+        except Exception:
+            await asyncio.to_thread(self._conn.execute, "ROLLBACK", ())
+            raise
 
     async def transaction(self, statements: list[tuple[str, Params]]) -> None:
         """Apply a group of writes atomically (explicit BEGIN/COMMIT under autocommit)."""

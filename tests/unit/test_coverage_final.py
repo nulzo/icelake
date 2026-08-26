@@ -336,7 +336,7 @@ class TestClientWorkerPaths:
         await client.start()
         await client.observe(event_factory(content="a chat line long enough to pass"))
         await client.flush()
-        await client._maybe_server_batch(GUILD)  # must not raise on empty window
+        await client._pipeline.flush_subject(GUILD, "__server__")  # empty window safe
         health = await client.ops.health()
         assert health.pending_messages == 0
         await client.close()
@@ -377,7 +377,7 @@ class TestClientWorkerPaths:
         )
         client, _llm = make_client(llm=llm)
         command = await client.classify_command("what do you know about me then?")
-        assert command.action == "query"
+        assert command.action.value == "query"
 
 
 class TestDiscordPyRemainingLines:

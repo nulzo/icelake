@@ -23,6 +23,10 @@ class SqliteStore(FactsMixin, IdentityGraphMixin):
         self.queue = SqliteIngestQueue(self._db)
         self.vectors = SqliteVectorIndex(self._db)
 
+    def transaction(self):  # type: ignore[no-untyped-def]
+        """Async CM: BEGIN IMMEDIATE .. COMMIT/ROLLBACK around fact commits."""
+        return self._db.transaction_scope()
+
     async def setup(self) -> None:
         await self._db.connect()
         await self._db.ensure_schema()

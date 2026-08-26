@@ -6,6 +6,7 @@ must pass the conformance suite in ``tests/integration/test_store_conformance.py
 
 from __future__ import annotations
 
+from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
@@ -46,6 +47,14 @@ class MemoryStore(Protocol):
     async def setup(self) -> None: ...
     async def close(self) -> None: ...
     async def ping(self) -> bool: ...
+
+    def transaction(self) -> AbstractAsyncContextManager[None]:
+        """Unit-of-work scope for multi-statement fact commits.
+
+        Backends without native transactions may yield a no-op; call sites must
+        not rely on isolation beyond best-effort atomicity.
+        """
+        ...
 
     # -- aliases (identity layer 1) -------------------------------------------
     async def upsert_alias(
@@ -153,7 +162,9 @@ class MemoryStore(Protocol):
         subject_ids: tuple[str, ...] | None,
         server_only: bool = False,
         limit: int = 10,
-    ) -> tuple[FactRecord, ...]: ...
+        as_of: datetime | None = None,
+    ) -> tuple[FactRecord, ...]:
+        """``as_of`` switches to point-in-time validity (bitemporal read)."""
 
     async def search_facts_text(
         self,
@@ -163,8 +174,12 @@ class MemoryStore(Protocol):
         subject_ids: tuple[str, ...] | None = None,
         server_only: bool = False,
         limit: int = 20,
+        as_of: datetime | None = None,
     ) -> tuple[tuple[FactRecord, float], ...]:
-        """Lexical search with relevance scores in [0, 1]."""
+        """Lexical search with relevance scores in [0, 1].
+
+        ``as_of`` returns facts valid at that instant instead of now.
+        """
 
     async def append_history(
         self,
@@ -284,5 +299,27 @@ class MemoryStore(Protocol):
         tuple[EntityRecord, ...],
         tuple[RelationEdge, ...],
     ]: ...
+
+    async def sweep_expired(self, guild_id: str, now: datetime) -> int:
+        """Soft-invalidate facts whose ``expires_at`` has passed. Returns count."""
+
+    async def prune_to_caps(
+        self,
+        guild_id: str,
+        *,
+        max_per_user: int,
+        max_server: int,
+        now: datetime,
+    ) -> int:
+        """Enforce profile-size caps, pruning weakest first (tier, strength, conf)."""
+
+    async def apply_forgetting(
+        self,
+        guild_id: str,
+        *,
+        now: datetime,
+        retention_floor: float,
+    ) -> int:
+        """Soft-invalidate non-core facts below the retention floor."""
 
     async def guild_stats(self, guild_id: str) -> GuildStats: ...

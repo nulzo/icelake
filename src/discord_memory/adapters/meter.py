@@ -16,16 +16,34 @@ from discord_memory.ports.clock import Clock
 _WARN_FRACTION = 0.8
 
 
+DEFAULT_USD_PER_MTOK: dict[str, tuple[float, float]] = {
+    # model-substring -> (input $/Mtok, output $/Mtok); first match wins
+    "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-2.0-flash": (0.10, 0.40),
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4o": (2.50, 10.00),
+}
+
+
 class InMemoryMeter:
     """Thread-safe counters by purpose plus daily/monthly guild budgets."""
 
-    def __init__(self, budgets: BudgetsConfig, clock: Clock) -> None:
+    def __init__(
+        self,
+        budgets: BudgetsConfig,
+        clock: Clock,
+        *,
+        pricing_usd_per_mtok: dict[str, tuple[float, float]] | None = None,
+    ) -> None:
         self._budgets = budgets
         self._clock = clock
+        self._pricing = pricing_usd_per_mtok or DEFAULT_USD_PER_MTOK
         self._lock = threading.Lock()
         self._calls: dict[str, int] = {}
         self._prompt_tokens: dict[str, int] = {}
         self._completion_tokens: dict[str, int] = {}
+        self._cost_usd: dict[str, float] = {}
+        self._models: dict[str, str] = {}
         self._counters: dict[str, float] = {}
         self._guild_day: dict[tuple[str, str], int] = {}
         self._guild_month: dict[tuple[str, str], int] = {}
@@ -38,13 +56,28 @@ class InMemoryMeter:
         completion_tokens: int,
         model: str,
     ) -> None:
-        del model
+        cost = self._estimate_cost(model, prompt_tokens, completion_tokens)
         with self._lock:
             self._calls[purpose] = self._calls.get(purpose, 0) + 1
             self._prompt_tokens[purpose] = self._prompt_tokens.get(purpose, 0) + prompt_tokens
             self._completion_tokens[purpose] = (
                 self._completion_tokens.get(purpose, 0) + completion_tokens
             )
+            if cost is not None:
+                self._cost_usd[purpose] = self._cost_usd.get(purpose, 0.0) + cost
+
+    def _estimate_cost(
+        self,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+    ) -> float | None:
+        for needle, (in_price, out_price) in self._pricing.items():
+            if needle in model:
+                return (
+                    prompt_tokens / 1_000_000 * in_price + completion_tokens / 1_000_000 * out_price
+                )
+        return None
 
     def charge_guild(self, guild_id: str, *, prompt_tokens: int) -> None:
         """Attribute prompt spend to a guild for budget accounting."""
@@ -85,7 +118,7 @@ class InMemoryMeter:
                 calls=dict(self._calls),
                 prompt_tokens=dict(self._prompt_tokens),
                 completion_tokens=dict(self._completion_tokens),
-                estimated_cost_usd={},
+                estimated_cost_usd={k: round(v, 6) for k, v in self._cost_usd.items()},
             )
 
 

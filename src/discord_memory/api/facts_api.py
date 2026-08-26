@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 from discord_memory.config import MemoryConfig
-from discord_memory.errors import FactNotFoundError, SubjectNotAllowedError
+from discord_memory.errors import (
+    FactNotFoundError,
+    SchemaValidationError,
+    SubjectNotAllowedError,
+)
+from discord_memory.graph.writes import DirectRoster, write_fact_graph
+from discord_memory.identity.aliases import normalize_alias, weight_for_source
 from discord_memory.identity.guards import SubjectGate
 from discord_memory.ingest.gates import (
     normalize_text,
@@ -18,6 +24,8 @@ from discord_memory.models.facts import (
     FactRecord,
     MemoryTier,
 )
+from discord_memory.models.identity import AliasSource
+from discord_memory.models.operations import ProposedEntity, ProposedRelation
 from discord_memory.ports.clock import Clock, IdGen
 from discord_memory.ports.llm import Embedder
 from discord_memory.ports.store import MemoryStore
@@ -55,8 +63,24 @@ class FactsApi:
         category: FactCategory = FactCategory.GENERAL,
         confidence: float = 1.0,
         actor_id: str | None = None,
+        speaker_id: str | None = None,
+        entities: tuple[ProposedEntity, ...] = (),
+        relations: tuple[ProposedRelation, ...] = (),
+        subject_username: str = "",
     ) -> FactRecord:
-        """Manually remember a fact. Manual facts land in CORE tier (never expire)."""
+        """Manually remember a fact. Manual facts land in CORE tier (never expire).
+
+        ``speaker_id`` records third-party attribution when the actor states
+        something about someone else (subject stays the person it's about).
+
+        ``entities`` and ``relations`` participate in the knowledge graph exactly
+        like extracted facts — reference endpoints by raw user id tokens or entity
+        names, e.g.::
+
+            relations=(ProposedRelation(
+                verb="owes", from_token=bob_id, to_entity="pizza"),
+            )
+        """
         if not await self._gate.allows(guild_id, subject_id):
             raise SubjectNotAllowedError(f"subject {subject_id} is barred from memory")
         hygiene = text_hygiene_gate(text)
@@ -80,6 +104,7 @@ class FactsApi:
             assert updated is not None
             return updated
 
+        third_party = bool(speaker_id and speaker_id != subject_id)
         record = FactRecord(
             id=self._id_gen.new_id("fct"),
             guild_id=guild_id,
@@ -91,8 +116,9 @@ class FactsApi:
             tier=MemoryTier.CORE,
             scope="server" if subject_id is None else "user",
             attribution=Attribution(
-                type=AttributionType.MANUAL,
+                type=(AttributionType.THIRD_PARTY if third_party else AttributionType.MANUAL),
                 actor_id=actor_id,
+                speaker_id=speaker_id if third_party else None,
             ),
             strength=1.0,
             last_reinforced_at=now,
@@ -101,8 +127,29 @@ class FactsApi:
             observed_at=now,
             valid_from=now,
         )
+        if subject_username and subject_id is not None:
+            normalized = normalize_alias(subject_username)
+            if len(normalized) >= 2 and not normalized.isdigit():
+                await self._store.upsert_alias(
+                    guild_id,
+                    normalized,
+                    subject_id,
+                    AliasSource.SUBJECT_USERNAME,
+                    weight_for_source(AliasSource.SUBJECT_USERNAME),
+                )
         await self._store.insert_fact(record)
         await self._index(record)
+        roster = DirectRoster(*(uid for uid in (subject_id, actor_id, speaker_id) if uid))
+        await write_fact_graph(
+            store=self._store,
+            clock_now=now,
+            guild_id=guild_id,
+            record=record,
+            entities=entities,
+            relations=relations,
+            mentioned_ids=tuple(uid for uid in (actor_id,) if uid and uid != subject_id),
+            roster=roster,
+        )
         return record
 
     async def get(self, guild_id: str, fact_id: str) -> FactRecord:
@@ -137,6 +184,7 @@ class FactsApi:
             fact_id,
             FactHistoryEntry(at=now, kind="superseded", detail=detail),
         )
+        await self._index(updated_fields)  # stale vector would misdirect recall
         return updated_fields
 
     async def forget(
@@ -229,8 +277,8 @@ class FactsApi:
         )
 
 
-class SchemaError(ValueError):
-    """Manual fact rejected by hygiene gates."""
+class SchemaError(SchemaValidationError):
+    """Manual fact rejected by hygiene gates (catchable as SchemaValidationError)."""
 
 
 __all__ = ["FactsApi", "SchemaError", "TokenUsage"]

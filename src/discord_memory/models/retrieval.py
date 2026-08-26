@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from datetime import datetime
 from enum import StrEnum
+from collections.abc import Callable
 
 from pydantic import Field
 
@@ -86,6 +87,7 @@ class RecallQuery(FrozenModel):
     min_score: float = 0.0
     token_budget: int = 600
     channels: ChannelSet | None = None
+    as_of: datetime | None = None   # time-travel: what was known at this instant?
 
 
 class Citation(FrozenModel):

@@ -192,3 +192,34 @@ class InMemoryIngestQueue:
         selected = [m for m in self._messages.values() if m.guild_id == guild_id]
         selected.sort(key=lambda m: m.created_at)
         return tuple(selected[-limit:])
+
+    async def renew_lease(
+        self,
+        key: BatchKey,
+        *,
+        owner: str,
+        now: datetime,
+        lease_seconds: float,
+    ) -> bool:
+        from datetime import timedelta
+
+        now = ensure_aware(now)
+        lease_key = key.as_tuple
+        async with self._lock:
+            holder = self._lease_owner.get(lease_key)
+            if holder != owner:
+                return False
+            self._lease_until[lease_key] = now + timedelta(seconds=lease_seconds)
+            return True
+
+    async def prune_processed(self, *, older_than: datetime) -> int:
+        cutoff = ensure_aware(older_than)
+        doomed = [
+            mid
+            for mid, m in self._messages.items()
+            if m.status is MessageStatus.PROCESSED and m.created_at < cutoff
+        ]
+        for mid in doomed:
+            del self._messages[mid]
+            self._order.remove(mid)
+        return len(doomed)

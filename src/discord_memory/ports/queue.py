@@ -86,8 +86,18 @@ class IngestQueue(Protocol):
     ) -> ClaimOutcome:
         """Atomically flip up to ``limit`` pending messages to CLAIMED under a lease."""
 
+    async def renew_lease(
+        self,
+        key: BatchKey,
+        *,
+        owner: str,
+        now: datetime,
+        lease_seconds: float,
+    ) -> bool:
+        """Heartbeat: extend our live lease. False if lost/stolen."""
+
     async def complete_messages(self, message_ids: tuple[str, ...], owner: str) -> int:
-        """Mark claimed messages processed (owner-checked, idempotent)."""
+        """Mark OUR claimed messages processed (owner-checked, idempotent)."""
 
     async def release_expired_leases(self, now: datetime) -> int:
         """Reclaim CLAIMED messages whose lease expired back to PENDING."""
@@ -106,3 +116,6 @@ class IngestQueue(Protocol):
 
     async def recent_messages(self, guild_id: str, limit: int) -> tuple[StoredMessage, ...]:
         """Most recent messages regardless of status (community-window source)."""
+
+    async def prune_processed(self, *, older_than: datetime) -> int:
+        """Retention: delete PROCESSED rows older than the cutoff."""

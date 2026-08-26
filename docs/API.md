@@ -129,7 +129,7 @@ parentheses; every duration suffixed `_seconds/_minutes/_days`, every budget
 | `storage` | backend parsed from URL; `pool_size (10)`; `schema_auto_migrate (True)` |
 | `llm` | endpoint URL(s); `extraction_model`; `consolidation_model (None→same)`; `temperature (0.0)`; `request_timeout_seconds (30)`; `max_retries (2)` |
 | `embeddings` | provider; `dimensions`; `batch_size (32)`; `cache_enabled (True)` |
-| `batching` | `batch_size_messages (10)`; `max_age_seconds (300)`; `min_interval_seconds (60)`; `lease_seconds (120)`; `server_scope_batch_window (100)` |
+| `batching` | `batch_size_messages (10)`; `max_age_seconds (300)`; `lease_seconds (120)`; `server_scope_window (100)` |
 | `extraction` | `min_confidence (0.55)`; `max_candidates_per_batch (12)`; `reconcile_collision_threshold (0.85)`; `noise_gate (True)` |
 | `lifecycle` | tier retention days `{short:7, mid:45, long:180}`; `strength_forget_threshold`; caps `{per_user:300, server:500}` |
 | `retrieval` | `channels (ChannelSet.DEFAULT)`; `rrf_k (60)`; weights dict; `default_token_budget (600)`; `max_per_subject (4)`; `hop_depth (2)`; `fan_out_per_node (24)` |

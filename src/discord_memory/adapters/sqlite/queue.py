@@ -89,6 +89,62 @@ class SqliteIngestQueue:
         )
         return tuple(BatchKey(guild_id=r["guild_id"], subject_key=r["subject_key"]) for r in rows)
 
+    async def _acquire_key_lease(
+        self,
+        key: BatchKey,
+        *,
+        now: datetime,
+        lease_seconds: float,
+        owner: str,
+    ) -> bool:
+        """CAS the durable lease row. True iff we own the key until expiry."""
+        await self._db.execute(
+            """INSERT INTO dm_batch_leases (guild_id, subject_key, owner, lease_until)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(guild_id, subject_key) DO UPDATE SET
+                 owner=excluded.owner, lease_until=excluded.lease_until
+               WHERE dm_batch_leases.owner = excluded.owner
+                  OR dm_batch_leases.lease_until <= ?""",
+            (
+                key.guild_id,
+                key.subject_key,
+                owner,
+                iso(now + timedelta(seconds=lease_seconds)),
+                iso(now),
+            ),
+        )
+        row = await self._db.query_one(
+            "SELECT owner FROM dm_batch_leases WHERE guild_id=? AND subject_key=?",
+            (key.guild_id, key.subject_key),
+        )
+        return row is not None and row["owner"] == owner
+
+    async def renew_lease(
+        self,
+        key: BatchKey,
+        *,
+        owner: str,
+        now: datetime,
+        lease_seconds: float,
+    ) -> bool:
+        result = await self._db.query_one(
+            "SELECT owner FROM dm_batch_leases WHERE guild_id=? AND subject_key=?",
+            (key.guild_id, key.subject_key),
+        )
+        if result is None or result["owner"] != owner:
+            return False
+        await self._db.execute(
+            "UPDATE dm_batch_leases SET lease_until=? "
+            "WHERE guild_id=? AND subject_key=? AND owner=?",
+            (
+                iso(now + timedelta(seconds=lease_seconds)),
+                key.guild_id,
+                key.subject_key,
+                owner,
+            ),
+        )
+        return True
+
     async def claim_batch(
         self,
         key: BatchKey,
@@ -99,47 +155,46 @@ class SqliteIngestQueue:
         limit: int,
     ) -> ClaimOutcome:
         now = ensure_aware(now)
-        lease_until = now + timedelta(seconds=lease_seconds)
-
-        held = await self._db.query_one(
-            """SELECT lease_owner, lease_until FROM dm_messages
-               WHERE guild_id = ? AND subject_key = ?
-                 AND status = 'claimed' AND lease_until IS NOT NULL
-               LIMIT 1""",
-            (key.guild_id, key.subject_key),
-        )
-        if held is not None:
-            active_until = datetime.fromisoformat(held["lease_until"])
-            if active_until > now and held["lease_owner"] != owner:
-                return ClaimOutcome(key=key, locked_by_other=True)
+        if not await self._acquire_key_lease(
+            key, now=now, lease_seconds=lease_seconds, owner=owner
+        ):
+            return ClaimOutcome(key=key, locked_by_other=True)
 
         await self._db.execute(
-            """UPDATE dm_messages SET status='claimed', lease_owner=?, lease_until=?,
-                  message_id=message_id
+            """UPDATE dm_messages SET status='claimed', lease_owner=?, lease_until=?
                WHERE message_id IN (
                    SELECT message_id FROM dm_messages
                    WHERE guild_id=? AND subject_key=? AND status='pending'
                    ORDER BY created_at ASC LIMIT ?
                )""",
-            (owner, iso(lease_until), key.guild_id, key.subject_key, limit),
+            (
+                owner,
+                iso(now + timedelta(seconds=lease_seconds)),
+                key.guild_id,
+                key.subject_key,
+                limit,
+            ),
         )
         rows = await self._db.query(
             """SELECT * FROM dm_messages
-               WHERE guild_id=? AND subject_key=? AND status='claimed' AND lease_owner=?
-               ORDER BY created_at ASC""",
+               WHERE guild_id=? AND subject_key=? AND status='claimed'
+                 AND lease_owner=? ORDER BY created_at ASC""",
             (key.guild_id, key.subject_key, owner),
         )
-        messages = tuple(_message_from_row(r) for r in rows)
-        return ClaimOutcome(key=key, messages=messages)
+        return ClaimOutcome(key=key, messages=tuple(_message_from_row(r) for r in rows))
 
     async def complete_messages(self, message_ids: tuple[str, ...], owner: str) -> int:
         count = 0
         for message_id in message_ids:
             cursor_info = await self._db.query_one(
-                "SELECT status FROM dm_messages WHERE message_id=?",
+                "SELECT status, lease_owner FROM dm_messages WHERE message_id=?",
                 (message_id,),
             )
-            if cursor_info is None or cursor_info["status"] != "claimed":
+            if (
+                cursor_info is None
+                or cursor_info["status"] != "claimed"
+                or cursor_info["lease_owner"] != owner
+            ):
                 continue
             await self._db.execute(
                 """UPDATE dm_messages SET status='processed', lease_owner=NULL,
@@ -147,25 +202,36 @@ class SqliteIngestQueue:
                 (message_id,),
             )
             count += 1
-        del owner
         return count
 
     async def release_expired_leases(self, now: datetime) -> int:
         now = ensure_aware(now)
-        result = await self._db.query(
-            "SELECT message_id FROM dm_messages WHERE status='claimed' AND lease_until<=?",
+        expired_keys = await self._db.query(
+            """SELECT DISTINCT guild_id, subject_key FROM dm_batch_leases
+               WHERE lease_until <= ?""",
             (iso(now),),
         )
-        ids = [r["message_id"] for r in result]
-        if not ids:
-            return 0
-        placeholders = ",".join("?" * len(ids))
-        await self._db.execute(
-            f"""UPDATE dm_messages SET status='pending', lease_owner=NULL, lease_until=NULL
-                WHERE message_id IN ({placeholders})""",
-            tuple(ids),
-        )
-        return len(ids)
+        released = 0
+        for lease_row in expired_keys:
+            rows = await self._db.query(
+                """SELECT message_id FROM dm_messages
+                   WHERE guild_id=? AND subject_key=? AND status='claimed'""",
+                (lease_row["guild_id"], lease_row["subject_key"]),
+            )
+            ids = [r["message_id"] for r in rows]
+            if ids:
+                placeholders = ",".join("?" * len(ids))
+                await self._db.execute(
+                    f"""UPDATE dm_messages SET status='pending', lease_owner=NULL,
+                          lease_until=NULL WHERE message_id IN ({placeholders})""",
+                    tuple(ids),
+                )
+                released += len(ids)
+            await self._db.execute(
+                "DELETE FROM dm_batch_leases WHERE guild_id=? AND subject_key=?",
+                (lease_row["guild_id"], lease_row["subject_key"]),
+            )
+        return released
 
     async def dead_letter_messages(
         self,
@@ -175,17 +241,16 @@ class SqliteIngestQueue:
         count = 0
         for message_id in message_ids:
             row = await self._db.query_one(
-                "SELECT status FROM dm_messages WHERE message_id=?",
+                "SELECT status, lease_owner FROM dm_messages WHERE message_id=?",
                 (message_id,),
             )
-            if row is None or row["status"] != "claimed":
+            if row is None or row["status"] != "claimed" or row["lease_owner"] != owner:
                 continue
             await self._db.execute(
                 "UPDATE dm_messages SET status='dead', lease_owner=NULL WHERE message_id=?",
                 (message_id,),
             )
             count += 1
-        del owner
         return count
 
     async def requeue_dead_letters(self, guild_id: str | None = None) -> int:
@@ -200,6 +265,20 @@ class SqliteIngestQueue:
                 (row["message_id"],),
             )
         return len(rows)
+
+    async def prune_processed(self, *, older_than: datetime) -> int:
+        result = await self._db.query(
+            """SELECT message_id FROM dm_messages
+               WHERE status='processed' AND created_at < ?""",
+            (iso(ensure_aware(older_than)),),
+        )
+        ids = [r["message_id"] for r in result]
+        for message_id in ids:
+            await self._db.execute(
+                "DELETE FROM dm_messages WHERE message_id=?",
+                (message_id,),
+            )
+        return len(ids)
 
     async def pending_count(self, guild_id: str) -> int:
         row = await self._db.query_one(

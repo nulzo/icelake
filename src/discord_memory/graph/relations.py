@@ -54,7 +54,7 @@ def compute_edge_weight(
     now: datetime,
 ) -> float:
     """``ln(1+occurrences) x confidence x recency-decay`` — hub ranking signal."""
-    occ_component = math.log1p(max(0, occurrences - 1))
+    occ_component = math.log1p(max(1, occurrences))
     age_days = max(0.0, (now - last_reinforced_at).total_seconds() / 86_400.0)
     decay = math.exp(-age_days / 90.0)
     return round(occ_component * confidence * decay, 6)

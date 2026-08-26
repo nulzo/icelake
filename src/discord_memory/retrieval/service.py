@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 from collections.abc import Coroutine
 from typing import Any
 
@@ -34,6 +35,8 @@ from discord_memory.scoring.fusion import (
 
 logger = logging.getLogger(__name__)
 
+_FUTURE = datetime.max.replace(tzinfo=UTC)
+
 
 class RecallService:
     """Read-path orchestrator. Zero LLM calls by design; never raises."""
@@ -46,21 +49,24 @@ class RecallService:
         embedder: Embedder | None,
         config: RetrievalConfig,
         guard: BotGuard | None = None,
+        is_subject_blocked: Any = None,
     ) -> None:
         self._store = store
         self._vectors = vectors
         self._embedder = embedder
         self._config = config
         self._guard = guard
+        self._is_subject_blocked = is_subject_blocked
 
     async def recall(self, query: RecallQuery) -> RecallResult:
         selected = query.channels if query.channels else CHANNELS_DEFAULT
         subject_ids: tuple[str, ...] | None = tuple(query.subject_ids) or None
         server_only = query.scope is Scope.SERVER
-        if query.scope is Scope.SUBJECTS and subject_ids:
-            pass
-        elif query.scope is not Scope.SERVER:
-            subject_ids = None
+        if query.scope is Scope.GUILD:
+            subject_ids = None  # guild-wide union: no subject restriction
+
+        pair_fact_ids = await self._pair_intersection(query)
+        entity_slug = await self._resolve_entity_hint(query)
 
         outputs, degraded = await self._run_channels(
             selected,
@@ -69,6 +75,16 @@ class RecallService:
             subject_ids=subject_ids,
             server_only=server_only,
         )
+
+        if pair_fact_ids:
+            outputs.append(
+                ch.ChannelOutput(
+                    channel=ChannelName.LINKS,
+                    ranked_ids=tuple(pair_fact_ids),
+                ),
+            )
+        if entity_slug is not None:
+            outputs.append(await self._entity_hint_channel(query, entity_slug))
 
         ranked_channels = [
             RankedChannel(channel=out.channel, ranked_ids=out.ranked_ids)
@@ -175,6 +191,66 @@ class RecallService:
             outputs.append(result)
         return outputs, degraded
 
+    async def _pair_intersection(self, query: RecallQuery) -> list[str]:
+        """Facts joined to BOTH users of ``pair_ids`` (Q3/Q2 link-intersect)."""
+        if query.pair_ids is None:
+            return []
+        from discord_memory.models.graph import NodeType
+
+        a, b = query.pair_ids
+        by_a = {
+            record.id
+            for _row, record in await self._store.links_for_node(
+                query.guild_id,
+                NodeType.USER,
+                a,
+                active_only=True,
+                limit=self._config.recall_limit,
+            )
+        }
+        if not by_a:
+            return []
+        by_b = {
+            record.id
+            for _row, record in await self._store.links_for_node(
+                query.guild_id,
+                NodeType.USER,
+                b,
+                active_only=True,
+                limit=self._config.recall_limit,
+            )
+        }
+        return [fact_id for fact_id in by_a if fact_id in by_b]
+
+    async def _resolve_entity_hint(self, query: RecallQuery) -> str | None:
+        """Resolve ``entity_hint`` surface name to a canonical slug (Q5)."""
+        from discord_memory.identity.aliases import alias_slug, normalize_alias
+
+        if not query.entity_hint:
+            return None
+        normalized = normalize_alias(query.entity_hint)
+        slug = await self._store.resolve_entity_alias(query.guild_id, normalized)
+        return slug or alias_slug(query.entity_hint)
+
+    async def _entity_hint_channel(
+        self,
+        query: RecallQuery,
+        slug: str,
+    ) -> ch.ChannelOutput:
+        from discord_memory.models.graph import NodeType
+
+        linked = await self._store.links_for_node(
+            query.guild_id,
+            NodeType.ENTITY,
+            slug,
+            active_only=True,
+            limit=self._config.recall_limit,
+        )
+        return ch.ChannelOutput(
+            channel=ChannelName.ENTITY,
+            ranked_ids=tuple(record.id for _row, record in linked),
+        )
+
     async def _materialize(
         self,
         query: RecallQuery,
@@ -194,7 +270,18 @@ class RecallService:
         trimmed = False
         for fact_id in fact_ids:
             record = by_id.get(fact_id)
-            if record is None or not record.is_active:
+            if record is None:
+                continue
+            if query.as_of is not None:
+                # Time travel: validity window decides; supersession flags are
+                # irrelevant because they describe LATER knowledge.
+                start = record.valid_from
+                end = record.valid_until or _FUTURE
+                if start is not None and start > query.as_of:
+                    continue
+                if end <= query.as_of:
+                    continue
+            elif not record.is_active:
                 continue
             if scores[fact_id] < query.min_score:
                 continue
@@ -203,6 +290,12 @@ class RecallService:
                 self._guard is not None and subject is not None and (self._guard.is_bot(subject))
             )
             if guarded:
+                continue
+            if (
+                self._is_subject_blocked is not None
+                and subject is not None
+                and await self._is_subject_blocked(query.guild_id, subject)
+            ):
                 continue
             if record.subject_id and record.subject_id in query.exclude_ids:
                 continue

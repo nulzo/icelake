@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Protocol
 
 from discord_memory.config import MemoryConfig
-from discord_memory.graph.relations import compute_edge_weight, merge_edge, polarity_for_verb
-from discord_memory.identity.aliases import alias_slug, normalize_alias
+from discord_memory.identity.aliases import (
+    extract_self_name_aliases,
+    is_third_party_name_reference,
+    normalize_alias,
+    weight_for_source,
+)
 from discord_memory.ingest.extraction import category_of
 from discord_memory.ingest.gates import normalize_text
 from discord_memory.lifecycle.strength import reinforced_strength
@@ -24,9 +27,10 @@ from discord_memory.models.facts import (
     AttributionType,
     FactHistoryEntry,
     FactRecord,
+    SourceRef,
 )
-from discord_memory.models.graph import EdgeKind, LinkRow, NodeType, RelationEdge
-from discord_memory.models.operations import ProposedEntity, ProposedFact, ProposedRelation
+from discord_memory.models.identity import AliasSource
+from discord_memory.models.operations import ProposedFact
 from discord_memory.ports.clock import Clock, IdGen
 from discord_memory.ports.llm import Embedder
 from discord_memory.ports.store import MemoryStore
@@ -74,6 +78,8 @@ class FactCommitter:
         guild_id: str,
         roster: RosterLike,
         supersedes_id: str | None = None,
+        mentioned_ids: tuple[str, ...] = (),
+        source_refs: tuple[SourceRef, ...] = (),
     ) -> FactRecord:
         now = self._clock.now()
         tier, expires_after = assign_tier(
@@ -108,10 +114,29 @@ class FactCommitter:
             valid_from=now,
             expires_at=(now + expires_after) if expires_after is not None else None,
             supersedes_id=supersedes_id,
+            citations=source_refs,
+        )
+        record = record.model_copy(
+            update={
+                "related_user_ids": tuple(
+                    dict.fromkeys(
+                        uid
+                        for uid in (*record.related_user_ids, *mentioned_ids)
+                        if uid != record.subject_id
+                    )
+                ),
+            }
         )
         await self._store.insert_fact(record)
         await self._index_embedding(record)
-        await self._write_graph(guild_id=guild_id, record=record, proposal=proposal, roster=roster)
+        await self._write_graph(
+            guild_id=guild_id,
+            record=record,
+            proposal=proposal,
+            roster=roster,
+            mentioned_ids=mentioned_ids,
+        )
+        await self._mine_aliases(guild_id=guild_id, record=record)
         await self._store.append_history(
             guild_id,
             record.id,
@@ -234,108 +259,41 @@ class FactCommitter:
         record: FactRecord,
         proposal: ProposedFact,
         roster: RosterLike,
+        mentioned_ids: tuple[str, ...] = (),
     ) -> None:
-        now = self._clock.now()
-        links: list[LinkRow] = []
-        if record.subject_id is not None:
-            links.append(
-                _link(
-                    guild_id, record.id, NodeType.USER, record.subject_id, EdgeKind.SUBJECT_OF, now
-                )
-            )
-        speaker = record.attribution.speaker_id
-        if speaker and speaker != record.subject_id:
-            links.append(
-                _link(guild_id, record.id, NodeType.USER, speaker, EdgeKind.SPEAKER_OF, now)
-            )
-        slugs: list[str] = []
-        for entity in proposal.entities:
-            slug = await self._resolve_entity_slug(guild_id, entity)
-            slugs.append(slug)
-            links.append(
-                _link(guild_id, record.id, NodeType.ENTITY, slug, EdgeKind.ABOUT_ENTITY, now)
-            )
-        if links:
-            await self._store.add_links(tuple(links))
-        for slug in dict.fromkeys(slugs):
-            await self._store.bump_entity_facts(guild_id, slug)
-        for relation in proposal.relations:
-            await self._write_relation(
-                guild_id=guild_id,
-                relation=relation,
-                fact=record,
-                roster=roster,
-            )
+        from discord_memory.graph.writes import write_fact_graph
 
-    async def _resolve_entity_slug(self, guild_id: str, entity: ProposedEntity) -> str:
-        alias_norm = normalize_alias(entity.name)
-        existing = await self._store.resolve_entity_alias(guild_id, alias_norm)
-        if existing:
-            return existing
-        slug = alias_slug(entity.name)
-        await self._store.upsert_entity(
-            guild_id,
-            slug,
-            entity.name,
-            entity.kind,  # type: ignore[arg-type]
-            aliases=(alias_norm,),
+        await write_fact_graph(
+            store=self._store,
+            clock_now=self._clock.now(),
+            guild_id=guild_id,
+            record=record,
+            entities=proposal.entities,
+            relations=proposal.relations,
+            mentioned_ids=mentioned_ids,
+            roster=roster,
         )
-        return slug
 
-    async def _write_relation(
-        self,
-        *,
-        guild_id: str,
-        relation: ProposedRelation,
-        fact: FactRecord,
-        roster: RosterLike,
-    ) -> None:
-        endpoints: list[tuple[NodeType, str]] = []
-        for token, name in (
-            (relation.from_token, relation.from_entity),
-            (relation.to_token, relation.to_entity),
-        ):
-            if token and roster.knows(token) and token != "server":
-                user_id = roster.user_id_for(token)
-                if user_id:
-                    endpoints.append((NodeType.USER, user_id))
-            elif name:
-                slug = await self._resolve_entity_slug(guild_id, ProposedEntity(name=name))
-                endpoints.append((NodeType.ENTITY, slug))
-        if len(endpoints) < 2 or endpoints[0] == endpoints[1]:
+    async def _mine_aliases(self, *, guild_id: str, record: FactRecord) -> None:
+        """Register subject aliases mined from fact text (PLAN.md §3.2 write-time).
+
+        Skips third-party facts and kinship/possessive references so a speaker's
+        statement about someone else never teaches us the subject's name.
+        """
+        if record.subject_id is None:
             return
-        src, dst = endpoints[0], endpoints[1]
-        verb = relation.verb.strip().lower().replace(" ", "_")
-        now = self._clock.now()
-        active_edges = [
-            e for e in await self._store.edges_between(guild_id, src, dst) if e.verb == verb
-        ]
-        matching = active_edges[0] if active_edges else None
-        if matching is not None:
-            incoming = matching.model_copy(update={"evidence_fact_ids": (fact.id,)})
-            await self._store.upsert_relation(merge_edge(matching, incoming, now=now))
+        if record.attribution.type is AttributionType.THIRD_PARTY:
             return
-        weight = compute_edge_weight(
-            occurrences=1,
-            confidence=fact.confidence,
-            last_reinforced_at=now,
-            now=now,
-        )
-        await self._store.upsert_relation(
-            RelationEdge(
-                guild_id=guild_id,
-                src_type=src[0],
-                src_id=src[1],
-                dst_type=dst[0],
-                dst_id=dst[1],
-                verb=verb,
-                polarity=polarity_for_verb(verb),
-                weight=weight,
-                confidence=fact.confidence,
-                evidence_fact_ids=(fact.id,),
-                valid_from=now,
+        for surface, _weight in extract_self_name_aliases(record.text):
+            if is_third_party_name_reference(record.text, surface):
+                continue
+            await self._store.upsert_alias(
+                guild_id,
+                normalize_alias(surface),
+                record.subject_id,
+                AliasSource.REAL_NAME,
+                weight_for_source(AliasSource.REAL_NAME),
             )
-        )
 
 
 class RosterLike(Protocol):
@@ -344,24 +302,6 @@ class RosterLike(Protocol):
     def knows(self, token: str) -> bool: ...
 
     def user_id_for(self, token: str) -> str | None: ...
-
-
-def _link(
-    guild_id: str,
-    memory_id: str,
-    node_type: NodeType,
-    node_id: str,
-    kind: EdgeKind,
-    now: datetime,
-) -> LinkRow:
-    return LinkRow(
-        guild_id=guild_id,
-        memory_id=memory_id,
-        node_type=node_type,
-        node_id=node_id,
-        kind=kind,
-        created_at=now,
-    )
 
 
 __all__ = ["CommitSummary", "FactCommitter", "RosterLike"]

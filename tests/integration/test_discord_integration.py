@@ -148,5 +148,5 @@ class TestSetupAndCog:
         assert "Your stored memories" in sent["text"]
 
         await cog.forget_me(interaction)
-        assert "purged" in sent["text"]
+        assert sent["text"] == "Purged 1 memories about you."
         await client.close()

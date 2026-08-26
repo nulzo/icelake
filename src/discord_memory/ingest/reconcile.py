@@ -7,12 +7,12 @@ trigger the reconcile LLM call — non-colliding candidates commit as plain ADDs
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
+from discord_memory._json import parse_json_object as _parse_json_object
 from discord_memory.config import ExtractionConfig
 from discord_memory.ingest.gates import normalize_text
 from discord_memory.models.facts import FactRecord
@@ -56,22 +56,6 @@ class ReconcilePlan:
     collisions: list[Collision] = field(default_factory=list)
 
 
-def _parse_json_object(text: str) -> dict[str, object]:
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        stripped = stripped.strip("`")
-        if stripped.startswith("json"):
-            stripped = stripped[4:]
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start == -1 or end == -1:
-        raise ValueError("no JSON object in response")
-    parsed = json.loads(stripped[start : end + 1])
-    if not isinstance(parsed, dict):
-        raise ValueError("response is not a JSON object")
-    return parsed
-
-
 def parse_reconcile_output(text: str) -> ReconcileOutput | None:
     """Strict-parse a reconcile LLM response; ``None`` on any malformed output."""
     try:
@@ -111,7 +95,7 @@ class Reconciler:
             normalized = normalize_text(candidate.text)
             duplicate = await self._store.find_duplicate(
                 guild_id,
-                cand_subject or batch_subject_id,
+                cand_subject,
                 normalized,
             )
             if duplicate is not None:

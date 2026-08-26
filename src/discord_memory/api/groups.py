@@ -51,12 +51,14 @@ class IdentityApi:
             return
         existing = await self._store.resolve_alias_candidates(guild_id, normalized)
         if not any(record.user_id == user_id for record in existing):
+            from discord_memory.identity.aliases import weight_for_source
+
             await self._store.upsert_alias(
                 guild_id,
                 normalized,
                 user_id,
                 AliasSource.DISPLAY_NAME,
-                0.95,
+                weight_for_source(AliasSource.DISPLAY_NAME, surface=normalized),
             )
 
     async def aliases_of(self, guild_id: str, user_id: str) -> tuple[AliasRecord, ...]:

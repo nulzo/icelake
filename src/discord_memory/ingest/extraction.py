@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 
 from pydantic import ValidationError
 
+from discord_memory._json import parse_json_object as _parse_json_object
 from discord_memory.config import ExtractionConfig
 from discord_memory.ingest.gates import (
     GateDecision,
@@ -44,22 +44,6 @@ class ExtractionResult:
     @property
     def has_candidates(self) -> bool:
         return bool(self.vetted)
-
-
-def _parse_json_object(text: str) -> dict[str, object]:
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.startswith("json"):
-            text = text[4:]
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1:
-        raise ValueError("no JSON object in response")
-    parsed = json.loads(text[start : end + 1])
-    if not isinstance(parsed, dict):
-        raise ValueError("response is not a JSON object")
-    return parsed
 
 
 class FactExtractor:

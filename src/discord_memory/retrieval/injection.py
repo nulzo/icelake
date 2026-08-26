@@ -5,6 +5,24 @@ from __future__ import annotations
 from discord_memory.models.retrieval import Citation, ScoredFact, render_citation_tag
 
 CHARS_PER_TOKEN = 4
+
+CITATION_INSTRUCTION = (
+    "When you use a fact above in your reply, echo its [mem:N] tag so the user "
+    "can see the source. Do not invent tags for facts that were not listed."
+)
+
+MEMORY_VS_CONVERSATION = (
+    "CRITICAL: this block is LONG-TERM MEMORY accumulated over time — background "
+    "knowledge about people and this server. It is NOT the live chat; the message "
+    "history in the conversation turns is what is actually happening now. Do not "
+    "treat stored facts as things that just happened."
+)
+
+USAGE_GUIDELINES = (
+    "Use these memories naturally: personalize replies, remember preferences, "
+    "resolve who people are. Never recite random trivia unless it fits the "
+    "exchange. Facts about one person must never be attributed to another."
+)
 MAX_FACT_CHARS = 280
 
 
@@ -36,15 +54,23 @@ class InjectionBuilder:
         summaries: dict[str, str | None],
         token_budget: int,
         guild_id: str,
+        alias_notes: dict[str, str] | None = None,
     ) -> tuple[str, tuple[Citation, ...], bool]:
-        """Returns ``(block, citations, trimmed)``.
+        """``alias_notes`` maps section-key -> coreference line ("Also known as…").
+
+        Returns ``(block, citations, trimmed)``.
 
         Sections render in dict order with headers:
         - ``CURRENT ASKER`` for the asking user's own profile,
         - ``REFERENCED USER`` per other subject — attribution-critical labels,
         - ``SERVER`` for community facts.
         """
-        lines: list[str] = ["[MEMORY CONTEXT]", ""]
+        lines: list[str] = [
+            "[MEMORY CONTEXT]",
+            "",
+            MEMORY_VS_CONVERSATION,
+            "",
+        ]
         citations: list[Citation] = []
         used_tokens = len("\n".join(lines)) // CHARS_PER_TOKEN
         trimmed = False
@@ -70,6 +96,9 @@ class InjectionBuilder:
                 label = f"Facts about {display} ONLY. Do NOT attribute these to the asker."
             summary_text = summaries.get(section_key)
             section_lines = [header]
+            alias_note = (alias_notes or {}).get(section_key)
+            if alias_note:
+                section_lines.append(alias_note)
             if summary_text:
                 section_lines.append(f"Summary: {snippet(summary_text, 480)}")
             section_lines.append(label)
@@ -102,6 +131,10 @@ class InjectionBuilder:
             lines.append("")
             used_tokens += section_tokens
 
+        if citations:
+            lines.append("")
+            lines.append(CITATION_INSTRUCTION)
+            lines.append(USAGE_GUIDELINES)
         block = "\n".join(lines).rstrip() + "\n"
         return block, tuple(citations), trimmed
 

@@ -21,6 +21,7 @@ member of a server.
 ```bash
 pip install discord-memory                    # core (SQLite backend, hashing embedder)
 pip install "discord-memory[discord]"         # + discord.py integration
+pip install "discord-memory[mongo]"           # + MongoDB backend (PyMongo Async)
 pip install "discord-memory[local-embeddings]"# + sentence-transformers embeddings
 ```
 
@@ -51,20 +52,195 @@ async def main() -> None:
             author_display_name="alice",
         ))
 
-        # 2. Build prompt context for a reply
+        # 2. Build prompt context for a reply: asker + mentioned users + server.
         ctx = await memory.prompt_context(
             guild_id="555",
             asker_id="100000000000000001",
             text="what am I learning these days?",
+            mentioned_ids=("200000000000000002",),   # @mentions in this message
         )
-        print(ctx.injection_block)   # paste into your system prompt
+        print(ctx.injection_block)   # labeled, budgeted, cite-tagged block
 
-        # 3. After generation, resolve echoed [mem:N] tags to jump links
+        # 3. After generation, resolve echoed [mem:N] tags into jump links.
         reply = ctx.apply_citations("You're learning Rust [mem:1]!")
 
 
 asyncio.run(main())
 ```
+
+Runnable, complete examples live in [`examples/`](examples/):
+
+| File | What it demonstrates |
+|---|---|
+| [`examples/ping_reply_bot.py`](examples/ping_reply_bot.py) | **The classic chat bot** (like CringeDiscordBot): passive learning on every message, replies only when pinged, resolves asker + referenced-user memories per turn, applies citations to the reply, chat-native "remember/forget" commands, nickname-change tracking |
+| [`examples/relationship_queries.py`](examples/relationship_queries.py) | Cross-user memory: "what does X think of Y", typed relation edges, entity stance aggregation ("who likes movies?"), shared-trait discovery. Runnable without Discord |
+
+### The ping-reply turn, step by step
+
+When `@Bot what happened between alice and bob?` arrives:
+
+```python
+# 1. Resolve memories for EVERYONE in the conversation in one call:
+ctx = await memory.prompt_context(
+    guild_id=guild_id,
+    asker_id=str(message.author.id),       # who is talking -> their profile
+    text=question,                          # query + entity hints
+    mentioned_ids=("alice_id", "bob_id"),   # referenced users' profiles
+)
+
+# ctx.injection_block is labeled so facts never bleed across users:
+#
+#   [MEMORY CONTEXT]
+#
+#   WHAT I KNOW ABOUT THE CURRENT ASKER
+#   Facts about the asker ONLY:
+#   - [mem:1] alice mains support in every ranked game she plays
+#
+#   REFERENCED USER: bob
+#   Facts about bob ONLY. Do NOT attribute these to the asker.
+#   - [mem:2] bob was called a hacker by alice during the ranked match
+#
+#   SERVER COMMUNITY FACTS
+#   Community-wide traits:
+#   - [mem:3] the community bonds over late night gaming sessions
+#
+#   When you use a fact above in your reply, echo its [mem:N] tag ...
+
+# 2. Generate your LLM reply using system_prompt + ctx.injection_block.
+
+# 3. Resolve echoed tags into jump links (deleted-message safe):
+reply = ctx.apply_citations(reply_text)
+#   "... bob was called out [[mem:2]](https://discord.com/channels/...)"
+```
+
+### Cross-user questions ("what does X think about Y")
+
+Names resolve through the alias ladder (mention ID / username / display name /
+saved real name); ambiguity never guesses:
+
+```python
+resolution = await memory.identity.resolve(guild_id, "klim")     # or snowflake/@mention
+if resolution.ambiguous:
+    ...  # ask which member; never guess
+
+edges = await memory.graph.between(guild_id, x_id, y_id)         # typed edges
+stances = await memory.graph.entity_stances(guild_id, "movies")  # opposing stances co-presented
+neighbors = await memory.graph.neighbors(guild_id, x_id, depth=2)  # hop discovery w/ paths
+similar = await memory.graph.similar_users(guild_id, x_id)       # Jaccard over traits
+```
+
+### Chat-native commands (ChatGPT style)
+
+```python
+command = await memory.classify_command("hey bot remember that I hate pineapple")
+# UserMemoryCommand(action="remember", target_text="that I hate pineapple", confidence=0.9)
+if command.action == "remember":
+    await memory.facts.remember(
+        guild_id=guild_id, subject_id=user_id,
+        text=command.target_text, actor_id=user_id,
+    )
+```
+
+Manual facts accept graph participation too:
+
+```python
+await memory.facts.remember(
+    guild_id=guild_id, subject_id=bob_id,
+    text="carol called bob a sore loser during game night",
+    actor_id=carol_id, speaker_id=carol_id,          # third-party attribution
+    relations=(ProposedRelation(
+        verb="called_out", from_token=carol_id, to_token=bob_id),),
+)
+```
+
+### Governance every production bot should wire
+
+```python
+@bot.command()
+async def forgetme(ctx: commands.Context):
+    await memory.admin.purge_user(str(ctx.guild.id), str(ctx.author.id),
+                                  dry_run=False)
+    await ctx.reply("All memories about you have been purged.", mention_author=False)
+
+# opt-out is enforced instantly across observe AND recall:
+await memory.admin.set_opt_out(guild_id, user_id, True)
+```
+
+Full usage documentation: [`docs/USAGE.md`](docs/USAGE.md) · Complete API contract:
+[`docs/API.md`](docs/API.md) · Design rationale: [`docs/PLAN.md`](docs/PLAN.md).
+
+---
+
+## Full bot example (omni-style)
+
+For a production-shaped deployment — passive learning for everyone, replies only when
+addressed, requester-first multi-person context, `/memory` slash group, governance — see
+[`examples/omni_style_bot.py`](examples/omni_style_bot.py). It mirrors the architecture of
+a memory-native production bot:
+
+- **Composition root**: `build_memory()` is the single place config → adapters → client
+  get wired; everything else receives `memory`.
+- **Learn from everyone, answer the addressed**: `on_message` observes every message
+  (bots included — they're registered as never-a-subject), then answers only when pinged
+  **or replied to**.
+- **Requester-first turn context** (capped at 4 subjects): asker + @mentions + reply-target,
+  resolved in one `prompt_context` call with per-person labeled sections.
+- **Coreference lines**: members known by several names get an explicit
+  *"these names all refer to ONE person"* line so the model never splits them.
+- **`/memory` group**: `show` (profile w/ aliases), `related` (typed edges),
+  `shared` (common entities), `edit` (teach a fact), `alias` (teach a nickname).
+- **Governance built in**: `/forgetme`, `/optout`, daily guild budgets, health.
+
+```python
+class OmniStyleBot(commands.Bot):
+    def __init__(self, memory: DiscordMemory) -> None:
+        ...
+        self.memory = memory
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        if message.guild is None:
+            return
+        await self.memory.observe(to_event(message))     # learn; never blocks
+        if message.author.bot:
+            return
+        if await self._is_addressed(message):             # ping or reply-to-us
+            await self._handle_turn(message)
+
+    async def _handle_turn(self, message: discord.Message) -> None:
+        question = strip_bot_mention(message.content, self.user.id).strip()
+        subjects = await self._collect_subjects(message)   # mentions + reply target
+        ctx = await self.memory.prompt_context(
+            guild_id=guild_id,
+            asker_id=str(message.author.id),
+            text=question,
+            mentioned_ids=tuple(subjects),
+            token_budget_tokens=800,
+        )
+        system_prompt = PERSONA + "\n\n" + ctx.injection_block
+        reply = await generate(system_prompt, history, question)
+        await message.reply(ctx.apply_citations(reply)[:1900], mention_author=False)
+```
+
+The injection block a turn produces looks like:
+
+```
+[MEMORY CONTEXT]
+
+REFERENCED USER: bob
+Coreference: these names all refer to ONE person: bob, bobert, bobby.
+Facts about bob ONLY. Do NOT attribute these to the asker.
+- [mem:1] bob was called a hacker by alice during the ranked match
+
+SERVER COMMUNITY FACTS
+Community-wide traits:
+- [mem:2] the community bonds over late night ranked gaming sessions
+
+When you use a fact above in your reply, echo its [mem:N] tag so the user
+can see the source. Do not invent tags for facts that were not listed.
+```
+
+---
 
 ## How it works
 
@@ -166,7 +342,7 @@ Providers are URL strings; nested typed configs also accepted:
 
 ```python
 MemoryConfig(
-    storage="sqlite:///memory.db",                       # or postgres://… (adapter pkg)
+    storage="sqlite:///memory.db",                       # or mongodb://… ([mongo] extra)
     llm="openai://$KEY@openrouter.ai/api/v1?model=…",    # OpenAI-compatible endpoints
     embeddings="hashing",                                # free default
     # embeddings="local",                                 # sentence-transformers extra

@@ -81,7 +81,6 @@ def make_config(**overrides) -> MemoryConfig:
             "batch_size_messages": 3,
             "max_age_seconds": 60,
             "lease_seconds": 120,
-            "min_interval_seconds": 0,
         },
         "workers": {"enabled": False},
         "embeddings": "hashing",

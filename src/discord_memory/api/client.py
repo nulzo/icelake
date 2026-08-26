@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable
 
 from discord_memory.adapters.embedders import build_embedder
 from discord_memory.api.classify import CommandClassifier, UserMemoryCommand
@@ -20,6 +21,7 @@ from discord_memory.consolidation.service import ConsolidationService
 from discord_memory.errors import ConfigError
 from discord_memory.identity.guards import BotGuard, ConsentPolicy, SubjectGate
 from discord_memory.ingest.pipeline import SERVER_SUBJECT_KEY, IngestPipeline
+from discord_memory.lifecycle.maintenance import MaintenanceService
 from discord_memory.models.admin import (
     ComponentHealth,
     GuildStats,
@@ -33,7 +35,9 @@ from discord_memory.models.events import (
     MessageEvent,
     ObserveReceipt,
     ObserveStatus,
+    RejectReason,
 )
+from discord_memory.models.identity import AliasSource
 from discord_memory.models.retrieval import (
     PromptContext,
     RecallQuery,
@@ -52,6 +56,7 @@ from discord_memory.retrieval.injection import InjectionBuilder, estimate_tokens
 from discord_memory.retrieval.service import RecallService
 
 logger = logging.getLogger(__name__)
+log = logger
 
 _MISSING = object()
 _SERVER_BLOCK_FACTS = 3
@@ -65,7 +70,40 @@ class _OpsApi:
 
     async def run_pending(self, *, limit_batches: int = 8) -> int:
         """Process due batches now (cron/external-scheduler mode)."""
-        return await self._client._pipeline.run_pending(limit_batches=limit_batches)
+        processed = await self._client._pipeline.run_pending(limit_batches=limit_batches)
+        for guild_id in list(self._client.active_guilds):
+            if self._client.maintenance.due(guild_id):
+                await self._client.maintenance.run_guild(guild_id)
+        return processed
+
+    async def backfill_aliases(
+        self,
+        guild_id: str,
+        members: Iterable[tuple[str, str, str]],
+    ) -> int:
+        """Bulk identity backfill from a member directory.
+
+        ``members`` yields ``(user_id, username, display_name)``. Fixes cold-start
+        resolution: users who never spoke since install become resolvable.
+        """
+        registered = 0
+        for user_id, username, display_name in members:
+            if username and not username.isdigit():
+                await self._client.identity.register_alias(
+                    guild_id,
+                    user_id,
+                    username,
+                    source=AliasSource.DISCORD_USERNAME,
+                )
+                registered += 1
+            if display_name and not display_name.isdigit():
+                await self._client.identity.register_alias(
+                    guild_id,
+                    user_id,
+                    display_name,
+                    source=AliasSource.DISPLAY_NAME,
+                )
+        return registered
 
     async def retry_dead_letters(self, guild_id: str | None = None) -> int:
         """Re-drive poison jobs after fixing an underlying failure."""
@@ -165,6 +203,11 @@ class DiscordMemory:
             subject_gate=self._subject_gate,
         )
         self._pipeline.attach_event_bus(self.events)
+        self.maintenance = MaintenanceService(
+            store=self._store,
+            config=config,
+            clock=self._clock,
+        )
 
         self.facts = FactsApi(
             store=self._store,
@@ -187,6 +230,7 @@ class DiscordMemory:
             embedder=self._embedder,
             config=config,
         )
+        self._pipeline.attach_consolidation(self._consolidation)
 
         self.started = False
         self.closing = False
@@ -273,7 +317,15 @@ class DiscordMemory:
             author_is_bot=event.author_is_bot,
             mention_ids=event.mention_ids,
         )
-        accepted = await self._queue.put_message(message)
+        try:
+            accepted = await self._queue.put_message(message)
+        except Exception:
+            log.exception("observe: queue persistence failed")
+            return ObserveReceipt(
+                message_id=event.message_id,
+                status=ObserveStatus.REJECTED,
+                reason=RejectReason.STORAGE_UNAVAILABLE,
+            )
         if not accepted:
             return ObserveReceipt(
                 message_id=event.message_id,
@@ -281,7 +333,10 @@ class DiscordMemory:
                 reason=IgnoreReason.DUPLICATE,
             )
         self.active_guilds.add(event.guild_id)
-        await self._register_author_alias(event)
+        try:
+            await self._register_author_alias(event)
+        except Exception:
+            log.warning("alias registration failed for %s", event.author_id)
         return ObserveReceipt(message_id=event.message_id, status=ObserveStatus.ACCEPTED)
 
     async def observe_many(
@@ -315,12 +370,18 @@ class DiscordMemory:
 
     async def recall(self, query: RecallQuery) -> RecallResult:
         """Explicit retrieval; see :class:`RecallQuery` for the query model."""
+        consent = ConsentPolicy(self._store)
+
+        async def _blocked(guild_id: str, user_id: str) -> bool:
+            return await consent.is_blocked(guild_id, user_id)
+
         service = RecallService(
             store=self._store,
             vectors=self._vectors,
             embedder=self._embedder,
             config=self.config.retrieval,
             guard=self._guard,
+            is_subject_blocked=_blocked,
         )
         return await service.recall(query)
 
@@ -366,6 +427,7 @@ class DiscordMemory:
 
         sections: dict[str, tuple[ScoredFact, ...]] = {}
         summaries: dict[str, str | None] = {}
+        alias_notes: dict[str, str] = {}
 
         asker_summary_doc = await self._store.get_summary(guild_id, asker_id)
         summaries["asker"] = asker_summary_doc.text if asker_summary_doc else None
@@ -381,6 +443,12 @@ class DiscordMemory:
             sections[key] = tuple(scored_list)
             doc = await self._store.get_summary(guild_id, subject)
             summaries[key] = doc.text if doc else None
+            alias_records = await self._store.aliases_for_user(guild_id, subject)
+            names = sorted({record.alias_norm for record in alias_records})
+            if len(names) > 1:
+                alias_notes[key] = (
+                    f"Coreference: these names all refer to ONE person: {', '.join(names)}."
+                )
 
         sections["server"] = tuple(server_result.facts)
         server_doc = await self._store.get_summary(guild_id, None)
@@ -392,6 +460,7 @@ class DiscordMemory:
             summaries=summaries,
             token_budget=budget,
             guild_id=guild_id,
+            alias_notes=alias_notes,
         )
         if trimmed:
             warnings.append(RecallWarning.BUDGET_TRIMMED)
@@ -406,7 +475,20 @@ class DiscordMemory:
             warnings=tuple(dict.fromkeys(warnings)),
         )
 
+    def register_bot_id(self, user_id: int | str) -> None:
+        """Teach the bot-guard its own id (never a memory subject)."""
+        self._guard.register(str(user_id))
+
     # -- misc surface -------------------------------------------------------------
+
+    async def extract_now(self, event: MessageEvent) -> ObserveReceipt:
+        """Synchronous add: observe + immediate flush. mem0-parity for tests
+        and onboarding flows; production bots should prefer ``observe``."""
+        receipt = await self.observe(event)
+        if receipt.status is not ObserveStatus.ACCEPTED:
+            return receipt
+        await self.flush(event.guild_id)
+        return receipt
 
     async def stats(self, guild_id: str) -> GuildStats:
         """Guild memory statistics snapshot."""
@@ -455,6 +537,13 @@ class DiscordMemory:
         warnings: list[RecallWarning] = []
         for identifier in dict.fromkeys(candidates):
             resolution = await self.identity.resolve(guild_id, identifier)
+            if resolution.resolved is None and not resolution.ambiguous:
+                # Ladder rung 3 (PLAN §3.2): stored name-facts. A single
+                # unambiguous self-name match yields a flagged candidate —
+                # never auto-attributed without the confidence signal.
+                fallback = await self._resolve_via_name_facts(guild_id, identifier)
+                if fallback is not None:
+                    resolution = fallback
             resolutions.append(resolution)
             if resolution.resolved is None:
                 if resolution.ambiguous:
@@ -464,6 +553,56 @@ class DiscordMemory:
             if subject not in subjects and not self._guard.is_bot(subject):
                 subjects.append(subject)
         return subjects, resolutions, warnings
+
+    async def _resolve_via_name_facts(
+        self,
+        guild_id: str,
+        identifier: str,
+    ) -> Resolution | None:
+        """Search stored name-facts for a unique self-name match."""
+        import re as _re
+
+        from discord_memory.models.identity import (
+            AliasSource,
+            Resolution,
+            ResolvedCandidate,
+        )
+
+        hits = await self._store.search_facts_text(
+            guild_id,
+            identifier,
+            limit=10,
+        )
+        matched_users: dict[str, float] = {}
+        pattern = _re.compile(
+            r"\b(my name(?:'s| is)|call me|goes by)\s+"
+            + _re.escape(identifier.strip().lower())
+            + r"\b",
+            _re.IGNORECASE,
+        )
+        for record, score in hits:
+            if record.subject_id is None or record.attribution.type.value == "third_party":
+                continue
+            if pattern.search(record.text.lower()):
+                matched_users.setdefault(
+                    record.subject_id,
+                    max(score, matched_users.get(record.subject_id, 0)),
+                )
+        if len(matched_users) != 1:
+            return None
+        user_id = next(iter(matched_users))
+        candidate = ResolvedCandidate(
+            user_id=user_id,
+            matched_alias=identifier.lower(),
+            source=AliasSource.REAL_NAME,
+            weight=0.6,
+            confidence=round(0.6 * matched_users[user_id], 4),
+        )
+        return Resolution(
+            identifier=identifier,
+            resolved=candidate,
+            candidates=(candidate,),
+        )
 
     async def _register_author_alias(self, event: MessageEvent) -> None:
         display = event.author_display_name or event.author_username
@@ -490,15 +629,17 @@ class DiscordMemory:
                 ticks += 1
                 if ticks % heartbeat_every == 0:
                     for guild_id in list(self.active_guilds):
-                        await self._maybe_server_batch(guild_id)
+                        await self._pipeline.flush_subject(
+                            guild_id,
+                            SERVER_SUBJECT_KEY,
+                        )
+                        if self.maintenance.due(guild_id):
+                            await self.maintenance.run_guild(guild_id)
             except asyncio.CancelledError:
                 return
             except Exception:
                 logger.exception("worker loop error")
                 await asyncio.sleep(poll)
-
-    async def _maybe_server_batch(self, guild_id: str) -> None:
-        await self._pipeline.flush_subject(guild_id, SERVER_SUBJECT_KEY)
 
 
 def _in_memory_queue() -> IngestQueue:
@@ -521,9 +662,17 @@ def _build_store(config: MemoryConfig) -> MemoryStore:
         from discord_memory.adapters.sqlite.store import SqliteStore
 
         return SqliteStore(config.storage.url)
+    if backend == "mongo":
+        from discord_memory.adapters.mongo import MongoStore
+
+        url = config.storage.url
+        database = url.rsplit("/", 1)[-1].split("?")[0] or "discord_memory"
+        if database in {"mongodb", "mongodb+srv"} or not database:
+            database = "discord_memory"
+        return MongoStore(url, database=database)
     raise ConfigError(
         f"storage backend {backend!r} requires an adapter package "
-        "(e.g. pip install discord-memory[postgres]) or a store override",
+        "(e.g. pip install discord-memory[mongo]) or a store override",
     )
 
 

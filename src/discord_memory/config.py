@@ -50,6 +50,8 @@ class StorageConfig(FrozenModel):
         scheme = urlsplit(self.url).scheme
         if scheme in {"sqlite", "memory", ""}:
             return "sqlite"
+        if scheme in {"mongodb", "mongodb+srv"}:
+            return "mongo"
         if scheme in {"postgres", "postgresql"}:
             return "postgres"
         raise ConfigError(f"unsupported storage url scheme {scheme!r}")
@@ -154,7 +156,6 @@ class EmbeddingsConfig(FrozenModel):
 class BatchingConfig(FrozenModel):
     batch_size_messages: int = Field(default=10, ge=1)
     max_age_seconds: float = Field(default=300, ge=10)
-    min_interval_seconds: float = Field(default=30, ge=0)
     lease_seconds: float = Field(default=120, ge=30)
     server_scope_window: int = Field(default=100, ge=10)
 
@@ -199,8 +200,16 @@ class BudgetsConfig(FrozenModel):
 
 
 class PrivacyConfig(FrozenModel):
+    """Privacy posture knobs.
+
+    ``store_raw_messages=False`` keeps only hashes — trading replay/backfill
+    ability for footprint (API.md Part 5). ``processed_retention_days`` prunes
+    processed queue rows so the message table stays proportional to live work
+    (P0-10: it previously grew forever and was scanned every poll tick).
+    """
+
     store_raw_messages: bool = True
-    default_opt_out: bool = False
+    processed_retention_days: int = Field(default=30, ge=1)
 
 
 class WorkersConfig(FrozenModel):

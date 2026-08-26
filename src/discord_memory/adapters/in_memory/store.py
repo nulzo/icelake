@@ -7,6 +7,7 @@ suite, evals, and small single-process deployments that want zero dependencies.
 from __future__ import annotations
 
 import asyncio
+from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 
 from discord_memory.models.admin import GuildStats, PurgeReport
@@ -50,6 +51,11 @@ class InMemoryStore:
 
     async def setup(self) -> None:
         pass
+
+    def transaction(self) -> AbstractAsyncContextManager[None]:
+        import contextlib
+
+        return contextlib.nullcontext()
 
     async def close(self) -> None:
         self.closed = True
@@ -651,6 +657,82 @@ class InMemoryStore:
         self._summaries.pop((guild_id, user_id), None)
         self._opt_outs.discard((guild_id, user_id))
         return report
+
+    async def sweep_expired(self, guild_id: str, now: datetime) -> int:
+        changed = 0
+        for key, record in list(self._facts.items()):
+            if (
+                record.guild_id == guild_id
+                and record.expires_at is not None
+                and record.expires_at <= now
+                and record.is_active
+            ):
+                self._facts[key] = record.model_copy(update={"valid_until": now})
+                changed += 1
+        return changed
+
+    async def prune_to_caps(
+        self,
+        guild_id: str,
+        *,
+        max_per_user: int,
+        max_server: int,
+        now: datetime,
+    ) -> int:
+        pruned = 0
+        anchors: dict[str | None, list[FactRecord]] = {}
+        for record in self._facts.values():
+            if record.guild_id != guild_id or not record.is_active:
+                continue
+            if record.attribution.type.value == "manual":
+                continue
+            anchor = None if record.is_server_fact else record.subject_id
+            anchors.setdefault(anchor, []).append(record)
+        for anchor, records in anchors.items():
+            cap = max_server if anchor is None else max_per_user
+            if len(records) <= cap:
+                continue
+            records.sort(
+                key=lambda r: (r.tier.prune_priority, r.strength, r.confidence),
+            )
+            for victim in records[: len(records) - cap]:
+                self._facts[(guild_id, victim.id)] = victim.model_copy(
+                    update={"valid_until": now},
+                )
+                pruned += 1
+        return pruned
+
+    async def apply_forgetting(
+        self,
+        guild_id: str,
+        *,
+        now: datetime,
+        retention_floor: float,
+    ) -> int:
+        from discord_memory.lifecycle.strength import retention, should_forget
+
+        forgotten = 0
+        for key, record in list(self._facts.items()):
+            if record.guild_id != guild_id or not record.is_active:
+                continue
+            last = record.last_reinforced_at or record.created_at
+            if last is None:
+                continue
+            value = retention(
+                last_reinforced_at=last,
+                now=now,
+                strength=record.strength,
+            )
+            manual = record.attribution.type.value == "manual"
+            if should_forget(
+                retention_value=value,
+                tier=record.tier.value,
+                manual=manual,
+                forget_retention_floor=retention_floor,
+            ):
+                self._facts[key] = record.model_copy(update={"valid_until": now})
+                forgotten += 1
+        return forgotten
 
     async def export_guild(
         self, guild_id: str

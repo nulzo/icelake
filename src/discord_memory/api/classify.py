@@ -7,6 +7,7 @@ Returns a typed intent; execution is always the consumer's decision.
 from __future__ import annotations
 
 import re
+from enum import Enum
 
 from pydantic import Field
 
@@ -14,7 +15,8 @@ from discord_memory.models.common import FrozenModel
 from discord_memory.ports.llm import ChatLLM, ChatRequest, LlmMessage
 
 _COMMAND_PATTERN = re.compile(
-    r"\b(remember|forget|don'?t remember|update|what do you know|recall)\b",
+    r"\b(remember|forget|don'?t remember|update|what do you know|what do you remember"
+    r"|recall|save this|purge your memories|never remember)\b",
     re.IGNORECASE,
 )
 
@@ -29,7 +31,7 @@ Respond ONLY with JSON:
   "confidence": 0.0-1.0}}"""
 
 
-class CommandAction:
+class CommandAction(Enum):
     REMEMBER = "remember"
     FORGET = "forget"
     UPDATE = "update"
@@ -40,7 +42,7 @@ class CommandAction:
 class UserMemoryCommand(FrozenModel):
     """Typed classification of a possible in-chat memory command."""
 
-    action: str = CommandAction.NONE
+    action: CommandAction = CommandAction.NONE
     target_text: str = ""
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
@@ -65,6 +67,7 @@ class CommandClassifier:
             if lowered.startswith("forget ") or " forget that " in lowered:
                 return UserMemoryCommand(action=CommandAction.FORGET, confidence=0.6)
             return UserMemoryCommand(action=CommandAction.NONE, confidence=0.3)
+            return UserMemoryCommand(action=CommandAction.NONE, confidence=0.3)
 
         response = await self._llm.complete(
             ChatRequest(
@@ -88,9 +91,12 @@ def _parse(text: str) -> UserMemoryCommand:
         end = text.rfind("}")
         payload = json.loads(text[start : end + 1])
         action = str(payload.get("action", "none")).lower()
-        allowed = {"remember", "forget", "update", "query", "none"}
+        try:
+            action_enum = CommandAction(action)
+        except ValueError:
+            action_enum = CommandAction.NONE
         return UserMemoryCommand(
-            action=action if action in allowed else CommandAction.NONE,
+            action=action_enum,
             target_text=str(payload.get("target_text", "")),
             confidence=float(payload.get("confidence", 0.0)),
         )

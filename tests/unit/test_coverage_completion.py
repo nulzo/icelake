@@ -71,7 +71,7 @@ class TestCommandClassifier:
         command = await CommandClassifier(llm).classify(
             "hey bot please remember that I love bouldering on thursdays",
         )
-        assert command.action == "remember"
+        assert command.action.value == "remember"
         assert command.confidence == pytest.approx(0.93)
 
     async def test_llm_classification_forget(self) -> None:
@@ -89,7 +89,7 @@ class TestCommandClassifier:
         command = await CommandClassifier(llm).classify(
             "forget that i like pineapple pizza",
         )
-        assert command.action == "forget"
+        assert command.action.value == "forget"
 
     async def test_malformed_llm_output_falls_back_to_none(self) -> None:
         llm = ScriptedLLM({"classify_command": "{{{ not json"})

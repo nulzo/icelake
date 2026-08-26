@@ -174,7 +174,7 @@ class TestPromptContext:
         if ctx.citations:
             citation = ctx.citations[0]
             assert citation.url.startswith("https://discord.com/channels/")
-            resolved = ctx.apply_citations(f"see {citation.ref} ok")
+            resolved = ctx.apply_citations(f"see [{citation.ref}] ok")
             assert citation.url in resolved
         usage = ctx.usage
         assert usage.prompt_tokens > 0
@@ -260,10 +260,10 @@ class TestClassifyCommand:
     async def test_regex_gate_short_circuits_non_commands(self, make_client) -> None:
         client, _ = make_client(llm=False)
         command = await client.classify_command("totally normal chat about weather")
-        assert command.action == "none"
+        assert command.action.value == "none"
 
     async def test_remember_classification_without_llm(self, make_client) -> None:
         client, _ = make_client(llm=False)
         command = await client.classify_command("remember that I love spicy ramen")
-        assert command.action == "remember"
+        assert command.action.value == "remember"
         assert "spicy ramen" in command.target_text

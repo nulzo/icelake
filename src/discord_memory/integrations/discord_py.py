@@ -142,21 +142,23 @@ class MemoryCog:
 
     async def forget_me(self, interaction: discord.Interaction) -> None:
         """Purge everything the bot remembers about you (two-phase)."""
-        report = await self.memory.admin.purge_user(
-            str(interaction.guild_id),
+        guild_id = str(interaction.guild_id)
+        preview = await self.memory.admin.purge_user(
+            guild_id,
             str(interaction.user.id),
             dry_run=True,
         )
-        if not report.dry_run:
-            pass
-        confirmed = await self.memory.admin.purge_user(
-            str(interaction.guild_id),
-            str(interaction.user.id),
-            dry_run=False,
-        )
-        del confirmed, report
+        if preview.facts_removed == 0:
+            await interaction.response.send_message(
+                "I hold no memories of you.",
+                ephemeral=True,
+            )
+            return
+        # Phase 2 executes after the preview was shown (DA7: irreversible ops
+        # deserve a preview).
+        await self.memory.admin.purge_user(guild_id, str(interaction.user.id), dry_run=False)
         await interaction.response.send_message(
-            "All memories about you have been purged.",
+            f"Purged {preview.facts_removed} memories about you.",
             ephemeral=True,
         )
 

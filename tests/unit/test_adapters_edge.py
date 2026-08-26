@@ -47,11 +47,12 @@ class TestVectorConformance:
         await vectors.upsert((item("f1", keyboard), item("f2", tea), item("s1", tea, subject=None)))
         hits = await vectors.search(keyboard, guild_id="g1", limit=3)
         assert hits[0].id == "f1"
-        # subject scope keeps user rows AND server-wide rows; tea ranks first
+        # subject scope keeps user rows AND server-wide rows
         scoped = await vectors.search(tea, guild_id="g1", subject_ids=("u1",), limit=5)
         returned = {hit.id for hit in scoped}
         assert {"f2", "s1"} <= returned
-        assert scoped[0].id == "f2"
+        tea_hits = [h.score for h in scoped if h.id in {"f2", "s1"}]
+        assert all(score > 0.99 for score in tea_hits)
         server_only = await vectors.search(tea, guild_id="g1", server_only=True, limit=5)
         assert [hit.id for hit in server_only] == ["s1"]
 
