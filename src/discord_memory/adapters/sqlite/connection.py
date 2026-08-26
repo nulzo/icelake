@@ -10,6 +10,8 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+from discord_memory.errors import StorageUnavailableError
+
 SCHEMA_VERSION = 1
 
 _SCHEMA = """
@@ -149,6 +151,12 @@ CREATE TABLE IF NOT EXISTS dm_optouts (
     user_id TEXT NOT NULL,
     PRIMARY KEY (guild_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS dm_cursors (
+    guild_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (guild_id, key)
+);
 CREATE TABLE IF NOT EXISTS dm_batch_leases (
     guild_id TEXT NOT NULL,
     subject_key TEXT NOT NULL,
@@ -229,10 +237,17 @@ class SqliteConnection:
     async def execute(self, sql: str, params: Params = ()) -> None:
         await self._execute(sql, params)
 
+    def _require_conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            raise StorageUnavailableError(
+                "SQLite connection not open — call setup()/start() first",
+            )
+        return self._conn
+
     async def query(self, sql: str, params: Params = ()) -> list[sqlite3.Row]:
-        assert self._conn is not None
+        conn = self._require_conn()
         async with self._lock:
-            cursor = await asyncio.to_thread(self._conn.execute, sql, tuple(params))
+            cursor = await asyncio.to_thread(conn.execute, sql, tuple(params))
             rows = await asyncio.to_thread(cursor.fetchall)
             cursor.close()
             return list(rows)
@@ -242,43 +257,39 @@ class SqliteConnection:
         return rows[0] if rows else None
 
     async def _execute(self, sql: str, params: Params = ()) -> None:
-        assert self._conn is not None
+        conn = self._require_conn()
         async with self._lock:
-            cursor = await asyncio.to_thread(
-                self._conn.execute,
-                sql,
-                tuple(params),
-            )
-            await asyncio.to_thread(self._conn.commit)
+            cursor = await asyncio.to_thread(conn.execute, sql, tuple(params))
+            await asyncio.to_thread(conn.commit)
             cursor.close()
 
     async def _executescript(self, script: str) -> None:
-        assert self._conn is not None
+        conn = self._require_conn()
         async with self._lock:
-            await asyncio.to_thread(self._conn.executescript, script)
-            await asyncio.to_thread(self._conn.commit)
+            await asyncio.to_thread(conn.executescript, script)
+            await asyncio.to_thread(conn.commit)
 
     @contextlib.asynccontextmanager
     async def transaction_scope(self) -> AsyncIterator[SqliteConnection]:
         """Async CM wrapping BEGIN IMMEDIATE / COMMIT / ROLLBACK."""
-        assert self._conn is not None
-        await asyncio.to_thread(self._conn.execute, "BEGIN IMMEDIATE", ())
+        conn = self._require_conn()
+        await asyncio.to_thread(conn.execute, "BEGIN IMMEDIATE", ())
         try:
             yield self
-            await asyncio.to_thread(self._conn.execute, "COMMIT", ())
+            await asyncio.to_thread(conn.execute, "COMMIT", ())
         except Exception:
-            await asyncio.to_thread(self._conn.execute, "ROLLBACK", ())
+            await asyncio.to_thread(conn.execute, "ROLLBACK", ())
             raise
 
     async def transaction(self, statements: list[tuple[str, Params]]) -> None:
-        """Apply a group of writes atomically (explicit BEGIN/COMMIT under autocommit)."""
-        assert self._conn is not None
+        """Apply a group of writes atomically."""
+        conn = self._require_conn()
         async with self._lock:
             try:
-                await asyncio.to_thread(self._conn.execute, "BEGIN IMMEDIATE", ())
+                await asyncio.to_thread(conn.execute, "BEGIN IMMEDIATE", ())
                 for sql, params in statements:
-                    await asyncio.to_thread(self._conn.execute, sql, tuple(params))
-                await asyncio.to_thread(self._conn.execute, "COMMIT", ())
+                    await asyncio.to_thread(conn.execute, sql, tuple(params))
+                await asyncio.to_thread(conn.execute, "COMMIT", ())
             except Exception:
-                await asyncio.to_thread(self._conn.execute, "ROLLBACK", ())
+                await asyncio.to_thread(conn.execute, "ROLLBACK", ())
                 raise

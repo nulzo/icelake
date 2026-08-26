@@ -1,0 +1,14 @@
+name: write_create_biographical
+llm_operations:
+  - subject_token: p0
+    text: "alice lives in seattle and works at a startup"
+    category: personal
+    confidence: 0.92
+    source_message_indexes: [1]
+messages:
+  - author_id: alice_id
+    display_name: alice
+    content: "i live in seattle and work at this cool startup downtown"
+expected_facts:
+  - subject_id: alice_id
+    text_contains: "seattle"

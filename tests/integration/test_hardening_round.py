@@ -9,7 +9,12 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from tests.conftest import ScriptedLLM, extraction_response, make_config
+from discord_memory import DiscordMemory
+from tests.conftest import (
+    ScriptedLLM,
+    extraction_response,
+    make_config,
+)
 
 
 def _mongo_available() -> bool:
@@ -466,3 +471,114 @@ def event_factory_stub(client):
         )
 
     return _build
+
+
+class TestLazyStartAndClosedGuard:
+    """Regression for the reported crash: observe() before start() must never
+    raise, and a fresh client must self-initialize on first use."""
+
+    async def test_observe_autostarts_storage(self) -> None:
+        from discord_memory import MessageEvent
+        from discord_memory.api.client import DiscordMemory
+        from tests.conftest import make_config
+
+        memory = DiscordMemory(make_config(workers={"enabled": False}), llm=None)
+        assert not memory.started  # not started yet
+        receipt = await memory.observe(
+            MessageEvent(
+                message_id="auto1",
+                guild_id=GUILD,
+                channel_id="c",
+                author_id=ALICE,
+                content="first message ever sent to this fresh client here",
+                created_at=datetime.now(UTC),
+                author_display_name="alice",
+            )
+        )
+        assert receipt.status.value == "accepted"
+        assert memory.started
+        page = await memory.facts.list_for_subject(GUILD, ALICE)
+        del page
+        await memory.close()
+
+    async def test_group_methods_autostart(self) -> None:
+
+        from tests.unit.test_coverage_completion import _FastClock, _SeqGen
+
+        memory = DiscordMemory(make_config(), clock=_FastClock(), id_gen=_SeqGen(), llm=None)
+        fact = await memory.facts.remember(
+            guild_id=GUILD,
+            subject_id=ALICE,
+            text="manual fact written before any explicit start call",
+            actor_id="t",
+        )
+        assert fact.tier.value == "core"
+        await memory.close()
+
+    async def test_observe_after_close_returns_rejected_not_crash(self) -> None:
+        """After close(), the listener path gets a REJECTED receipt — no raise."""
+        from discord_memory import MessageEvent
+        from discord_memory.api.client import DiscordMemory
+        from discord_memory.models.events import ObserveStatus, RejectReason
+        from tests.conftest import make_config
+
+        memory = DiscordMemory(make_config(workers={"enabled": False}), llm=None)
+        await memory.start()
+        await memory.close(drain=False)
+        receipt = await memory.observe(
+            MessageEvent(
+                message_id="late1",
+                guild_id=GUILD,
+                channel_id="c",
+                author_id=ALICE,
+                content="message after shutdown completes now",
+                created_at=datetime.now(UTC),
+            )
+        )
+        assert receipt.status is ObserveStatus.REJECTED
+        assert receipt.reason is RejectReason.STORAGE_UNAVAILABLE
+
+
+class TestReportedCrashRegression:
+    """The exact user-reported failure: bot listener calls observe() before
+    start(); consent query hit a closed connection and AssertionError escaped
+    into discord.py's event loop."""
+
+    async def test_observe_without_start_autostarts_cleanly(self) -> None:
+        from datetime import UTC
+
+        from discord_memory import MessageEvent
+        from discord_memory.api.client import DiscordMemory
+        from tests.conftest import make_config
+
+        memory = DiscordMemory(
+            make_config(workers={"enabled": False}),
+            llm=None,
+        )
+        # NOTE: no start() — mirrors the failing example flow.
+        receipt = await memory.observe(
+            MessageEvent(
+                message_id="1",
+                guild_id="555",
+                channel_id="777",
+                author_id="100000000000000001",
+                content="does the reported crash reproduce on an unstarted client?",
+                created_at=datetime.now(UTC),
+                author_display_name="genesis",
+            )
+        )
+        assert receipt.status.value == "accepted"
+        # storage was lazily initialized; facts pipeline can now run
+        await memory.flush()
+        stats = await memory.stats("555")
+        assert stats.total_facts >= 0
+        await memory.close()
+
+    async def test_consent_query_on_unstarted_store_raises_typed_error(self) -> None:
+        """Raw store access pre-connect raises our typed error, not AssertionError."""
+        from discord_memory.adapters.sqlite.store import SqliteStore
+        from discord_memory.errors import StorageUnavailableError
+
+        store = SqliteStore("sqlite://:memory:")
+        with pytest.raises(StorageUnavailableError):
+            await store.get_opt_out("g", "u")

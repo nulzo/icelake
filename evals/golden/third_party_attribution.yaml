@@ -1,0 +1,18 @@
+name: third_party_attribution
+llm_operations:
+  - subject_token: p1
+    speaker_token: p0
+    text: "bob was called a hacker by alice"
+    category: relationships
+    confidence: 0.9
+    source_message_indexes: [1]
+messages:
+  - author_id: alice_id
+    display_name: alice
+    content: "@bob stop hacking the lobby you absolute hacker everyone saw it"
+    mentions: ["bob_id"]
+expected_facts:
+  - subject_id: bob_id
+    text_contains: "hacker"
+forbidden_facts:
+  - text_contains: "alice was called a hacker"

@@ -62,8 +62,17 @@ class ClaimOutcome(FrozenModel):
 
 @runtime_checkable
 class IngestQueue(Protocol):
-    async def put_message(self, message: StoredMessage) -> bool:
-        """Persist a pending message; ``False`` when the id already exists (idempotent)."""
+    async def put_message(
+        self,
+        message: StoredMessage,
+        *,
+        max_depth: int | None = None,
+    ) -> bool:
+        """Persist a pending message.
+
+        ``False`` when duplicate or when ``max_depth`` is set and the pending
+        count for this guild already reaches it (QUEUE_OVER_CAPACITY signal).
+        """
 
     async def due_batch_keys(
         self,

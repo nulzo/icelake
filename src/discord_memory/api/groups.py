@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Coroutine
+from typing import Any
+
 from discord_memory.identity.aliases import normalize_alias, weight_for_source
 from discord_memory.identity.resolver import IdentityResolver
 from discord_memory.models.admin import MemoryExport, PurgeReport
@@ -16,14 +19,24 @@ from discord_memory.models.identity import AliasRecord, AliasSource, Resolution
 from discord_memory.ports.store import MemoryStore, NodeRef
 
 
+async def _noop_gate() -> None:
+    """Default gate: no-op (used when the facade wires no lifecycle)."""
+
+
 class IdentityApi:
     """Name ↔ hardened ID resolution — the ``memory.identity.*`` namespace."""
 
-    def __init__(self, store: MemoryStore) -> None:
+    def __init__(
+        self,
+        store: MemoryStore,
+        startup_gate: Callable[[], Coroutine[Any, Any, None]] | None = None,
+    ) -> None:
         self._store = store
+        self._gate = startup_gate or _noop_gate
         self._resolver = IdentityResolver(store)
 
     async def resolve(self, guild_id: str, identifier: str) -> Resolution:
+        await self._gate()
         return await self._resolver.resolve(guild_id, identifier)
 
     async def register_alias(
@@ -33,6 +46,7 @@ class IdentityApi:
         alias: str,
         source: AliasSource = AliasSource.DISPLAY_NAME,
     ) -> None:
+        await self._gate()
         alias_norm = normalize_alias(alias)
         if not alias_norm:
             return
@@ -68,8 +82,14 @@ class IdentityApi:
 class GraphApi:
     """Relations, stances and discovery — the ``memory.graph.*`` namespace."""
 
-    def __init__(self, *, store: MemoryStore) -> None:
+    def __init__(
+        self,
+        *,
+        store: MemoryStore,
+        startup_gate: Callable[[], Coroutine[Any, Any, None]] | None = None,
+    ) -> None:
         self._store = store
+        self._gate = startup_gate or _noop_gate
 
     async def between(
         self,
@@ -204,8 +224,13 @@ class GraphApi:
 class AdminApi:
     """Consent, purge, export — the ``memory.admin.*`` namespace."""
 
-    def __init__(self, store: MemoryStore) -> None:
+    def __init__(
+        self,
+        store: MemoryStore,
+        startup_gate: Callable[[], Coroutine[Any, Any, None]] | None = None,
+    ) -> None:
         self._store = store
+        self._gate = startup_gate or _noop_gate
 
     async def set_opt_out(self, guild_id: str, user_id: str, opted_out: bool) -> None:
         await self._store.set_opt_out(guild_id, user_id, opted_out)
@@ -220,6 +245,8 @@ class AdminApi:
         *,
         dry_run: bool = True,
     ) -> PurgeReport:
+
+        await self._gate()
         return await self._store.purge_user_data(guild_id, user_id, dry_run=dry_run)
 
     async def export_guild(self, guild_id: str) -> MemoryExport:

@@ -54,6 +54,8 @@ class AttributionType(StrEnum):
     SELF = "self"
     THIRD_PARTY = "third_party"
     MANUAL = "manual"
+    INFERRED = "inferred"
+    AGENT = "agent"
 
 
 class SourceRole(StrEnum):

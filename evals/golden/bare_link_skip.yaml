@@ -1,0 +1,7 @@
+name: bare_link_skip
+messages:
+  - author_id: u1
+    content: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+expected_facts: []
+forbidden_facts:
+  - text_contains: "youtube"

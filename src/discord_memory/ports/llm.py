@@ -15,12 +15,20 @@ class LlmMessage(FrozenModel):
 
 
 class ChatRequest(FrozenModel):
-    """One completion request. ``json_mode`` asks the provider for JSON output."""
+    """One completion request.
+
+    ``json_mode`` asks for JSON output. ``response_schema`` (a JSON-Schema
+    dict) additionally requests *native* structured output via
+    ``response_format: {"type": "json_schema"}`` — enforced server-side on
+    capable providers, best-effort elsewhere.
+    """
 
     messages: tuple[LlmMessage, ...]
     temperature: float = 0.0
     max_tokens: int = 1024
     json_mode: bool = False
+    response_schema: dict[str, object] | None = None
+    json_object_only: bool = False
     purpose: str = "general"
     timeout_seconds: float | None = None
 

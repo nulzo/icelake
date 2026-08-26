@@ -1,0 +1,14 @@
+name: server_culture
+llm_operations:
+  - subject_token: server
+    text: "the community communicates with heavy sarcasm and self-deprecating humor"
+    category: culture
+    confidence: 0.88
+    source_message_indexes: [1]
+messages:
+  - author_id: alice_id
+    display_name: alice
+    content: "oh great another monday am i right folks haha yeah we love those"
+expected_facts:
+  - subject_id: null
+    text_contains: "sarcasm"

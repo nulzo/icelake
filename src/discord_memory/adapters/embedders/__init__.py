@@ -98,6 +98,15 @@ class OpenAICompatEmbedder:
 
 def build_embedder(config: EmbeddingsConfig) -> Embedder:
     """Factory honoring the configured provider with a graceful local fallback."""
+    inner = _build_inner(config)
+    if config.cache_enabled:
+        from discord_memory.adapters.embedders.cached import CachedEmbedder
+
+        return CachedEmbedder(inner, max_entries=config.cache_max_entries)
+    return inner
+
+
+def _build_inner(config: EmbeddingsConfig) -> Embedder:
     if config.provider is EmbeddingsProvider.HASHING:
         return HashingEmbedder(config.dimensions)
     if config.provider is EmbeddingsProvider.OPENAI:

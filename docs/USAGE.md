@@ -196,6 +196,17 @@ What `prompt_context` guarantees:
 - citations bind only to injected facts — the model can echo, never fabricate;
 - ambiguous name resolutions degrade gracefully (`warnings`) instead of guessing.
 
+### Memory decay (opt-in, mem0-style)
+
+```python
+MemoryConfig(retrieval={"reinforce_on_recall": True})
+```
+
+Every fact served in a turn gets its decay clock reset in one batched write —
+frequently-served knowledge floats up over time while stale facts sink toward
+the forgetting threshold. Off by default; one extra indexed UPDATE per turn when
+enabled. Strength still only grows on real re-observation, never on reads.
+
 ### Explicit queries (power users)
 
 ```python

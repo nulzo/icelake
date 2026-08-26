@@ -444,6 +444,20 @@ class FactsMixin:
             for r in rows
         )
 
+    async def get_cursor(self, guild_id: str, key: str) -> str | None:
+        row = await self._db.query_one(
+            "SELECT value FROM dm_cursors WHERE guild_id=? AND key=?",
+            (guild_id, key),
+        )
+        return row["value"] if row else None
+
+    async def set_cursor(self, guild_id: str, key: str, value: str) -> None:
+        await self._db.execute(
+            """INSERT INTO dm_cursors (guild_id, key, value) VALUES (?, ?, ?)
+               ON CONFLICT(guild_id, key) DO UPDATE SET value=excluded.value""",
+            (guild_id, key, value),
+        )
+
     async def get_summary(
         self,
         guild_id: str,
@@ -640,7 +654,10 @@ class FactsMixin:
         return facts, entities, relations
 
     async def touch_facts(
-        self, guild_id: str, fact_ids: tuple[str, ...], *,
+        self,
+        guild_id: str,
+        fact_ids: tuple[str, ...],
+        *,
         accessed_at: datetime,
     ) -> int:
         """Reset the decay clock on recalled facts in one batched statement."""
@@ -826,3 +843,7 @@ class FactsMixin:
             pending_messages=count_of(pending_row),
             dead_letters=count_of(dead_row),
         )
+
+
+async def _noop() -> None:
+    pass

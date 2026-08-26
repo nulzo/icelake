@@ -1028,16 +1028,34 @@ class MongoStore:
             forgotten += 1
         return forgotten
 
+    async def get_cursor(self, guild_id: str, key: str) -> str | None:
+        doc = await self.db["dm_cursors"].find_one(
+            {"guild_id": guild_id, "key": key},
+        )
+        return doc["value"] if doc else None
+
+    async def set_cursor(self, guild_id: str, key: str, value: str) -> None:
+        await self.db["dm_cursors"].update_one(
+            {"guild_id": guild_id, "key": key},
+            {"$set": {"value": value}},
+            upsert=True,
+        )
+
     async def touch_facts(
-        self, guild_id: str, fact_ids: tuple[str, ...], *,
+        self,
+        guild_id: str,
+        fact_ids: tuple[str, ...],
+        *,
         accessed_at: datetime,
     ) -> int:
         result = await self.db["dm_facts"].update_many(
             {"guild_id": guild_id, "_id": {"$in": list(fact_ids)}},
-            {"$set": {
-                "last_reinforced_at": _iso(accessed_at),
-                "updated_at": _iso(accessed_at),
-            }},
+            {
+                "$set": {
+                    "last_reinforced_at": _iso(accessed_at),
+                    "updated_at": _iso(accessed_at),
+                }
+            },
         )
         return int(result.modified_count)
 

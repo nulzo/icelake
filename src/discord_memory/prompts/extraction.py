@@ -26,6 +26,14 @@ RULES:
 - Include relations for durable typed edges (likes, dislikes, brother_of, called_out).
 - Return {"operations": []} when the batch is pure noise.
 
+CRITICAL OUTPUT CONTRACT:
+- The TOP-LEVEL JSON object must have exactly ONE key: "operations".
+- NEVER use other top-level keys such as "facts", "memories", "triples".
+- NEVER output subject/predicate/object triples as separate records — express
+  them via "relations" INSIDE an operation.
+- Every operation object uses ONLY these keys: subject_token, speaker_token,
+  text, category, confidence, source_message_indexes, entities, relations.
+
 OUTPUT JSON FORMAT:
 {"operations": [
   {"subject_token": "p0", "speaker_token": null, "text": "...", "category": "interests",

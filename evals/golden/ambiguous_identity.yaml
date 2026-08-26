@@ -1,0 +1,14 @@
+name: ambiguous_identity
+llm_operations:
+  - subject_token: p0
+    text: "alex prefers tabasco sauce on everything"
+    category: preferences
+    confidence: 0.9
+    source_message_indexes: [1]
+messages:
+  - author_id: alex_1
+    display_name: alex
+    content: "i put tabasco on literally everything i eat"
+expected_facts:
+  - subject_id: alex_1
+    text_contains: "tabasco"

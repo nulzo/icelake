@@ -19,6 +19,59 @@ logger = logging.getLogger(__name__)
 _RETRY_STATUS = {408, 409, 429, 500, 502, 503, 504}
 
 
+def _strict_schema(schema: dict[str, object]) -> dict[str, object]:
+    """Transform a JSON Schema into OpenAI-strict-compatible form.
+
+    Strict mode requires: every property listed in ``required`` and
+    ``additionalProperties: false`` on every object; optional fields become
+    ``anyOf: [type, null]``. Non-object schemas pass through unchanged.
+    """
+
+    def transform(node: dict[str, object]) -> dict[str, object]:
+        if node.get("type") != "object" and "properties" not in node:
+            return node
+        properties = node.get("properties")
+        if not isinstance(properties, dict):
+            return node
+        raw_required = node.get("required", [])
+        required: list[str] = (
+            [str(item) for item in raw_required] if isinstance(raw_required, list) else []
+        )
+        new_props: dict[str, dict[str, object]] = {}
+        for name, raw_prop in properties.items():
+            prop = dict(raw_prop) if isinstance(raw_prop, dict) else {"type": "string"}
+            if isinstance(prop.get("anyOf"), list):
+                # already optional-shaped (e.g. anyOf [T, null])
+                any_of = prop["anyOf"]
+                has_null = any(isinstance(v, dict) and v.get("type") == "null" for v in any_of)
+                if not has_null:
+                    any_of = [*any_of, {"type": "null"}]
+                prop["anyOf"] = any_of
+                required.append(name)
+            elif not prop.get("nullable"):
+                # plain type: strict requires presence; keep as-is
+                required.append(name)
+            else:
+                required.append(name)
+            if isinstance(prop, dict) and "properties" in prop:
+                prop = transform(prop)
+            new_props[name] = prop
+        out = {
+            **node,
+            "properties": {
+                k: transform(v)
+                if isinstance(v, dict) and (v.get("type") == "object" or "properties" in v)
+                else v
+                for k, v in new_props.items()
+            },
+            "required": sorted(set(required)),
+            "additionalProperties": False,
+        }
+        return out
+
+    return transform(schema)
+
+
 class OpenAICompatLLM:
     """Thin, provider-agnostic completion client."""
 
@@ -40,6 +93,17 @@ class OpenAICompatLLM:
             try:
                 return await self._complete_once(request)
             except httpx.HTTPStatusError as exc:
+                # Provider rejects native json_schema -> degrade to plain
+                # json_object rather than failing the batch (2026 provider
+                # landscape: enforcement varies; see OpenRouter docs).
+                if exc.response.status_code == 400 and request.response_schema is not None:
+                    request = request.model_copy(
+                        update={
+                            "response_schema": None,
+                            "json_mode": True,
+                        }
+                    )
+                    continue
                 retries_exhausted = attempt > self._config.max_retries
                 if exc.response.status_code not in _RETRY_STATUS or retries_exhausted:
                     raise
@@ -58,7 +122,22 @@ class OpenAICompatLLM:
             "max_tokens": request.max_tokens,
         }
         if request.json_mode:
-            body["response_format"] = {"type": "json_object"}
+            if request.response_schema is not None and (
+                self._config.structured_output_mode == "auto"
+                or self._config.structured_output_mode == "json_schema"
+            ):
+                body["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": f"{request.purpose}_output",
+                        # Strict enforcement on capable providers; others treat
+                        # it as a strong hint (OpenRouter docs, 2026).
+                        "strict": True,
+                        "schema": _strict_schema(request.response_schema),
+                    },
+                }
+            else:
+                body["response_format"] = {"type": "json_object"}
         headers = {"Content-Type": "application/json"}
         if self._config.api_key:
             headers["Authorization"] = f"Bearer {self._config.api_key}"

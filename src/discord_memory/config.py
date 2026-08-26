@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 from enum import StrEnum
+from typing import Literal
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from pydantic import Field, field_validator, model_validator
@@ -68,6 +69,7 @@ class LlmConfig(FrozenModel):
     max_tokens: int = Field(default=1200, ge=16)
     timeout_seconds: float = Field(default=30.0, gt=0)
     max_retries: int = Field(default=2, ge=0)
+    structured_output_mode: Literal["auto", "json_schema", "json_object"] = "auto"
 
     @property
     def enabled(self) -> bool:
@@ -111,6 +113,8 @@ class EmbeddingsProvider(StrEnum):
 class EmbeddingsConfig(FrozenModel):
     provider: EmbeddingsProvider = EmbeddingsProvider.HASHING
     dimensions: int = Field(default=256, ge=32)
+    cache_enabled: bool = True
+    cache_max_entries: int = Field(default=50_000, ge=100)
     model: str | None = None
     base_url: str | None = None
     api_key: str | None = None
@@ -220,10 +224,25 @@ class WorkersConfig(FrozenModel):
     heartbeat_seconds: float = Field(default=20, ge=5)
 
 
+class ObserveConfig(FrozenModel):
+    """Write-path gates applied at observation time (before any LLM cost)."""
+
+    min_message_chars: int = Field(default=3, ge=1)
+    ignore_patterns: tuple[str, ...] = ()
+    max_queue_depth_per_guild: int | None = Field(default=10_000, ge=1)
+
+
+class MeterConfig(FrozenModel):
+    """Meter backend selection."""
+
+    backend: Literal["memory"] = "memory"
+
+
 class MemoryConfig(FrozenModel):
     """Root configuration object. See module docstring for URL forms."""
 
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    observe: ObserveConfig = Field(default_factory=ObserveConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     batching: BatchingConfig = Field(default_factory=BatchingConfig)
@@ -233,6 +252,7 @@ class MemoryConfig(FrozenModel):
     budgets: BudgetsConfig = Field(default_factory=BudgetsConfig)
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     workers: WorkersConfig = Field(default_factory=WorkersConfig)
+    meter_config: MeterConfig = Field(default_factory=MeterConfig)
 
     @field_validator("storage", mode="before")
     @classmethod

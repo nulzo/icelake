@@ -1,0 +1,21 @@
+name: cross_user_isolation
+llm_operations:
+  - subject_token: p0
+    text: "alice collects vintage vinyl records"
+    category: interests
+    confidence: 0.9
+    source_message_indexes: [1]
+  - subject_token: server
+    text: "the community loves retro gaming nights on fridays"
+    category: culture
+    confidence: 0.85
+    source_message_indexes: [1]
+messages:
+  - author_id: alice_id
+    display_name: alice
+    content: "just got a first pressing of that album i have been looking for"
+expected_facts:
+  - subject_id: alice_id
+    text_contains: "vinyl"
+forbidden_facts:
+  - text_contains: "retro gaming nights"

@@ -1,0 +1,14 @@
+name: contradiction_supersede
+llm_operations:
+  - subject_token: p0
+    text: "alice works as a barista at the campus cafe"
+    category: professional
+    confidence: 0.9
+    source_message_indexes: [1]
+messages:
+  - author_id: alice_id
+    display_name: alice
+    content: "pulling espresso shots at the cafe again today, same old same old"
+expected_facts:
+  - subject_id: alice_id
+    text_contains: "barista"

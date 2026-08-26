@@ -23,12 +23,16 @@ def _memory_with_decay(*, enabled: bool):
 
 async def _seed_two_facts(memory: DiscordMemory) -> tuple[str, str]:
     fresh = await memory.facts.remember(
-        guild_id=GUILD, subject_id=ALICE,
-        text="freshly reinforced fact about gardening", actor_id="seed",
+        guild_id=GUILD,
+        subject_id=ALICE,
+        text="freshly reinforced fact about gardening",
+        actor_id="seed",
     )
     stale = await memory.facts.remember(
-        guild_id=GUILD, subject_id=ALICE,
-        text="stale fact about ancient pottery", actor_id="seed",
+        guild_id=GUILD,
+        subject_id=ALICE,
+        text="stale fact about ancient pottery",
+        actor_id="seed",
     )
     assert memory.started
     return fresh.id, stale.id
@@ -43,18 +47,19 @@ class TestRecallDecayLoop:
 
         before = {
             f.id: f.last_reinforced_at
-            for f in (
-                await memory._store.get_facts(GUILD, (fresh_id, stale_id))
-            )
+            for f in (await memory._store.get_facts(GUILD, (fresh_id, stale_id)))
         }
 
         # Simulate a turn that serves BOTH facts.
-        result = await memory.recall(RecallQuery(guild_id=GUILD, text="gardening or pottery",
-                      subject_ids=(ALICE,), min_score=0.0))
+        result = await memory.recall(
+            RecallQuery(
+                guild_id=GUILD, text="gardening or pottery", subject_ids=(ALICE,), min_score=0.0
+            )
+        )
 
         assert result.facts
         for scored in result.facts:
-            after = (await memory._store.get_fact(GUILD, scored.fact.id))
+            after = await memory._store.get_fact(GUILD, scored.fact.id)
             assert after is not None
             if after.last_reinforced_at and before.get(after.id):
                 assert after.last_reinforced_at >= before[after.id]
@@ -65,8 +70,9 @@ class TestRecallDecayLoop:
         await memory.start()
         fact_id, _ = await _seed_two_facts(memory)
         before = (await memory._store.get_fact(GUILD, fact_id)).last_reinforced_at
-        await memory.recall(RecallQuery(guild_id=GUILD, text="gardening", subject_ids=(ALICE,),
-                      min_score=0.0))
+        await memory.recall(
+            RecallQuery(guild_id=GUILD, text="gardening", subject_ids=(ALICE,), min_score=0.0)
+        )
         after = (await memory._store.get_fact(GUILD, fact_id)).last_reinforced_at
         assert after == before  # untouched without the knob
         await memory.close()
@@ -77,11 +83,11 @@ class TestGetAllParity:
         client, _ = make_client(llm=False)
         await client.start()
         kept = await client.facts.remember(
-            guild_id=GUILD, subject_id=ALICE, text="kept fact about chess",
-            actor_id="x")
+            guild_id=GUILD, subject_id=ALICE, text="kept fact about chess", actor_id="x"
+        )
         dropped = await client.facts.remember(
-            guild_id=GUILD, subject_id=ALICE, text="dropped fact about checkers",
-            actor_id="x")
+            guild_id=GUILD, subject_id=ALICE, text="dropped fact about checkers", actor_id="x"
+        )
         await client.facts.forget(dropped.id, guild_id=GUILD)
         items = await client.facts.get_all(GUILD, ALICE)
         ids = {f.id for f in items}

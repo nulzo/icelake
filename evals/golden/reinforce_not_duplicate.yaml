@@ -1,0 +1,15 @@
+name: reinforce_not_duplicate
+llm_operations:
+  - subject_token: p0
+    text: "alice runs every single morning before work starts"
+    category: interests
+    confidence: 0.85
+    source_message_indexes: [1]
+messages:
+  - author_id: alice_id
+    display_name: alice
+    content: "you know what, I really love running every single morning before work starts, it keeps me sane and focused throughout the entire day ahead"
+expected_facts:
+  - subject_id: alice_id
+    text_contains: "runs"
+forbidden_facts: []

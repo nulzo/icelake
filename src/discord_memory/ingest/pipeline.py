@@ -38,6 +38,11 @@ logger = logging.getLogger(__name__)
 SERVER_SUBJECT_KEY = "__server__"
 
 
+def _window_sort_key(message: StoredMessage) -> str:
+    """Monotonic window ordering key: ISO timestamp + id tiebreak."""
+    return f"{message.created_at.isoformat()}|{message.message_id}"
+
+
 def _build_source_refs(messages: tuple[StoredMessage, ...]) -> tuple[SourceRef, ...]:
     """Snapshot every claimed message into a frozen citation ref."""
     return tuple(
@@ -223,8 +228,16 @@ class IngestPipeline:
             key.guild_id,
             self._config.batching.server_scope_window,
         )
+
+        # Watermark: only messages NEWER than the last community pass. Without
+        # this, every heartbeat re-extracted the same window and the model's
+        # reworded paraphrases leaked in as duplicate facts.
+        watermark = await self._store.get_cursor(key.guild_id, "server_window")
+        if watermark is not None:
+            window = tuple(message for message in window if _window_sort_key(message) > watermark)
         if not window:
             return BatchReport(key=key, skipped_reason="empty")
+
         summary = CommitSummary()
         try:
             report = await self._process_claimed(key, window)
@@ -233,8 +246,14 @@ class IngestPipeline:
         except Exception:
             logger.exception("Server window %s failed", key.as_tuple)
             return BatchReport(key=key, skipped_reason="error")
-        # Window messages were already acked by their own user batches; this
-        # pass is read-only and dedup gates keep repeated windows idempotent.
+        # Advance the watermark to the newest processed message so the next
+        # pass only ever sees genuinely new activity.
+        newest = max(window, key=lambda m: (m.created_at, m.message_id))
+        await self._store.set_cursor(
+            key.guild_id,
+            "server_window",
+            f"{newest.created_at.isoformat()}|{newest.message_id}",
+        )
         return BatchReport(
             key=key,
             messages_processed=len(window),
@@ -284,9 +303,16 @@ class IngestPipeline:
         for text, reason in result.rejected:
             logger.debug("Rejected candidate (%s): %s", reason, text)
 
-        candidates = [
-            (vetted.proposal, vetted.subject_id, vetted.speaker_id) for vetted in result.vetted
-        ]
+        # In-batch candidate dedup: identical/near-identical proposals within
+        # one response collapse into the first occurrence.
+        seen_norms: set[tuple[str | None, str]] = set()
+        candidates = []
+        for vetted in result.vetted:
+            key_tuple = (vetted.subject_id, normalize_text(vetted.proposal.text))
+            if key_tuple in seen_norms:
+                continue
+            seen_norms.add(key_tuple)
+            candidates.append((vetted.proposal, vetted.subject_id, vetted.speaker_id))
         mentioned_ids = {mention_id for message in messages for mention_id in message.mention_ids}
         source_refs = _build_source_refs(messages)
         if candidates:

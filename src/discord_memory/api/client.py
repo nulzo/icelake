@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Iterable
 
 from discord_memory.adapters.embedders import build_embedder
@@ -18,7 +19,7 @@ from discord_memory.api.facts_api import FactsApi
 from discord_memory.api.groups import AdminApi, GraphApi, IdentityApi
 from discord_memory.config import MemoryConfig
 from discord_memory.consolidation.service import ConsolidationService
-from discord_memory.errors import ConfigError
+from discord_memory.errors import ConfigError, StorageUnavailableError
 from discord_memory.identity.guards import BotGuard, ConsentPolicy, SubjectGate
 from discord_memory.ingest.pipeline import SERVER_SUBJECT_KEY, IngestPipeline
 from discord_memory.lifecycle.maintenance import MaintenanceService
@@ -209,6 +210,9 @@ class DiscordMemory:
             clock=self._clock,
         )
 
+        async def _group_gate() -> None:
+            await self.ensure_started()
+
         self.facts = FactsApi(
             store=self._store,
             vectors=self._vectors,
@@ -217,10 +221,11 @@ class DiscordMemory:
             id_gen=self._id_gen,
             config=config,
             subject_gate=self._subject_gate,
+            startup_gate=_group_gate,
         )
-        self.identity = IdentityApi(self._store)
-        self.graph = GraphApi(store=self._store)
-        self.admin = AdminApi(self._store)
+        self.identity = IdentityApi(self._store, startup_gate=_group_gate)
+        self.graph = GraphApi(store=self._store, startup_gate=_group_gate)
+        self.admin = AdminApi(self._store, startup_gate=_group_gate)
         self.ops = _OpsApi(self)
         self._classifier = CommandClassifier(self._llm)
         self._injection = InjectionBuilder()
@@ -234,14 +239,25 @@ class DiscordMemory:
 
         self.started = False
         self.closing = False
+        self._shutdown_done = False
         self.worker_tasks: list[asyncio.Task[None]] = []
         self.active_guilds: set[str] = set()
 
     # -- lifecycle ---------------------------------------------------------------
 
+    async def ensure_started(self) -> None:
+        """Open storage + launch workers on first use (idempotent, lazy).
+
+        Consumers may skip ``start()`` entirely: the first memory call
+        initializes the backend automatically (mem0-parity frictionless setup).
+        """
+        if self.started or self.closing:
+            return
+        await self.start()
+
     async def start(self) -> None:
         """Open storage and launch workers (idempotent)."""
-        if self.started:
+        if self.started or self._shutdown_done:
             return
         await self._store.setup()
         self.started = True
@@ -258,6 +274,7 @@ class DiscordMemory:
         if not self.started or self.closing:
             return
         self.closing = True
+        self._shutdown_done = True
         for task in self.worker_tasks:
             task.cancel()
         await asyncio.gather(*self.worker_tasks, return_exceptions=True)
@@ -284,6 +301,30 @@ class DiscordMemory:
 
     async def observe(self, event: MessageEvent) -> ObserveReceipt:
         """Record one message for passive extraction. Never raises operational errors."""
+        try:
+            await self.ensure_started()
+        except Exception:
+            log.exception("lazy start failed")
+            return ObserveReceipt(
+                message_id=event.message_id,
+                status=ObserveStatus.REJECTED,
+                reason=RejectReason.STORAGE_UNAVAILABLE,
+            )
+        try:
+            return await self._observe_inner(event)
+        except StorageUnavailableError:
+            # Expected after close(); a listener must never see this raise.
+            log.info("observe on closed/unavailable storage -> rejected receipt")
+            return ObserveReceipt(
+                message_id=event.message_id,
+                status=ObserveStatus.REJECTED,
+                reason=RejectReason.STORAGE_UNAVAILABLE,
+            )
+
+    async def _observe_inner(self, event: MessageEvent) -> ObserveReceipt:
+        observe_cfg = self.config.observe
+
+        # 1. Bot guard (structural — never a subject).
         self._guard.note_author(event.author_id, is_bot=event.author_is_bot)
         if event.author_is_bot or self._guard.is_bot(event.author_id):
             return ObserveReceipt(
@@ -291,18 +332,29 @@ class DiscordMemory:
                 status=ObserveStatus.IGNORED,
                 reason=IgnoreReason.BOT_AUTHOR,
             )
+
+        # 2. Consent (policy decision).
         if await self._subject_gate.allows(event.guild_id, event.author_id) is False:
             return ObserveReceipt(
                 message_id=event.message_id,
                 status=ObserveStatus.IGNORED,
                 reason=IgnoreReason.OPTED_OUT,
             )
-        if not event.content.strip():
+
+        # 3. Content quality gates.
+        if not event.content.strip() or len(event.content.strip()) < observe_cfg.min_message_chars:
             return ObserveReceipt(
                 message_id=event.message_id,
                 status=ObserveStatus.IGNORED,
                 reason=IgnoreReason.EMPTY_CONTENT,
             )
+        for pattern in observe_cfg.ignore_patterns:
+            if re.search(pattern, event.content):
+                return ObserveReceipt(
+                    message_id=event.message_id,
+                    status=ObserveStatus.IGNORED,
+                    reason=IgnoreReason.IGNORED_PATTERN,
+                )
 
         message = StoredMessage(
             message_id=event.message_id,
@@ -370,6 +422,7 @@ class DiscordMemory:
 
     async def recall(self, query: RecallQuery) -> RecallResult:
         """Explicit retrieval; see :class:`RecallQuery` for the query model."""
+        await self.ensure_started()
         consent = ConsentPolicy(self._store)
 
         async def _blocked(guild_id: str, user_id: str) -> bool:
@@ -392,9 +445,7 @@ class DiscordMemory:
             guard=self._guard,
             is_subject_blocked=_blocked,
             on_recalled=(
-                _reinforce_recalled
-                if self.config.retrieval.reinforce_on_recall
-                else None
+                _reinforce_recalled if self.config.retrieval.reinforce_on_recall else None
             ),
         )
         return await service.recall(query)
@@ -414,6 +465,7 @@ class DiscordMemory:
         This is the frictionless hot path — pass the current message and mention ids;
         get back a paste-ready injection block plus citation bindings.
         """
+        await self.ensure_started()
         budget = token_budget_tokens or self.config.retrieval.default_token_budget
         subjects, resolutions, warnings_list = await self._resolve_subjects(
             guild_id=guild_id,
@@ -506,6 +558,7 @@ class DiscordMemory:
 
     async def stats(self, guild_id: str) -> GuildStats:
         """Guild memory statistics snapshot."""
+        await self.ensure_started()
         return await self._store.guild_stats(guild_id)
 
     async def classify_command(self, text: str) -> UserMemoryCommand:

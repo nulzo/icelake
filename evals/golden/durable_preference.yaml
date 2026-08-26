@@ -1,0 +1,14 @@
+name: durable_preference
+llm_operations:
+  - subject_token: p0
+    text: "alice prefers mechanical keyboards with tactile switches"
+    category: preferences
+    confidence: 0.9
+    source_message_indexes: [1]
+messages:
+  - author_id: alice_id
+    display_name: alice
+    content: "i just cannot go back to membrane keyboards after using my new mechanical one"
+expected_facts:
+  - subject_id: alice_id
+    text_contains: "mechanical keyboards"

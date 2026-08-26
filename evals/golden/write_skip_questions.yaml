@@ -1,0 +1,9 @@
+name: write_skip_questions
+messages:
+  - author_id: u1
+    content: "does anyone know when the next update is coming out?"
+  - author_id: u1
+    content: "what time is the event tomorrow?"
+expected_facts: []
+forbidden_facts:
+  - text_contains: "update"

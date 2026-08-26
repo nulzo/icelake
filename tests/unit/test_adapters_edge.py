@@ -116,7 +116,9 @@ class TestEmbedderAdapters:
                 dimensions=32,
             )
         )
-        assert isinstance(embedder, OpenAICompatEmbedder)
+        assert embedder.dimensions == 32
+        # cache_enabled=True wraps in CachedEmbedder by default
+        assert type(embedder).__name__ == "CachedEmbedder"
 
     async def test_local_embedder_with_stubbed_backend(
         self,
@@ -210,7 +212,9 @@ async def test_connection_transaction_rollback() -> None:
     rows = await connection.query("SELECT * FROM t")
     assert rows == []  # rolled back
     await connection.close()
-    with pytest.raises(AssertionError):
+    from discord_memory.errors import StorageUnavailableError
+
+    with pytest.raises(StorageUnavailableError):
         await connection.query("SELECT 1")
 
 

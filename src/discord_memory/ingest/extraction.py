@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from pydantic import ValidationError
 
-from discord_memory._json import parse_json_object as _parse_json_object
+from discord_memory._json import coerce_extraction_payload, parse_json_object
 from discord_memory.config import ExtractionConfig
 from discord_memory.ingest.gates import (
     GateDecision,
@@ -21,6 +21,13 @@ from discord_memory.models.facts import FactCategory
 from discord_memory.models.operations import ExtractionOutput, ProposedFact
 from discord_memory.ports.llm import ChatLLM, ChatRequest, LlmMessage
 from discord_memory.prompts import extraction as prompts
+
+
+def _schema_of(model: type[ExtractionOutput]) -> dict[str, object]:
+    """Pydantic -> JSON Schema for native structured output."""
+    schema: dict[str, object] = model.model_json_schema()
+    return schema
+
 
 logger = logging.getLogger(__name__)
 
@@ -80,11 +87,40 @@ class FactExtractor:
             )
         )
         try:
-            payload = _parse_json_object(response.text)
+            payload = parse_json_object(response.text)
+            payload = coerce_extraction_payload(payload)
             output = ExtractionOutput.model_validate(payload)
-        except (ValueError, ValidationError) as exc:
-            logger.warning("Extraction parse failed: %s", exc)
-            return result
+        except (ValueError, ValidationError) as first_error:
+            # One-shot self-repair: show the model its mistake + exact schema.
+            repair_prompt = (
+                f"{user_prompt}\n\nYOUR PREVIOUS RESPONSE WAS INVALID ({first_error}). "
+                "Re-emit ONLY the corrected JSON. Top-level key MUST be "
+                '"operations"; each operation references participants by their '
+                "roster tokens (p0, p1, ...) exactly as listed above."
+            )
+            try:
+                repair_response = await self._llm.complete(
+                    ChatRequest(
+                        messages=(
+                            LlmMessage(role="system", content=prompts.EXTRACTION_SYSTEM_PROMPT),
+                            LlmMessage(role="user", content=repair_prompt),
+                        ),
+                        json_mode=True,
+                        max_tokens=1800,
+                        purpose="extraction",
+                        response_schema=ExtractionOutput.model_json_schema(),
+                    )
+                )
+                payload = parse_json_object(repair_response.text)
+                payload = coerce_extraction_payload(payload)
+                output = ExtractionOutput.model_validate(payload)
+                logger.info("Extraction repaired after one retry")
+            except (ValueError, ValidationError) as repair_error:
+                logger.warning(
+                    "Extraction parse failed after repair: %s",
+                    repair_error,
+                )
+                return result
 
         for operation in output.operations[: self._config.max_candidates_per_batch]:
             decision = self._vet(operation, roster, messages)

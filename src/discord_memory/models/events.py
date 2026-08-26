@@ -61,6 +61,7 @@ class IgnoreReason(StrEnum):
     OPTED_OUT = "opted_out"
     EMPTY_CONTENT = "empty_content"
     DUPLICATE = "duplicate"
+    IGNORED_PATTERN = "ignored_pattern"
 
 
 class RejectReason(StrEnum):

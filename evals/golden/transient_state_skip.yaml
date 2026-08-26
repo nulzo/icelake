@@ -1,0 +1,9 @@
+name: transient_state_skip
+messages:
+  - author_id: u1
+    content: "brb getting food"
+  - author_id: u1
+    content: "back"
+expected_facts: []
+forbidden_facts:
+  - text_contains: "food"

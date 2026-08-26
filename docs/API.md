@@ -132,7 +132,7 @@ parentheses; every duration suffixed `_seconds/_minutes/_days`, every budget
 | `batching` | `batch_size_messages (10)`; `max_age_seconds (300)`; `lease_seconds (120)`; `server_scope_window (100)` |
 | `extraction` | `min_confidence (0.55)`; `max_candidates_per_batch (12)`; `reconcile_collision_threshold (0.85)`; `noise_gate (True)` |
 | `lifecycle` | tier retention days `{short:7, mid:45, long:180}`; `strength_forget_threshold`; caps `{per_user:300, server:500}` |
-| `retrieval` | `channels (ChannelSet.DEFAULT)`; `rrf_k (60)`; weights dict; `default_token_budget (600)`; `max_per_subject (4)`; `hop_depth (2)`; `fan_out_per_node (24)` |
+| `retrieval` | `channels (CHANNELS_DEFAULT)`; `rrf_k (60)`; weights; `default_token_budget (600)`; `max_per_subject (4)`; `candidate_cap (500)`; `hop_depth (2)`; `fan_out_per_node (24)`; `reinforce_on_recall (False)` |
 | `budgets` | `guild_daily_tokens (None=off)`; `guild_monthly_tokens`; `degradation_ladder` order |
 | `privacy` | `store_raw_messages (True)`; `processed_retention_days (30)`; `default_opt_out (False)` |
 | `workers` | `enabled (True)`; `count (2)`; `poll_interval_seconds (1.0)`; `heartbeat_seconds (20)` |

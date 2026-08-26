@@ -1,0 +1,9 @@
+name: write_skip_noise
+messages:
+  - author_id: u1
+    content: "lol ok haha nice"
+  - author_id: u1
+    content: "yeah fr fr"
+expected_facts: []
+forbidden_facts:
+  - text_contains: "lol"

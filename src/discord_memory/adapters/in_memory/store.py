@@ -46,6 +46,7 @@ class InMemoryStore:
         self._entities: dict[tuple[str, str], EntityRecord] = {}
         self._entity_aliases: dict[tuple[str, str], str] = {}
         self._summaries: dict[tuple[str, str | None], ProfileSummary] = {}
+        self._cursors: dict[tuple[str, str], str] = {}
         self._opt_outs: set[tuple[str, str]] = set()
         self.closed = False
 
@@ -589,6 +590,12 @@ class InMemoryStore:
 
     # -- summaries --------------------------------------------------------------
 
+    async def get_cursor(self, guild_id: str, key: str) -> str | None:
+        return self._cursors.get((guild_id, key))
+
+    async def set_cursor(self, guild_id: str, key: str, value: str) -> None:
+        self._cursors[(guild_id, key)] = value
+
     async def get_summary(
         self,
         guild_id: str,
@@ -743,7 +750,10 @@ class InMemoryStore:
         return forgotten
 
     async def touch_facts(
-        self, guild_id: str, fact_ids: tuple[str, ...], *,
+        self,
+        guild_id: str,
+        fact_ids: tuple[str, ...],
+        *,
         accessed_at: datetime,
     ) -> int:
         touched = 0
@@ -751,10 +761,12 @@ class InMemoryStore:
             record = self._facts.get((guild_id, fact_id))
             if record is None:
                 continue
-            self._facts[(guild_id, fact_id)] = record.model_copy(update={
-                "last_reinforced_at": accessed_at,
-                "updated_at": accessed_at,
-            })
+            self._facts[(guild_id, fact_id)] = record.model_copy(
+                update={
+                    "last_reinforced_at": accessed_at,
+                    "updated_at": accessed_at,
+                }
+            )
             touched += 1
         return touched
 

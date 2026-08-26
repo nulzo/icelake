@@ -25,9 +25,22 @@ class InMemoryIngestQueue:
         self._lease_until: dict[tuple[str, str], datetime] = {}
         self.max_pending = max_pending
 
-    async def put_message(self, message: StoredMessage) -> bool:
+    async def put_message(
+        self,
+        message: StoredMessage,
+        *,
+        max_depth: int | None = None,
+    ) -> bool:
         ensure_aware(message.created_at)
         async with self._lock:
+            if max_depth is not None:
+                guild_pending = sum(
+                    1
+                    for m in self._messages.values()
+                    if m.guild_id == message.guild_id and m.status is MessageStatus.PENDING
+                )
+                if guild_pending >= max_depth:
+                    return False
             if message.message_id in self._messages:
                 return False
             if len(self._messages) >= self.max_pending:

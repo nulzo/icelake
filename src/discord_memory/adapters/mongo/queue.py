@@ -62,7 +62,18 @@ class MongoIngestQueue:
             [("guild_id", 1), ("subject_key", 1), ("status", 1), ("created_at", 1)],
         )
 
-    async def put_message(self, message: StoredMessage) -> bool:
+    async def put_message(
+        self,
+        message: StoredMessage,
+        *,
+        max_depth: int | None = None,
+    ) -> bool:
+        if max_depth is not None:
+            count = await self.col.count_documents(
+                {"guild_id": message.guild_id, "status": "pending"},
+            )
+            if count >= max_depth:
+                return False
         ensure_aware(message.created_at)
         try:
             await self.col.insert_one(message_to_doc(message))

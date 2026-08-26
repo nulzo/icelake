@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 from discord_memory.config import MemoryConfig
 from discord_memory.errors import (
     FactNotFoundError,
@@ -32,6 +35,10 @@ from discord_memory.ports.store import MemoryStore
 from discord_memory.ports.vectors import VectorIndex, VectorItem
 
 
+async def _noop_gate_async() -> None:
+    """Default no-op lifecycle gate."""
+
+
 class FactsApi:
     """Programmatic fact management — the ``memory.facts.*`` namespace."""
 
@@ -45,6 +52,7 @@ class FactsApi:
         id_gen: IdGen,
         config: MemoryConfig,
         subject_gate: SubjectGate,
+        startup_gate: Callable[[], Any] | None = None,
     ) -> None:
         self._store = store
         self._vectors = vectors
@@ -53,6 +61,7 @@ class FactsApi:
         self._id_gen = id_gen
         self._config = config
         self._gate = subject_gate
+        self._startup_gate = startup_gate or _noop_gate_async
 
     async def remember(
         self,
@@ -81,6 +90,7 @@ class FactsApi:
                 verb="owes", from_token=bob_id, to_entity="pizza"),
             )
         """
+        await self._startup_gate()
         if not await self._gate.allows(guild_id, subject_id):
             raise SubjectNotAllowedError(f"subject {subject_id} is barred from memory")
         hygiene = text_hygiene_gate(text)
@@ -153,17 +163,25 @@ class FactsApi:
         return record
 
     async def get_all(
-        self, guild_id: str, subject_id: str | None, *,
-        include_server: bool = False, limit: int = 100,
+        self,
+        guild_id: str,
+        subject_id: str | None,
+        *,
+        include_server: bool = False,
+        limit: int = 100,
     ) -> tuple[FactRecord, ...]:
         """All active facts for a member (mem0 ``get_all`` parity)."""
         page = await self.list_for_subject(
-            guild_id, subject_id,
-            include_server=include_server, active_only=True, limit=limit,
+            guild_id,
+            subject_id,
+            include_server=include_server,
+            active_only=True,
+            limit=limit,
         )
         return page.items
 
     async def get(self, guild_id: str, fact_id: str) -> FactRecord:
+        await self._startup_gate()
         record = await self._store.get_fact(guild_id, fact_id)
         if record is None:
             raise FactNotFoundError(fact_id)

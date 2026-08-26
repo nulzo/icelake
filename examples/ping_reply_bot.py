@@ -56,6 +56,7 @@ class PingReplyBot(commands.Bot):
         self.memory = memory
 
     async def setup_hook(self) -> None:
+        await self.memory.start()
         await self.tree.sync()
 
     async def close(self) -> None:

@@ -52,7 +52,7 @@ def build_memory() -> DiscordMemory:
     return DiscordMemory(
         MemoryConfig(
             storage="sqlite:///omni-style.db",
-            llm=("openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=google/gemini-2.5-flash"),
+            llm=("openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=google/gemini-3.7-flash"),
             batching={"batch_size_messages": 12, "max_age_seconds": 90},
             extraction={"auto_consolidate_after_adds": 6},
             retrieval={"default_token_budget": TURN_TOKEN_BUDGET},
@@ -72,6 +72,10 @@ class OmniStyleBot(commands.Bot):
         self.memory = memory
 
     async def setup_hook(self) -> None:
+        # Start memory BEFORE the gateway connects so early messages are safe.
+        await self.memory.start()
+        if self.user:
+            self.memory.register_bot_id(self.user.id)  # never remember ourselves
         await self.tree.sync()
 
     async def close(self) -> None:
@@ -337,12 +341,6 @@ def main() -> None:
 
     bot = OmniStyleBot(build_memory())
     register_governance(bot)
-
-    @bot.event
-    async def on_ready() -> None:
-        if bot.user:
-            bot.memory.register_bot_id(bot.user.id)  # never remember the bot
-        log.info("ready as %s", bot.user)
 
     bot.run(token)
 

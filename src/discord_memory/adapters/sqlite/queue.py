@@ -36,7 +36,16 @@ class SqliteIngestQueue:
     def __init__(self, connection: SqliteConnection) -> None:
         self._db = connection
 
-    async def put_message(self, message: StoredMessage) -> bool:
+    async def put_message(
+        self,
+        message: StoredMessage,
+        *,
+        max_depth: int | None = None,
+    ) -> bool:
+        if max_depth is not None:
+            count = await self.pending_count(message.guild_id)
+            if count >= max_depth:
+                return False
         ensure_aware(message.created_at)
         try:
             await self._db.execute(

@@ -324,10 +324,20 @@ class MemoryStore(Protocol):
     ) -> int:
         """Soft-invalidate non-core facts below the retention floor."""
 
+    async def get_cursor(self, guild_id: str, key: str) -> str | None:
+        """Durable high-water mark (e.g. last community-window message id)."""
+
+    async def set_cursor(self, guild_id: str, key: str, value: str) -> None:
+        """Persist a high-water mark."""
+
     async def touch_facts(
-        self, guild_id: str, fact_ids: tuple[str, ...], *,
+        self,
+        guild_id: str,
+        fact_ids: tuple[str, ...],
+        *,
         accessed_at: datetime,
     ) -> int:
         """Access-time reinforcement: reset the decay clock on recalled facts
         (MemoryBank / mem0-decay pattern). One batched write."""
+
     async def guild_stats(self, guild_id: str) -> GuildStats: ...
