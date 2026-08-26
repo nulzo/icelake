@@ -65,6 +65,7 @@ async def keyword_channel(
     subject_ids: tuple[str, ...] | None,
     server_only: bool,
     limit: int,
+    as_of: object | None = None,
 ) -> ChannelOutput:
     if not query_text.strip():
         return ChannelOutput(channel=ChannelName.KEYWORD)

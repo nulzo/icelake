@@ -381,51 +381,72 @@ def _fact_record_for_seed():
 
 
 class TestTemporalRecall:
-    async def test_as_of_surfaces_then_valid_facts(self, make_client) -> None:
+    async def test_as_of_surfaces_then_valid_facts(self, make_client, fixed_clock) -> None:
         """Time travel: facts superseded TODAY were still valid LAST MONTH."""
         from datetime import timedelta
 
         from discord_memory.models.retrieval import RecallQuery
 
-        llm = ScriptedLLM({"extraction": extraction_response([
-            {"subject_token": "p0",
-             "text": "alice works as a barista at the campus cafe",
-             "category": "professional", "confidence": 0.9,
-             "source_message_indexes": [1]},
-        ])})
+        llm = ScriptedLLM(
+            {
+                "extraction": extraction_response(
+                    [
+                        {
+                            "subject_token": "p0",
+                            "text": "alice works as a barista at the campus cafe",
+                            "category": "professional",
+                            "confidence": 0.9,
+                            "source_message_indexes": [1],
+                        },
+                    ]
+                )
+            }
+        )
         client, _ = make_client(llm=llm)
         await client.start()
-        event_builder = event_factory_stub(client)
+        builder = event_factory_stub(client)
         await client.observe(
-            event_builder(
+            builder(
                 author_id=ALICE,
-                content="working the campus cafe espresso machine again today",
+                content=("pulling espresso shots at the campus cafe again this morning"),
             )
         )
         await client.flush()
-        fact = (await client.facts.list_for_subject(
-            GUILD, ALICE, include_server=False)).items[0]
+        fact = (await client.facts.list_for_subject(GUILD, ALICE, include_server=False)).items[0]
 
-        # manually age it: valid in the past, superseded "now"
-        past_valid_until = client._clock.now() - timedelta(days=30)
+        # Age the timeline deterministically:
+        #   fact created at T0; expired at T0+35d; "today" is T0+40d.
+        fixed_clock.advance(timedelta(days=40).total_seconds())
+        expiry = fixed_clock.now() - timedelta(days=5)
         await client._store.transition_fact(
-            GUILD, fact.id, valid_until=past_valid_until,
-            updated_at=client._clock.now() - timedelta(days=31),
+            GUILD,
+            fact.id,
+            valid_until=expiry,
+            updated_at=fixed_clock.now(),
         )
 
-        as_of = client._clock.now() - timedelta(days=60)
-        result = await client.recall(RecallQuery(
-            guild_id=GUILD, text="barista", subject_ids=(ALICE,),
-            as_of=as_of,
-        ))
-        assert any("barista" in sf.fact.text for sf in result.facts), (
-            "as_of recall must surface then-valid facts even if now-invalidated"
+        # as_of between creation and expiry -> surfaces even though invalid now.
+        as_of_past = fixed_clock.now() - timedelta(days=20)
+        past_result = await client.recall(
+            RecallQuery(
+                guild_id=GUILD,
+                text="barista",
+                subject_ids=(ALICE,),
+                as_of=as_of_past,
+            )
         )
-        # present-time recall does NOT return it
-        now_result = await client.recall(RecallQuery(
-            guild_id=GUILD, text="barista", subject_ids=(ALICE,),
-        ))
-        assert not any("barista" in sf.fact.text for sf in now_result.facts)
+        assert any("barista" in sf.fact.text for sf in past_result.facts)
+
+        # as_of after expiry -> correctly absent.
+        future_result = await client.recall(
+            RecallQuery(
+                guild_id=GUILD,
+                text="barista",
+                subject_ids=(ALICE,),
+                as_of=fixed_clock.now(),
+            )
+        )
+        assert not any("barista" in sf.fact.text for sf in future_result.facts)
         await client.close()
 
 
@@ -436,8 +457,11 @@ def event_factory_stub(client):
     def _build(*, author_id: str, content: str) -> MessageEvent:
         return MessageEvent(
             message_id=f"stub-{abs(hash(content)) % 10**12}",
-            guild_id=GUILD, channel_id="c1", author_id=author_id,
-            content=content, created_at=datetime.now(UTC),
+            guild_id=GUILD,
+            channel_id="c1",
+            author_id=author_id,
+            content=content,
+            created_at=datetime.now(UTC),
             author_display_name="alice",
         )
 

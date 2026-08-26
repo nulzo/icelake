@@ -188,6 +188,7 @@ class RetrievalConfig(FrozenModel):
     max_per_subject: int = Field(default=4, ge=1)
     hop_depth: int = Field(default=2, ge=1, le=2)
     fan_out_per_node: int = Field(default=24, ge=1)
+    reinforce_on_recall: bool = False
     weight_semantic: float = Field(default=0.55, ge=0, le=1)
     weight_lexical: float = Field(default=0.25, ge=0, le=1)
     weight_entity: float = Field(default=0.10, ge=0, le=1)

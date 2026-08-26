@@ -28,6 +28,16 @@ def parse_moment(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value)
 
 
+def _validity_sql(as_of: datetime | None) -> tuple[str, list[object]]:
+    """Active-now predicate, or point-in-time validity when ``as_of`` is set."""
+    if as_of is None:
+        return ("valid_until IS NULL AND superseded_by_id IS NULL", [])
+    return (
+        "(valid_from IS NULL OR valid_from <= ?) AND (valid_until IS NULL OR valid_until > ?)",
+        [iso(as_of), iso(as_of)],
+    )
+
+
 def record_from_row(row: sqlite3.Row) -> FactRecord:
     attribution = json.loads(row["attribution"] or "{}")
     return FactRecord(
@@ -314,6 +324,7 @@ class FactsMixin:
         subject_ids: tuple[str, ...] | None,
         server_only: bool = False,
         limit: int = 10,
+        as_of: datetime | None = None,
     ) -> tuple[FactRecord, ...]:
         """Strength-ranked anchors with the scope predicate pushed into SQL.
 
@@ -321,8 +332,11 @@ class FactsMixin:
         past the cap — every user's anchors must be found regardless of guild
         size.
         """
-        conditions = ["guild_id=?", *_validity_sql(None)]
+        conditions = ["guild_id=?"]
         params: list[object] = [guild_id]
+        validity_sql, validity_params = _validity_sql(as_of)
+        conditions.append(validity_sql)
+        params.extend(validity_params)
         if server_only:
             conditions.append("scope='server'")
         elif subject_ids is not None and subject_ids:
@@ -350,6 +364,7 @@ class FactsMixin:
         subject_ids: tuple[str, ...] | None = None,
         server_only: bool = False,
         limit: int = 20,
+        as_of: datetime | None = None,
     ) -> tuple[tuple[FactRecord, float], ...]:
         """One joined FTS query — the old per-hit N+1 fetched up to 201 rows."""
         safe_query = " ".join(
@@ -357,8 +372,17 @@ class FactsMixin:
         )
         if not safe_query:
             return ()
-        conditions = ["f.guild_id=?", "f.valid_until IS NULL", "f.superseded_by_id IS NULL"]
+        conditions = ["f.guild_id=?"]
         params: list[object] = [guild_id]
+        if as_of is not None:
+            conditions.append(
+                "(f.valid_from IS NULL OR f.valid_from <= ?)"
+                " AND (f.valid_until IS NULL OR f.valid_until > ?)"
+            )
+            params.extend([iso(as_of), iso(as_of)])
+        else:
+            conditions.append("f.valid_until IS NULL")
+            conditions.append("f.superseded_by_id IS NULL")
         if server_only:
             conditions.append("f.scope='server'")
         elif subject_ids is not None and subject_ids:
@@ -614,6 +638,23 @@ class FactsMixin:
         )
         facts = tuple(record_from_row(r) for r in fact_rows)
         return facts, entities, relations
+
+    async def touch_facts(
+        self, guild_id: str, fact_ids: tuple[str, ...], *,
+        accessed_at: datetime,
+    ) -> int:
+        """Reset the decay clock on recalled facts in one batched statement."""
+        ids = [fid for fid in fact_ids if fid]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" * len(ids))
+        await self._db.execute(
+            f"""UPDATE dm_facts SET last_reinforced_at=?, last_accessed_at=?,
+                 version=version+1
+               WHERE guild_id=? AND id IN ({placeholders})""",
+            (iso(accessed_at), iso(accessed_at), guild_id, *ids),
+        )
+        return len(ids)
 
     async def sweep_expired(self, guild_id: str, now: datetime) -> int:
         await self._db.execute(

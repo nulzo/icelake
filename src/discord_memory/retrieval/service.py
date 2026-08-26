@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
 from collections.abc import Coroutine
+from datetime import UTC, datetime
 from typing import Any
 
 from discord_memory.config import RetrievalConfig
@@ -50,6 +50,7 @@ class RecallService:
         config: RetrievalConfig,
         guard: BotGuard | None = None,
         is_subject_blocked: Any = None,
+        on_recalled: Any = None,
     ) -> None:
         self._store = store
         self._vectors = vectors
@@ -57,6 +58,7 @@ class RecallService:
         self._config = config
         self._guard = guard
         self._is_subject_blocked = is_subject_blocked
+        self._on_recalled = on_recalled
 
     async def recall(self, query: RecallQuery) -> RecallResult:
         selected = query.channels if query.channels else CHANNELS_DEFAULT
@@ -74,6 +76,7 @@ class RecallService:
             text=query.text or "",
             subject_ids=subject_ids,
             server_only=server_only,
+            as_of=query.as_of,
         )
 
         if pair_fact_ids:
@@ -120,6 +123,7 @@ class RecallService:
         text: str,
         subject_ids: tuple[str, ...] | None,
         server_only: bool,
+        as_of: object | None = None,
     ) -> tuple[list[ch.ChannelOutput], list[str]]:
         tasks: dict[ChannelName, object] = {}
 
@@ -142,6 +146,7 @@ class RecallService:
                 subject_ids=None if server_only else subject_ids,
                 server_only=server_only,
                 limit=self._config.recall_limit,
+                as_of=as_of,
             )
         if ChannelName.LINKS in selected and subject_ids:
             tasks[ChannelName.LINKS] = ch.links_channel(
@@ -322,6 +327,11 @@ class RecallService:
             )
         if trimmed:
             warnings.append("budget_trimmed")
+        if self._on_recalled is not None and facts:
+            try:
+                await self._on_recalled([f.fact.id for f in facts])
+            except Exception:
+                logger.warning("on_recalled callback failed", exc_info=True)
         return RecallResult(
             facts=tuple(facts),
             degraded_channels=tuple(degraded),

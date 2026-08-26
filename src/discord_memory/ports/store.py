@@ -206,7 +206,9 @@ class MemoryStore(Protocol):
         kinds: tuple[EdgeKind, ...] | None = None,
         active_only: bool = True,
         limit: int = 100,
-    ) -> tuple[tuple[LinkRow, FactRecord], ...]: ...
+        as_of: datetime | None = None,
+    ) -> tuple[tuple[LinkRow, FactRecord], ...]:
+        """``as_of`` switches the join to point-in-time validity."""
 
     async def nodes_for_fact(self, guild_id: str, memory_id: str) -> tuple[LinkRow, ...]: ...
 
@@ -322,4 +324,10 @@ class MemoryStore(Protocol):
     ) -> int:
         """Soft-invalidate non-core facts below the retention floor."""
 
+    async def touch_facts(
+        self, guild_id: str, fact_ids: tuple[str, ...], *,
+        accessed_at: datetime,
+    ) -> int:
+        """Access-time reinforcement: reset the decay clock on recalled facts
+        (MemoryBank / mem0-decay pattern). One batched write."""
     async def guild_stats(self, guild_id: str) -> GuildStats: ...

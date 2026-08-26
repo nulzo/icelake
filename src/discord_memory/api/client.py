@@ -375,6 +375,15 @@ class DiscordMemory:
         async def _blocked(guild_id: str, user_id: str) -> bool:
             return await consent.is_blocked(guild_id, user_id)
 
+        async def _reinforce_recalled(fact_ids: list[str]) -> None:
+            # mem0-style decay loop (opt-in): recalled facts get their decay
+            # clock reset, so frequently-served knowledge floats up over time.
+            await self._store.touch_facts(
+                query.guild_id,
+                tuple(fact_ids),
+                accessed_at=self._clock.now(),
+            )
+
         service = RecallService(
             store=self._store,
             vectors=self._vectors,
@@ -382,6 +391,11 @@ class DiscordMemory:
             config=self.config.retrieval,
             guard=self._guard,
             is_subject_blocked=_blocked,
+            on_recalled=(
+                _reinforce_recalled
+                if self.config.retrieval.reinforce_on_recall
+                else None
+            ),
         )
         return await service.recall(query)
 

@@ -152,6 +152,17 @@ class FactsApi:
         )
         return record
 
+    async def get_all(
+        self, guild_id: str, subject_id: str | None, *,
+        include_server: bool = False, limit: int = 100,
+    ) -> tuple[FactRecord, ...]:
+        """All active facts for a member (mem0 ``get_all`` parity)."""
+        page = await self.list_for_subject(
+            guild_id, subject_id,
+            include_server=include_server, active_only=True, limit=limit,
+        )
+        return page.items
+
     async def get(self, guild_id: str, fact_id: str) -> FactRecord:
         record = await self._store.get_fact(guild_id, fact_id)
         if record is None:

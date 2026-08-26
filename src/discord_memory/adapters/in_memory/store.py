@@ -386,6 +386,7 @@ class InMemoryStore:
         kinds: tuple[EdgeKind, ...] | None = None,
         active_only: bool = True,
         limit: int = 100,
+        as_of: datetime | None = None,
     ) -> tuple[tuple[LinkRow, FactRecord], ...]:
         results: list[tuple[LinkRow, FactRecord]] = []
         for rows in self._links.values():
@@ -399,7 +400,14 @@ class InMemoryStore:
                 record = self._facts.get((guild_id, row.memory_id))
                 if record is None:
                     continue
-                if active_only and not self._active(record):
+                if as_of is not None:
+                    start = record.valid_from
+                    end = record.valid_until
+                    if start is not None and start > as_of:
+                        continue
+                    if end is not None and end <= as_of:
+                        continue
+                elif active_only and not self._active(record):
                     continue
                 results.append((row, record))
         return tuple(results[:limit])
@@ -733,6 +741,22 @@ class InMemoryStore:
                 self._facts[key] = record.model_copy(update={"valid_until": now})
                 forgotten += 1
         return forgotten
+
+    async def touch_facts(
+        self, guild_id: str, fact_ids: tuple[str, ...], *,
+        accessed_at: datetime,
+    ) -> int:
+        touched = 0
+        for fact_id in fact_ids:
+            record = self._facts.get((guild_id, fact_id))
+            if record is None:
+                continue
+            self._facts[(guild_id, fact_id)] = record.model_copy(update={
+                "last_reinforced_at": accessed_at,
+                "updated_at": accessed_at,
+            })
+            touched += 1
+        return touched
 
     async def export_guild(
         self, guild_id: str

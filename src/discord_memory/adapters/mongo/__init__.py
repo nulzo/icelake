@@ -385,8 +385,18 @@ class MongoStore:
         subject_ids: tuple[str, ...] | None,
         server_only: bool = False,
         limit: int = 10,
+        as_of: datetime | None = None,
     ) -> tuple[FactRecord, ...]:
-        query: dict[str, Any] = {"guild_id": guild_id, **self._ACTIVE}
+        query: dict[str, Any] = {"guild_id": guild_id}
+        if as_of is not None:
+            iso_as_of = _iso(as_of)
+            query["$or"] = [
+                {"valid_from": None},
+                {"valid_from": {"$lte": iso_as_of}},
+            ]
+            # point-in-time: supersession flags describe later knowledge
+        else:
+            query.update(self._ACTIVE)
         if server_only:
             query["scope"] = "server"
         elif subject_ids is not None:
@@ -411,6 +421,7 @@ class MongoStore:
         subject_ids: tuple[str, ...] | None = None,
         server_only: bool = False,
         limit: int = 20,
+        as_of: datetime | None = None,
     ) -> tuple[tuple[FactRecord, float], ...]:
         terms = [t for t in query.lower().split() if t]
         if not terms:
@@ -514,6 +525,7 @@ class MongoStore:
         kinds: tuple[EdgeKind, ...] | None = None,
         active_only: bool = True,
         limit: int = 100,
+        as_of: datetime | None = None,
     ) -> tuple[tuple[LinkRow, FactRecord], ...]:
         type_value = getattr(node_type, "value", node_type)
         pipeline: list[dict[str, Any]] = [
@@ -1015,6 +1027,19 @@ class MongoStore:
             )
             forgotten += 1
         return forgotten
+
+    async def touch_facts(
+        self, guild_id: str, fact_ids: tuple[str, ...], *,
+        accessed_at: datetime,
+    ) -> int:
+        result = await self.db["dm_facts"].update_many(
+            {"guild_id": guild_id, "_id": {"$in": list(fact_ids)}},
+            {"$set": {
+                "last_reinforced_at": _iso(accessed_at),
+                "updated_at": _iso(accessed_at),
+            }},
+        )
+        return int(result.modified_count)
 
     async def guild_stats(self, guild_id: str) -> GuildStats:
         total = await self.db["dm_facts"].count_documents({"guild_id": guild_id})

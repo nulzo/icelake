@@ -216,6 +216,20 @@ if result.degraded_channels:
     ...  # e.g. vector index down — other channels still served the answer
 ```
 
+### Time-travel recall (bitemporal)
+
+```python
+result = await memory.recall(RecallQuery(
+    guild_id=guild_id,
+    text="where does alice work",
+    subject_ids=(alice_id,),
+    as_of=datetime(2026, 1, 1, tzinfo=UTC),   # knowledge state on Jan 1
+))
+```
+
+Facts valid at that instant surface — including ones since superseded or
+invalidated. Present-time recall omits them.
+
 ### Relationship / graph queries
 
 ```python

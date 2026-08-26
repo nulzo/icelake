@@ -127,13 +127,21 @@ class IdentityGraphMixin:
         kinds: tuple[EdgeKind, ...] | None = None,
         active_only: bool = True,
         limit: int = 100,
+        as_of: datetime | None = None,
     ) -> tuple[tuple[LinkRow, FactRecord], ...]:
         from discord_memory.adapters.sqlite.store_facts import record_from_row
 
         conditions = ["l.guild_id=?", "l.node_type=?", "l.node_id=?"]
         params: list[object] = [guild_id, node_type.value, node_id]
         if active_only:
-            conditions.append("f.valid_until IS NULL AND f.superseded_by_id IS NULL")
+            if as_of is not None:
+                conditions.append(
+                    "(f.valid_from IS NULL OR f.valid_from <= ?) "
+                    "AND (f.valid_until IS NULL OR f.valid_until > ?)"
+                )
+                params.extend([iso(as_of), iso(as_of)])
+            else:
+                conditions.append("f.valid_until IS NULL AND f.superseded_by_id IS NULL")
         params.append(limit)
         rows = await self._db.query(
             f"""SELECT l.*, f.* AS fact_.*

@@ -134,7 +134,7 @@ parentheses; every duration suffixed `_seconds/_minutes/_days`, every budget
 | `lifecycle` | tier retention days `{short:7, mid:45, long:180}`; `strength_forget_threshold`; caps `{per_user:300, server:500}` |
 | `retrieval` | `channels (ChannelSet.DEFAULT)`; `rrf_k (60)`; weights dict; `default_token_budget (600)`; `max_per_subject (4)`; `hop_depth (2)`; `fan_out_per_node (24)` |
 | `budgets` | `guild_daily_tokens (None=off)`; `guild_monthly_tokens`; `degradation_ladder` order |
-| `privacy` | `default_opt_out (False)`; `retention_days (365)`; `store_raw_messages (True)` |
+| `privacy` | `store_raw_messages (True)`; `processed_retention_days (30)`; `default_opt_out (False)` |
 | `workers` | `enabled (True)`; `count (2)`; `poll_interval_seconds (1.0)`; `heartbeat_seconds (20)` |
 | `observability` | `meter ("log")`; `log_level`; `slow_query_ms (250)` |
 
