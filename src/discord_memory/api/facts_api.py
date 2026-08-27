@@ -76,6 +76,7 @@ class FactsApi:
         entities: tuple[ProposedEntity, ...] = (),
         relations: tuple[ProposedRelation, ...] = (),
         subject_username: str = "",
+        attribution: AttributionType = AttributionType.MANUAL,
     ) -> FactRecord:
         """Manually remember a fact. Manual facts land in CORE tier (never expire).
 
@@ -126,7 +127,7 @@ class FactsApi:
             tier=MemoryTier.CORE,
             scope="server" if subject_id is None else "user",
             attribution=Attribution(
-                type=(AttributionType.THIRD_PARTY if third_party else AttributionType.MANUAL),
+                type=(AttributionType.THIRD_PARTY if third_party else attribution),
                 actor_id=actor_id,
                 speaker_id=speaker_id if third_party else None,
             ),

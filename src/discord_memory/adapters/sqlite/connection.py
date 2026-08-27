@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS dm_relations (
     valid_from TEXT,
     valid_until TEXT
 );
-CREATE UNIQUE INDEX ux_dm_relations_active
+CREATE UNIQUE INDEX IF NOT EXISTS ux_dm_relations_active
     ON dm_relations (guild_id, src_type, src_id, dst_type, dst_id, verb)
     WHERE valid_until IS NULL;
 CREATE INDEX IF NOT EXISTS ix_dm_relations_dst ON dm_relations (guild_id, dst_type, dst_id);

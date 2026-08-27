@@ -356,21 +356,29 @@ class DiscordMemory:
                     reason=IgnoreReason.IGNORED_PATTERN,
                 )
 
+        import hashlib
+
+        stored_content = (
+            event.content
+            if self.config.privacy.store_raw_messages
+            else hashlib.sha256(event.content.encode()).hexdigest()[:16]
+        )
         message = StoredMessage(
             message_id=event.message_id,
             guild_id=event.guild_id,
             channel_id=event.channel_id,
             author_id=event.author_id,
             subject_key=event.author_id,
-            content=event.content,
+            content=stored_content,
             created_at=event.created_at,
             author_username=event.author_username,
             author_display_name=event.author_display_name,
             author_is_bot=event.author_is_bot,
             mention_ids=event.mention_ids,
         )
+        max_depth = self.config.observe.max_queue_depth_per_guild
         try:
-            accepted = await self._queue.put_message(message)
+            accepted = await self._queue.put_message(message, max_depth=max_depth)
         except Exception:
             log.exception("observe: queue persistence failed")
             return ObserveReceipt(
@@ -379,6 +387,14 @@ class DiscordMemory:
                 reason=RejectReason.STORAGE_UNAVAILABLE,
             )
         if not accepted:
+            # Distinguish duplicate vs capacity by checking pending count.
+            pending = await self._queue.pending_count(event.guild_id)
+            if max_depth is not None and pending >= max_depth:
+                return ObserveReceipt(
+                    message_id=event.message_id,
+                    status=ObserveStatus.REJECTED,
+                    reason=RejectReason.QUEUE_OVER_CAPACITY,
+                )
             return ObserveReceipt(
                 message_id=event.message_id,
                 status=ObserveStatus.IGNORED,

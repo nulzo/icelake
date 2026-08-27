@@ -10,7 +10,7 @@ member of a server.
   structurally prevents LLM hallucinated attribution; third-party statements ("X called Y a
   hacker") anchor on the person they're about, with the speaker kept as attribution.
 - **Cost-effective**: batched extraction (~1 LLM call per ~10 messages), conditional
-  reconciliation (phase-2 fires only on collisions), zero-LLM retrieval, free local embeddings.
+  reconciliation (phase-2 fires only on collisions), zero-LLM retrieval, pluggable embeddings.
 - **Scalable**: durable lease queue safe across processes, guild-partitioned storage,
   hub-aware bounded graph traversal, per-guild budgets with graceful degradation.
 - **Composable**: every external dependency sits behind a Protocol port — swap storage,
@@ -176,7 +176,9 @@ Full usage documentation: [`docs/USAGE.md`](docs/USAGE.md) · Complete API contr
 For a production-shaped deployment — passive learning for everyone, replies only when
 addressed, requester-first multi-person context, `/memory` slash group, governance — see
 [`examples/omni_style_bot.py`](examples/omni_style_bot.py). It mirrors the architecture of
-a memory-native production bot:
+a memory-native production bot and wires **OpenRouter** for both chat (`google/gemini-3.7-flash`)
+and embeddings (`openai/text-embedding-3-small`) so reconcile collisions and recall work on
+paraphrases, not just exact text matches.
 
 - **Composition root**: `build_memory()` is the single place config → adapters → client
   get wired; everything else receives `memory`.
@@ -344,8 +346,9 @@ Providers are URL strings; nested typed configs also accepted:
 MemoryConfig(
     storage="sqlite:///memory.db",                       # or mongodb://… ([mongo] extra)
     llm="openai://$KEY@openrouter.ai/api/v1?model=…",    # OpenAI-compatible endpoints
-    embeddings="hashing",                                # free default
+    embeddings="hashing",                                # free default (see below)
     # embeddings="local",                                 # sentence-transformers extra
+    # embeddings="openai://$KEY@openrouter.ai/api/v1?model=openai/text-embedding-3-small",
     # embeddings="openai://$KEY@api.openai.com/v1?model=text-embedding-3-small",
     batching={"batch_size_messages": 10, "max_age_seconds": 300},
     budgets={"guild_daily_prompt_tokens": 200_000},      # graceful degradation ladder
@@ -355,6 +358,36 @@ MemoryConfig(
 ```
 
 Unknown keys raise immediately — typo protection by construction.
+
+### Embeddings (`embeddings=`)
+
+| Provider | Spec | Best for |
+|---|---|---|
+| **Hashing** (default) | `"hashing"` | Tests, zero-dependency demos, deterministic CI |
+| **Hosted** | `"openai://$KEY@openrouter.ai/api/v1?model=openai/text-embedding-3-small"` | Production bots already on OpenRouter/OpenAI |
+| **Local** | `"local"` | Air-gapped or no embedding API cost (`pip install discord-memory[local-embeddings]`) |
+
+Embeddings power **semantic recall**, **reconcile collision detection** (paraphrase → reinforce
+instead of duplicate ADD), and consolidation sanity checks. Cosine similarity is compared against
+`extraction.reconcile_collision_threshold` (default `0.85`).
+
+#### Hashing embedder limitations
+
+The default hashing embedder is a signed feature-hash over word/char n-grams — **not** a neural
+model. It is fast, free, and reproducible, but:
+
+- **Paraphrases do not cluster.** "Loves coding in Go" and "Enjoys programming in Go" often score
+  below the reconcile threshold, so the pipeline treats them as unrelated facts and you can end up
+  with many near-duplicate memories per user.
+- **Recall is lexical-ish.** Vector search channels rank by token overlap more than meaning;
+  semantic recall quality is noticeably weaker than with a real embedding model.
+- **Reinforcement depends on collisions.** Ingest reinforce/update/noop only triggers semantic
+  collision when cosine similarity clears the threshold; hashing misses most real-world re-statements.
+
+Use **hosted** (OpenRouter/OpenAI) or **local** embeddings for any deployment where users repeat
+the same preference in different words — including the omni-style example, which sets
+`embeddings=EMBEDDINGS_URL` accordingly. Switching embedders invalidates existing vectors; re-embed
+or start fresh on dev databases when changing provider.
 
 ## Deployment topologies
 
@@ -393,8 +426,10 @@ uv run mypy                                    # strict mode
 
 ## Status & limitations (v0.1)
 
-- Storage backends shipped: **SQLite** (default) + in-memory (tests). Postgres/pgvector
-  adapter planned (M3) — the port is ready; Mongo adapter RFC open.
+- Storage backends shipped: **SQLite** (default), **MongoDB** (`[mongo]` extra), and in-memory
+  (tests). Postgres/pgvector adapter planned (M3) — the port is ready.
+- Default **hashing** embeddings are not suitable for production dedup/recall — see
+  [Embeddings](#embeddings-embeddings) above.
 - Budgets meter per-process; cross-process budget accounting needs store-backed counters.
 - Server-scope ("community") batches read the recent-message window; watermarking across
   restarts is best-effort.

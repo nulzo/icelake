@@ -63,6 +63,16 @@ class TestStrictSchemaTransform:
         inner = out["properties"]["operations"]
         assert inner["additionalProperties"] is False
 
+    def test_defs_objects_are_strict_and_defaults_stripped(self) -> None:
+        from discord_memory.models.operations import ReconcileOutput
+
+        out = _strict_schema(ReconcileOutput.model_json_schema())
+        decision = out["$defs"]["ReconcileDecision"]
+        assert decision["additionalProperties"] is False
+        assert set(decision["required"]) == set(decision["properties"])
+        assert "default" not in out["properties"]["decisions"]
+        assert "default" not in decision["properties"]["confidence"]
+
 
 class TestWireFormat:
     def test_strict_json_schema_sent_when_schema_present(self) -> None:

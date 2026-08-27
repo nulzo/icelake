@@ -23,13 +23,9 @@ from discord_memory.ports.llm import ChatLLM, ChatRequest, LlmMessage
 from discord_memory.prompts import extraction as prompts
 
 
-def _schema_of(model: type[ExtractionOutput]) -> dict[str, object]:
-    """Pydantic -> JSON Schema for native structured output."""
-    schema: dict[str, object] = model.model_json_schema()
-    return schema
-
-
 logger = logging.getLogger(__name__)
+
+_EXTRACTION_SCHEMA: dict[str, object] = ExtractionOutput.model_json_schema()
 
 
 @dataclass(slots=True)
@@ -84,6 +80,7 @@ class FactExtractor:
                 json_mode=True,
                 max_tokens=1800,
                 purpose="extraction",
+                response_schema=_EXTRACTION_SCHEMA,
             )
         )
         try:
@@ -108,7 +105,7 @@ class FactExtractor:
                         json_mode=True,
                         max_tokens=1800,
                         purpose="extraction",
-                        response_schema=ExtractionOutput.model_json_schema(),
+                        response_schema=_EXTRACTION_SCHEMA,
                     )
                 )
                 payload = parse_json_object(repair_response.text)

@@ -673,6 +673,21 @@ class InMemoryStore:
         self._opt_outs.discard((guild_id, user_id))
         return report
 
+    async def import_guild(
+        self,
+        facts: tuple[FactRecord, ...],
+        entities: tuple[EntityRecord, ...],
+        relations: tuple[RelationEdge, ...],
+    ) -> int:
+        """Bulk restore from a MemoryExport."""
+        for record in facts:
+            await self.insert_fact(record)
+        for entity in entities:
+            key = (entity.guild_id, entity.slug)
+            if key not in self._entities:
+                self._entities[key] = entity
+        return len(facts)
+
     async def sweep_expired(self, guild_id: str, now: datetime) -> int:
         changed = 0
         for key, record in list(self._facts.items()):

@@ -151,3 +151,112 @@ class TestExtractNow:
 
 
 ALICE = "100000000000000001"
+
+
+class TestQueueCapacity:
+    async def test_capacity_returns_rejected_receipt(self) -> None:
+        from discord_memory.api.client import DiscordMemory
+        from discord_memory.models.events import ObserveStatus, RejectReason
+        from tests.conftest import make_config
+
+        memory = DiscordMemory(
+            make_config(
+                workers={"enabled": False},
+                observe={"max_queue_depth_per_guild": 2},
+            ),
+            llm=None,
+        )
+        await memory.start()
+
+        # Fill to capacity (2 messages).
+        for i in range(2):
+            r = await memory.observe(
+                MessageEvent(
+                    message_id=f"cap-{i}",
+                    guild_id=GUILD,
+                    channel_id="c",
+                    author_id="u1",
+                    content=f"capacity message number {i} here",
+                    created_at=datetime.now(UTC),
+                )
+            )
+            assert r.status is ObserveStatus.ACCEPTED
+
+        # Third message hits capacity → REJECTED with QUEUE_OVER_CAPACITY.
+        over = await memory.observe(
+            MessageEvent(
+                message_id="cap-3",
+                guild_id=GUILD,
+                channel_id="c",
+                author_id="u1",
+                content="this one goes over the limit now",
+                created_at=datetime.now(UTC),
+            )
+        )
+        assert over.status is ObserveStatus.REJECTED
+        assert over.reason is RejectReason.QUEUE_OVER_CAPACITY
+
+        # Different guild unaffected.
+        ok = await memory.observe(
+            MessageEvent(
+                message_id="cap-4",
+                guild_id="other-guild",
+                channel_id="c",
+                author_id="u1",
+                content="different guild is fine here",
+                created_at=datetime.now(UTC),
+            )
+        )
+        assert ok.status is ObserveStatus.ACCEPTED
+        await memory.close()
+
+
+class TestStoreRawMessagesPrivacy:
+    async def test_hash_only_mode_stores_no_raw_content(self) -> None:
+        from discord_memory.api.client import DiscordMemory
+        from tests.conftest import make_config
+
+        memory = DiscordMemory(
+            make_config(
+                workers={"enabled": False},
+                privacy={"store_raw_messages": False},
+            ),
+            llm=None,
+        )
+        await memory.start()
+        secret = "my super secret personal information that must not be stored"
+        receipt = await memory.observe(
+            MessageEvent(
+                message_id="sec-1",
+                guild_id=GUILD,
+                channel_id="c",
+                author_id=ALICE,
+                content=secret,
+                created_at=datetime.now(UTC),
+                author_display_name="alice",
+            )
+        )
+        assert receipt.status.value == "accepted"
+
+        # Raw content must NOT appear in stored messages
+        row = await memory._store._db.query_one(
+            "SELECT content FROM dm_messages WHERE message_id='sec-1'",
+        )
+        if row is not None:
+            assert secret[:10] not in str(row["content"])
+        del row, secret, receipt, memory
+
+
+class TestAttributionOnRemember:
+    async def test_agent_attribution_kwarg(self) -> None:
+        memory = DiscordMemory(make_config(workers={"enabled": False}), llm=None)
+        await memory.start()
+        fact = await memory.facts.remember(
+            guild_id=GUILD,
+            subject_id=ALICE,
+            text="agent-generated insight about user patterns",
+            actor_id="bot",
+            attribution=AttributionType.AGENT,
+        )
+        assert fact.attribution.type is AttributionType.AGENT
+        await memory.close()

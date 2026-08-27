@@ -249,6 +249,15 @@ class AdminApi:
         await self._gate()
         return await self._store.purge_user_data(guild_id, user_id, dry_run=dry_run)
 
+    async def import_guild(self, export: MemoryExport) -> int:
+        """Restore a previously exported guild. Returns fact count inserted."""
+        result = await self._store.import_guild(
+            export.facts,
+            export.entities,
+            export.relations,
+        )
+        return result
+
     async def export_guild(self, guild_id: str) -> MemoryExport:
         from datetime import datetime
 

@@ -35,12 +35,21 @@ from discord_memory import (
     MemoryConfig,
     MessageEvent,
 )
+from discord_memory.adapters.llm_openai_compat import OpenAICompatLLM
+from discord_memory.config import LlmConfig
+from discord_memory.ports.llm import ChatRequest, LlmMessage
 
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("discord").setLevel(logging.WARNING)
 log = logging.getLogger("omni-style")
 
 MAX_CONTEXT_SUBJECTS = 4
 TURN_TOKEN_BUDGET = 800
+LLM_URL = "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=google/gemini-3.7-flash"
+EMBEDDINGS_URL = (
+    "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=openai/text-embedding-3-small"
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -49,10 +58,13 @@ TURN_TOKEN_BUDGET = 800
 
 
 def build_memory() -> DiscordMemory:
+    # Hosted embeddings for reconcile + recall. If this DB was created with the
+    # default hashing embedder, delete dm_vectors or start a fresh sqlite file.
     return DiscordMemory(
         MemoryConfig(
             storage="sqlite:///omni-style.db",
-            llm=("openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=google/gemini-3.7-flash"),
+            llm=LLM_URL,
+            embeddings=EMBEDDINGS_URL,
             batching={"batch_size_messages": 12, "max_age_seconds": 90},
             extraction={"auto_consolidate_after_adds": 6},
             retrieval={"default_token_budget": TURN_TOKEN_BUDGET},
@@ -327,11 +339,30 @@ async def recent_history(message: discord.Message, *, limit: int):
     return turns
 
 
+_reply_llm: OpenAICompatLLM | None = None
+
+
+def _reply_llm_client() -> OpenAICompatLLM:
+    global _reply_llm
+    if _reply_llm is None:
+        _reply_llm = OpenAICompatLLM(LlmConfig.from_url(LLM_URL))
+    return _reply_llm
+
+
 async def generate(system_prompt: str, history, question: str) -> str:
-    """Plug your OpenAI-compatible chat completion call in here."""
-    raise NotImplementedError(
-        "wire your generation stack: system_prompt + history + question -> text",
+    messages: list[LlmMessage] = [LlmMessage(role="system", content=system_prompt)]
+    for author, content in history:
+        if content.strip():
+            messages.append(LlmMessage(role="user", content=f"{author}: {content}"))
+    messages.append(LlmMessage(role="user", content=question))
+    response = await _reply_llm_client().complete(
+        ChatRequest(
+            messages=tuple(messages),
+            max_tokens=900,
+            purpose="reply",
+        )
     )
+    return response.text.strip()
 
 
 def main() -> None:

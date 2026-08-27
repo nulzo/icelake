@@ -927,6 +927,39 @@ class MongoStore:
 
     # -- maintenance ----------------------------------------------------------------------
 
+    async def import_guild(
+        self,
+        facts: tuple[FactRecord, ...],
+        entities: tuple[EntityRecord, ...],
+        relations: tuple[RelationEdge, ...],
+    ) -> int:
+        """Bulk restore from a MemoryExport."""
+        from discord_memory.adapters.mongo.mapping import (
+            entity_to_doc,
+            fact_to_doc,
+            relation_to_doc,
+        )
+
+        for record in facts:
+            await self.db["dm_facts"].insert_one(fact_to_doc(record))
+        for entity in entities:
+            await self.db["dm_entities"].update_one(
+                {"guild_id": entity.guild_id, "slug": entity.slug},
+                {"$setOnInsert": entity_to_doc(entity)},
+                upsert=True,
+            )
+        for edge in relations:
+            doc = relation_to_doc(edge)
+            await self.db["dm_relations"].update_one(
+                {
+                    k: doc[k]
+                    for k in ("guild_id", "src_type", "src_id", "dst_type", "dst_id", "verb")
+                },
+                {"$setOnInsert": doc},
+                upsert=True,
+            )
+        return len(facts)
+
     async def sweep_expired(self, guild_id: str, now: datetime) -> int:
         result = await self.db["dm_facts"].update_many(
             {"guild_id": guild_id, "expires_at": {"$ne": None, "$lte": _iso(now)}, **self._ACTIVE},

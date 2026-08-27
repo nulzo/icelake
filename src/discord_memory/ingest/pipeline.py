@@ -28,7 +28,7 @@ from discord_memory.ports.clock import Clock, IdGen
 from discord_memory.ports.llm import ChatLLM, Embedder, Meter
 from discord_memory.ports.queue import BatchKey, IngestQueue, StoredMessage
 from discord_memory.ports.store import MemoryStore
-from discord_memory.ports.vectors import VectorIndex
+from discord_memory.ports.vectors import VectorIndex, VectorItem
 
 if TYPE_CHECKING:
     from discord_memory.api.events import EventBus
@@ -281,7 +281,7 @@ class IngestPipeline:
         if step is BudgetStep.SKIP_EXTRACTION:
             return BatchReport(key=key, messages_processed=len(messages), skipped_reason="budget")
 
-        roster = self._build_roster(messages, author_id=subject_key_author)
+        roster = await self._build_roster(messages, author_id=subject_key_author)
         batch_embedding = None
         if self._embedder is not None and normalize_text(joined_text):
             (batch_embedding,) = await self._embedder.embed((joined_text,))
@@ -385,6 +385,7 @@ class IngestPipeline:
         )
         decisions_map = await self._reconciler.resolve_collisions(plan.collisions)
 
+        committed_records = []
         for proposal, subject_id, speaker_id in plan.direct_adds:
             record = await self._committer.commit_add(
                 proposal=proposal,
@@ -394,9 +395,27 @@ class IngestPipeline:
                 roster=roster,
                 mentioned_ids=mentioned_ids,
                 source_refs=_pick_citations(proposal.source_message_indexes, source_refs),
+                skip_embedding=True,
             )
             summary.adds += 1
+            committed_records.append(record)
             self._publish_fact(record, reinforced=False)
+
+        # Batched embedding: one embed call for all new facts.
+        if committed_records and self._embedder is not None and self._vectors is not None:
+            texts = [r.text for r in committed_records]
+            vectors = await self._embedder.embed(texts)
+            for record, embedding in zip(committed_records, vectors, strict=True):
+                await self._vectors.upsert(
+                    (
+                        VectorItem(
+                            id=record.id,
+                            guild_id=record.guild_id,
+                            subject_id=record.subject_id,
+                            embedding=embedding,
+                        ),
+                    )
+                )
 
         for index, collision in enumerate(plan.collisions):
             decisions = decisions_map.get(index, ())
@@ -488,25 +507,39 @@ class IngestPipeline:
                 )
             )
 
-    def _build_roster(
+    async def _build_roster(
         self,
         messages: tuple[StoredMessage, ...],
         *,
         author_id: str | None,
     ) -> Roster:
+        """Build a participant roster with alias-enriched display names.
+
+        Mention IDs are resolved through the alias index so the LLM sees
+        human-readable names instead of raw snowflakes.
+        """
         roster = Roster()
         seen: set[str] = set()
+        guild_id = messages[0].guild_id if messages else ""
 
-        def add(user_id: str | None, display_name: str) -> None:
-            if user_id and user_id not in seen:
-                seen.add(user_id)
-                roster.add(user_id, display_name)
+        async def add(user_id: str | None, display_name: str) -> None:
+            if not user_id or user_id in seen:
+                return
+            seen.add(user_id)
+            aliases = await self._store.aliases_for_user(guild_id, user_id)
+            best_alias = max(aliases, key=lambda r: r.weight) if aliases else None
+            name = (
+                best_alias.alias_norm
+                if best_alias and best_alias.source.rank >= 60
+                else display_name
+            )
+            roster.add(user_id, name)
 
         if author_id:
             first = messages[0]
-            add(author_id, first.author_display_name or first.author_username or author_id)
+            await add(author_id, first.author_display_name or first.author_username or author_id)
         for message in messages:
-            add(message.author_id, message.author_display_name or message.author_username)
+            await add(message.author_id, message.author_display_name or message.author_username)
             for mention_id in message.mention_ids:
-                add(mention_id, mention_id)
+                await add(mention_id, mention_id)
         return roster

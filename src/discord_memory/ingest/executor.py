@@ -80,6 +80,7 @@ class FactCommitter:
         supersedes_id: str | None = None,
         mentioned_ids: tuple[str, ...] = (),
         source_refs: tuple[SourceRef, ...] = (),
+        skip_embedding: bool = False,
     ) -> FactRecord:
         now = self._clock.now()
         tier, expires_after = assign_tier(
@@ -128,7 +129,8 @@ class FactCommitter:
             }
         )
         await self._store.insert_fact(record)
-        await self._index_embedding(record)
+        if not skip_embedding:
+            await self._index_embedding(record)
         await self._write_graph(
             guild_id=guild_id,
             record=record,

@@ -214,6 +214,27 @@ class TestExtractVetting:
         )
         assert len(result.vetted) <= ExtractionConfig().max_candidates_per_batch
 
+    async def test_first_pass_requests_strict_schema(self, roster: Roster) -> None:
+        payload = {
+            "operations": [
+                {
+                    "subject_token": "p0",
+                    "text": "alice enjoys weekend trail runs",
+                    "confidence": 0.9,
+                    "source_message_indexes": [1],
+                }
+            ]
+        }
+        extractor, llm = _extractor({"extraction": json.dumps(payload)})
+        await extractor.extract(
+            roster=roster,
+            messages=(("alice", "i ran ten miles on the trail this weekend"),),
+            existing_memories_block="",
+        )
+        assert llm.calls[0].response_schema is not None
+        props = llm.calls[0].response_schema.get("properties", {})
+        assert "operations" in props
+
 
 class TestNoLlmDegradation:
     async def test_extractor_without_llm_returns_empty(self, roster: Roster) -> None:

@@ -13,6 +13,8 @@ from discord_memory.adapters.sqlite.queue import SqliteIngestQueue
 from discord_memory.adapters.sqlite.store_facts import FactsMixin
 from discord_memory.adapters.sqlite.store_graph import IdentityGraphMixin
 from discord_memory.adapters.sqlite.vectors import SqliteVectorIndex
+from discord_memory.models.facts import FactRecord
+from discord_memory.models.graph import EntityRecord, RelationEdge
 
 
 class SqliteStore(FactsMixin, IdentityGraphMixin):
@@ -38,6 +40,27 @@ class SqliteStore(FactsMixin, IdentityGraphMixin):
     async def ping(self) -> bool:
         row = await self._db.query_one("SELECT 1 AS ok")
         return row is not None
+
+    async def import_guild(
+        self,
+        facts: tuple[FactRecord, ...],
+        entities: tuple[EntityRecord, ...],
+        relations: tuple[RelationEdge, ...],
+    ) -> int:
+        """Bulk restore from a MemoryExport."""
+        for record in facts:
+            await self.insert_fact(record)
+        for entity in entities:
+            await self.upsert_entity(
+                entity.guild_id,
+                entity.slug,
+                entity.name,
+                entity.kind,
+                aliases=entity.aliases,
+            )
+        for edge in relations:
+            await self.upsert_relation(edge)
+        return len(facts)
 
 
 __all__ = ["SqliteStore"]

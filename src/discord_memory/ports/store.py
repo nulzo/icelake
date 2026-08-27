@@ -340,4 +340,12 @@ class MemoryStore(Protocol):
         """Access-time reinforcement: reset the decay clock on recalled facts
         (MemoryBank / mem0-decay pattern). One batched write."""
 
+    async def import_guild(
+        self,
+        facts: tuple[FactRecord, ...],
+        entities: tuple[EntityRecord, ...],
+        relations: tuple[RelationEdge, ...],
+    ) -> int:
+        """Restore a previously exported guild. Returns fact count inserted."""
+
     async def guild_stats(self, guild_id: str) -> GuildStats: ...
