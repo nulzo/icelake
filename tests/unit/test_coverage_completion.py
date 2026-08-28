@@ -344,7 +344,7 @@ class TestPipelineBranches:
         )
         client, _ = make_client(llm=llm)
         await client.start()
-        for i in range(2):
+        for i in range(3):
             await client.observe(
                 event_factory(content=f"gaming session number {i} went very late tonight")
             )

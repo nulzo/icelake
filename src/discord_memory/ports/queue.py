@@ -105,6 +105,9 @@ class IngestQueue(Protocol):
     ) -> bool:
         """Heartbeat: extend our live lease. False if lost/stolen."""
 
+    async def release_key(self, key: BatchKey, *, owner: str) -> None:
+        """Drop our key lease when the batch finishes so no other owner stalls."""
+
     async def complete_messages(self, message_ids: tuple[str, ...], owner: str) -> int:
         """Mark OUR claimed messages processed (owner-checked, idempotent)."""
 

@@ -91,6 +91,38 @@ class TestAtomicLeases:
         reclaimed = await queue.release_expired_leases(now + timedelta(seconds=130))
         assert reclaimed == 1
 
+    async def test_same_owner_reclaim_does_not_double_process(self) -> None:
+        """Regression: a concurrent same-owner claim must NOT re-read an
+        in-flight batch (the old SELECT-by-owner returned it and two workers
+        extracted/committed the same messages twice)."""
+        from discord_memory.adapters.sqlite.connection import SqliteConnection
+        from discord_memory.adapters.sqlite.queue import SqliteIngestQueue
+        from discord_memory.ports.queue import BatchKey
+
+        conn = SqliteConnection("sqlite://:memory:")
+        await conn.connect()
+        await conn.ensure_schema()
+        queue = SqliteIngestQueue(conn)
+        now = datetime.now(UTC)
+        for i in range(3):
+            await queue.put_message(_msg(f"m{i}", now))
+        key = BatchKey(guild_id="g1", subject_key="u1")
+
+        first = await queue.claim_batch(key, now=now, lease_seconds=60, owner="w1", limit=10)
+        assert len(first.messages) == 3
+        # Same owner (a second worker in the same process) re-claims mid-flight:
+        # zero rows, not the in-flight batch.
+        second = await queue.claim_batch(key, now=now, lease_seconds=60, owner="w1", limit=10)
+        assert not second.locked_by_other
+        assert second.messages == ()
+        # After completion + release_key, the key is free and nothing re-claims.
+        await queue.complete_messages(
+            tuple(m.message_id for m in first.messages), owner="w1"
+        )
+        await queue.release_key(key, owner="w1")
+        third = await queue.claim_batch(key, now=now, lease_seconds=60, owner="w2", limit=10)
+        assert third.messages == ()
+
     async def test_stolen_owner_cannot_complete(self) -> None:
         from discord_memory.adapters.sqlite.connection import SqliteConnection
         from discord_memory.adapters.sqlite.queue import SqliteIngestQueue

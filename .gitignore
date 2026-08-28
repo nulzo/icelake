@@ -14,3 +14,9 @@ wheels/
 *.db-wal
 
 .coverage
+
+.bench/
+
+.env
+
+bench_runs/

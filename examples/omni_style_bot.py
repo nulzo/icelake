@@ -40,8 +40,8 @@ from discord_memory.config import LlmConfig
 from discord_memory.ports.llm import ChatRequest, LlmMessage
 
 logging.basicConfig(level=logging.INFO)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("discord").setLevel(logging.WARNING)
+# logging.getLogger("httpx").setLevel(logging.WARNING)
+# logging.getLogger("discord").setLevel(logging.WARNING)
 log = logging.getLogger("omni-style")
 
 MAX_CONTEXT_SUBJECTS = 4

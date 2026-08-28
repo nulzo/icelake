@@ -17,20 +17,19 @@ class LlmMessage(FrozenModel):
 class ChatRequest(FrozenModel):
     """One completion request.
 
-    ``json_mode`` asks for JSON output. ``response_schema`` (a JSON-Schema
-    dict) additionally requests *native* structured output via
-    ``response_format: {"type": "json_schema"}`` — enforced server-side on
-    capable providers, best-effort elsewhere.
+    ``response_schema`` (a JSON-Schema dict) requests *native* structured output
+    via ``response_format: {"type": "json_schema"}`` — enforced server-side on
+    capable providers, best-effort elsewhere. Omit it for plain-text completions.
     """
 
     messages: tuple[LlmMessage, ...]
     temperature: float = 0.0
     max_tokens: int = 1024
-    json_mode: bool = False
     response_schema: dict[str, object] | None = None
-    json_object_only: bool = False
     purpose: str = "general"
     timeout_seconds: float | None = None
+    # Budget attribution metadata — providers ignore it; MeteredLLM charges it.
+    guild_id: str | None = None
 
 
 class ChatResponse(FrozenModel):
@@ -52,6 +51,15 @@ class ChatLLM(Protocol):
 
     @property
     def model_name(self) -> str: ...
+
+
+@runtime_checkable
+class LlmCache(Protocol):
+    """Content-addressed completion cache (opt-in; sqlite backend ships one)."""
+
+    async def get(self, key: str) -> ChatResponse | None: ...
+
+    async def put(self, key: str, response: ChatResponse) -> None: ...
 
 
 @runtime_checkable
@@ -78,6 +86,10 @@ class Meter(Protocol):
     ) -> None: ...
 
     def increment(self, name: str, value: float = 1.0) -> None: ...
+
+    def charge_guild(self, guild_id: str, *, prompt_tokens: int) -> None:
+        """Attribute prompt spend to a guild for budget accounting."""
+        ...
 
     def check_budget(self, guild_id: str) -> BudgetStep:
         """Current degradation step for a guild's spend budget."""

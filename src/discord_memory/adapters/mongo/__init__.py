@@ -29,6 +29,7 @@ from discord_memory.adapters.mongo.mapping import (
     summary_from_doc,
     summary_to_doc,
 )
+from discord_memory.adapters.mongo.queue import CLAIMED
 from discord_memory.models.admin import GuildStats, PurgeReport
 from discord_memory.models.common import Page
 from discord_memory.models.facts import (
@@ -1108,6 +1109,9 @@ class MongoStore:
             {"guild_id": guild_id, "valid_until": None},
         )
         pending = await self.queue.pending_count(guild_id)
+        claimed = await self.db["dm_messages"].count_documents(
+            {"guild_id": guild_id, "status": CLAIMED}
+        )
         dead = await self.queue.dead_letter_count(guild_id)
         return GuildStats(
             guild_id=guild_id,
@@ -1117,6 +1121,7 @@ class MongoStore:
             entity_count=entities,
             relation_count=relations,
             pending_messages=pending,
+            in_flight_messages=claimed,
             dead_letters=dead,
         )
 

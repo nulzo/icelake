@@ -9,6 +9,7 @@ identical ports.
 from __future__ import annotations
 
 from discord_memory.adapters.sqlite.connection import SqliteConnection
+from discord_memory.adapters.sqlite.llm_cache import SqliteLlmCache
 from discord_memory.adapters.sqlite.queue import SqliteIngestQueue
 from discord_memory.adapters.sqlite.store_facts import FactsMixin
 from discord_memory.adapters.sqlite.store_graph import IdentityGraphMixin
@@ -24,6 +25,7 @@ class SqliteStore(FactsMixin, IdentityGraphMixin):
         self._db = SqliteConnection(url)
         self.queue = SqliteIngestQueue(self._db)
         self.vectors = SqliteVectorIndex(self._db)
+        self.llm_cache = SqliteLlmCache(self._db)
 
     def transaction(self):  # type: ignore[no-untyped-def]
         """Async CM: BEGIN IMMEDIATE .. COMMIT/ROLLBACK around fact commits."""

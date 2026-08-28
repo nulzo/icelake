@@ -57,6 +57,7 @@ class TestRecall:
         top = result.facts[0]
         assert top.score > 0
         assert top.components is not None
+        assert top.components.strength > 0  # recency-aware strength wired into rerank
         assert top.fact.subject_id == ALICE
         await client.close()
 
@@ -112,11 +113,13 @@ class TestRecall:
         )
         client, _ = make_client(llm=llm)
         await client.start()
-        event = event_factory(
-            content="tournament season is starting again soon everyone",
-            author_id=ALICE,
-        )
-        await client.observe(event)
+        for i in range(3):
+            await client.observe(
+                event_factory(
+                    content=f"tournament season is starting again soon everyone ({i})",
+                    author_id=ALICE,
+                )
+            )
         await client._pipeline.flush_subject(GUILD, "__server__")
         result = await client.recall(
             RecallQuery(guild_id=GUILD, scope=Scope.SERVER, text="tournaments")

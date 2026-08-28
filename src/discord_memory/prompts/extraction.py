@@ -21,6 +21,9 @@ RULES:
 - Ignore small talk, transient states ("I'm hungry"), and bare link shares.
 - If new info contradicts or refines nothing you can see, just add it; reconciliation
   against existing memories happens automatically afterwards.
+- ALWAYS emit a fact when NEW MESSAGES restate it, even if it already appears in
+  EXISTING RELEVANT MEMORIES — repetition is the reinforcement signal. Never return
+  empty operations just because the information is already known.
 - Every fact MUST cite source_message_indexes using the [msg:N] labels.
 - Include entities for named non-participant things (games, places, brands).
 - Include relations for durable typed edges (likes, dislikes, brother_of, called_out).
@@ -43,23 +46,28 @@ OUTPUT JSON FORMAT:
 ]}"""
 
 RECONCILE_SYSTEM_PROMPT = """\
-You are the memory reconciliation module. Given one candidate fact and similar \
-existing memories about the same person, decide per existing memory whether the \
-candidate ADDs new information, UPDATEs (refines) it, INVALIDATEs (contradicts) it, \
-or is a NOOP duplicate. Output only JSON."""
+You are the memory reconciliation module. Given candidate facts and similar \
+existing memories about the same people, decide per candidate whether it ADDs \
+new information, UPDATEs (refines) an existing memory, INVALIDATEs (contradicts) \
+one, or is a NOOP duplicate. Output only JSON."""
 
 RECONCILE_INSTRUCTIONS = """\
 RULES:
+- Emit one decision per CANDIDATE, referencing it by its index.
 - UPDATE requires target_id and merges complementary detail into refined text.
+  Prefer UPDATE over ADD when the candidate refines or adds detail to an existing
+  memory on the same aspect.
 - INVALIDATE requires target_id when the candidate proves an old memory false.
 - NOOP when the candidate repeats an existing memory with no new content.
-- Do not invent ids. Only reference ids listed under EXISTING MEMORIES.
+- ADD when no existing memory covers the candidate.
+- Only reference [ids] listed under that candidate's EXISTING MEMORIES.
 
 OUTPUT JSON FORMAT:
 {"decisions": [
-  {"kind": "noop", "target_id": "fct_123", "reason": "same meaning"},
-  {"kind": "update", "target_id": "fct_456",
-   "text": "merged refinement text", "reason": "adds detail"}
+  {"candidate_index": 0, "kind": "noop", "target_id": 3, "reason": "same meaning"},
+  {"candidate_index": 1, "kind": "update", "target_id": 4,
+   "text": "merged refinement text", "reason": "adds detail"},
+  {"candidate_index": 2, "kind": "add", "reason": "new information"}
 ]}"""
 
 
@@ -73,7 +81,7 @@ def render_extraction_prompt(
     return f"""PARTICIPANTS (reference these EXACT tokens):
 {roster_block}
 
-EXISTING RELEVANT MEMORIES (context only):
+EXISTING RELEVANT MEMORIES (already stored — still emit facts that restate them):
 {existing_memories_block or "(none yet)"}
 
 NEW MESSAGES:
@@ -90,14 +98,6 @@ def render_messages_block(
     )
 
 
-def render_reconcile_prompt(
-    *,
-    candidate_text: str,
-    neighbors_block: str,
-) -> str:
-    return f"""CANDIDATE FACT:
-{candidate_text}
-
-EXISTING MEMORIES:
-{neighbors_block}
-"""
+def render_reconcile_prompt(candidates_block: str) -> str:
+    """Assemble the batched reconcile user prompt: rules + candidate blocks."""
+    return f"{RECONCILE_INSTRUCTIONS}\n\n{candidates_block}\n"

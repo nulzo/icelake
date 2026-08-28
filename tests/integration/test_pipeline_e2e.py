@@ -4,14 +4,35 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Sequence
 
+from discord_memory import DiscordMemory
 from discord_memory.models.events import BatchCompleted, FactCommitted
 from tests.conftest import (
     ExplodingLLM,
     ScriptedLLM,
+    SeqIdGen,
     extraction_response,
     make_config,
 )
+
+
+class CountingEmbedder:
+    """Hashing embedder that records every call's batch shape."""
+
+    def __init__(self) -> None:
+        from discord_memory.adapters.embedders import HashingEmbedder
+
+        self._inner = HashingEmbedder(64)
+        self.calls: list[tuple[str, ...]] = []
+
+    @property
+    def dimensions(self) -> int:
+        return self._inner.dimensions
+
+    async def embed(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
+        self.calls.append(tuple(texts))
+        return await self._inner.embed(texts)
 
 
 async def observe_and_flush(client, event_factory, **event_kwargs):
@@ -280,15 +301,16 @@ class TestReconciliation:
             prompt = request.messages[-1].content
             import re
 
-            match = re.search(r"id=(fct_\S+)", prompt)
+            match = re.search(r"\[(\d+)\]", prompt)
             if match:
                 old_fact_id["id"] = match.group(1)
             return json.dumps(
                 {
                     "decisions": [
                         {
+                            "candidate_index": 0,
                             "kind": "invalidate",
-                            "target_id": match.group(1) if match else "",
+                            "target_id": int(match.group(1)) if match else None,
                             "reason": "moved away",
                         }
                     ]
@@ -324,6 +346,69 @@ class TestReconciliation:
         texts = {f.text: f.is_active for f in page.items}
         invalidated = [t for t, active in texts.items() if not active]
         assert invalidated, texts
+        await client.close()
+
+    async def test_candidate_embeddings_batched_once_per_batch(
+        self,
+        event_factory,
+        fixed_clock,
+    ) -> None:
+        """N candidates cost ONE embed call, not N (reconcile reuses them)."""
+        llm = ScriptedLLM(
+            {
+                "extraction": extraction_response(
+                    [
+                        {
+                            "subject_token": "p0",
+                            "text": "alice prefers mechanical keyboards",
+                            "category": "preferences",
+                            "confidence": 0.9,
+                            "source_message_indexes": [1],
+                        },
+                        {
+                            "subject_token": "p0",
+                            "text": "alice enjoys trail running on weekends",
+                            "category": "interests",
+                            "confidence": 0.9,
+                            "source_message_indexes": [1],
+                        },
+                        {
+                            "subject_token": "p0",
+                            "text": "alice drinks yellow red bull",
+                            "category": "preferences",
+                            "confidence": 0.9,
+                            "source_message_indexes": [1],
+                        },
+                    ]
+                ),
+            }
+        )
+        embedder = CountingEmbedder()
+        client = DiscordMemory(
+            make_config(),
+            clock=fixed_clock,
+            id_gen=SeqIdGen(),
+            llm=llm,
+            embedder=embedder,
+        )
+        await client.start()
+        await observe_and_flush(
+            client,
+            event_factory,
+            content="keyboards, trail running and yellow red bull are my thing",
+        )
+        candidate_texts = {
+            "alice prefers mechanical keyboards",
+            "alice enjoys trail running on weekends",
+            "alice drinks yellow red bull",
+        }
+        batched = [call for call in embedder.calls if candidate_texts <= set(call)]
+        assert len(batched) == 1, embedder.calls
+        # No per-candidate embed calls anywhere in the batch.
+        singles = [
+            call for call in embedder.calls if len(call) == 1 and call[0] in candidate_texts
+        ]
+        assert not singles, embedder.calls
         await client.close()
 
 
@@ -431,4 +516,192 @@ class TestServerScopeAndConsent:
         assert report.summary is not None or report.skipped_reason is not None
         server_facts = await client.facts.search(guild, "sarcasm", server_only=True)
         assert server_facts
+        await client.close()
+
+    async def test_server_window_below_volume_skips_without_llm(
+        self,
+        make_client,
+        event_factory,
+    ) -> None:
+        llm = ScriptedLLM(
+            {
+                "extraction": extraction_response(
+                    [
+                        {
+                            "subject_token": "server",
+                            "text": "the community communicates with heavy sarcasm",
+                            "category": "culture",
+                            "confidence": 0.85,
+                            "source_message_indexes": [1],
+                        }
+                    ]
+                ),
+            }
+        )
+        client, _ = make_client(llm=llm, config=make_config())
+        await client.start()
+        guild = "500000000000000001"
+        # batch_size_messages is 3 in make_config; 2 messages is below volume.
+        for i in range(2):
+            await client.observe(event_factory(content=f"meme drop number {i} tonight"))
+        report = await client._pipeline.flush_subject(guild, "__server__")
+        assert report.skipped_reason == "below_min_volume"
+        assert not [call for call in llm.calls if call.purpose == "extraction"]
+        await client.close()
+
+    async def test_real_name_mined_from_raw_message(
+        self,
+        make_client,
+        event_factory,
+    ) -> None:
+        """Self-name patterns in raw chat bind to the speaker, even when
+        extraction yields no facts and the LLM never sees the name."""
+        llm = ScriptedLLM({"extraction": extraction_response([])})
+        client, _ = make_client(llm=llm, config=make_config())
+        await client.start()
+        guild = "500000000000000001"
+        author = None
+        for i in range(3):
+            # lowercase, as people actually type in chat
+            event = event_factory(content=f"my name is nolan gregory, post {i}")
+            author = event.author_id
+            await client.observe(event)
+        await client.flush()
+        aliases = await client.identity.aliases_of(guild, author)
+        assert any(a.alias_norm == "nolan gregory" for a in aliases), aliases
+        await client.close()
+
+    async def test_name_mined_from_fact_text(
+        self,
+        make_client,
+        event_factory,
+    ) -> None:
+        """The LLM rewrites names third-person ("nulzo's name is Nolan
+        Gregory"); mining fact text binds the name to the fact subject even
+        when the raw message has no first-person marker."""
+        llm = ScriptedLLM(
+            {
+                "extraction": extraction_response(
+                    [
+                        {
+                            "subject_token": "p0",
+                            "text": "nulzo's name is Nolan Gregory",
+                            "category": "identity",
+                            "confidence": 0.95,
+                            "source_message_indexes": [1],
+                        }
+                    ]
+                ),
+            }
+        )
+        client, _ = make_client(llm=llm, config=make_config())
+        await client.start()
+        guild = "500000000000000001"
+        author = None
+        for i in range(3):
+            event = event_factory(content=f"so my passport finally arrived today ({i})")
+            author = event.author_id
+            await client.observe(event)
+        await client.flush()
+        aliases = await client.identity.aliases_of(guild, author)
+        assert any(a.alias_norm == "nolan gregory" for a in aliases), aliases
+        await client.close()
+
+    async def test_kinship_name_in_fact_not_bound_to_subject(
+        self,
+        make_client,
+        event_factory,
+    ) -> None:
+        llm = ScriptedLLM(
+            {
+                "extraction": extraction_response(
+                    [
+                        {
+                            "subject_token": "p0",
+                            "text": "nulzo's brother's name is Ivan",
+                            "category": "relationships",
+                            "confidence": 0.9,
+                            "source_message_indexes": [1],
+                        }
+                    ]
+                ),
+            }
+        )
+        client, _ = make_client(llm=llm, config=make_config())
+        await client.start()
+        guild = "500000000000000001"
+        author = None
+        for i in range(3):
+            event = event_factory(content=f"my brother ivan visited this weekend ({i})")
+            author = event.author_id
+            await client.observe(event)
+        await client.flush()
+        aliases = await client.identity.aliases_of(guild, author)
+        assert not any("ivan" in a.alias_norm for a in aliases), aliases
+        await client.close()
+
+    async def test_third_party_name_not_bound_to_speaker(
+        self,
+        make_client,
+        event_factory,
+    ) -> None:
+        llm = ScriptedLLM({"extraction": extraction_response([])})
+        client, _ = make_client(llm=llm, config=make_config())
+        await client.start()
+        guild = "500000000000000001"
+        author = None
+        for i in range(3):
+            event = event_factory(content=f"my brother goes by Ivan, post {i}")
+            author = event.author_id
+            await client.observe(event)
+        await client.flush()
+        aliases = await client.identity.aliases_of(guild, author)
+        assert not any("ivan" in a.alias_norm for a in aliases), aliases
+        await client.close()
+
+    async def test_server_scope_drops_user_anchored_facts(
+        self,
+        make_client,
+        event_factory,
+    ) -> None:
+        """The community pass must never write user-anchored facts (race guard)."""
+        llm = ScriptedLLM(
+            {
+                "extraction": extraction_response(
+                    [
+                        {
+                            "subject_token": "p0",
+                            "text": "alice prefers mechanical keyboards",
+                            "category": "preferences",
+                            "confidence": 0.9,
+                            "source_message_indexes": [1],
+                        },
+                        {
+                            "subject_token": "server",
+                            "text": "the community communicates with heavy sarcasm",
+                            "category": "culture",
+                            "confidence": 0.85,
+                            "source_message_indexes": [1],
+                        },
+                    ]
+                ),
+            }
+        )
+        client, _ = make_client(llm=llm, config=make_config())
+        await client.start()
+        guild = "500000000000000001"
+        author = None
+        for i in range(3):
+            event = event_factory(content=f"message number {i} about keyboards and sarcasm")
+            author = event.author_id
+            await client.observe(event)
+        report = await client._pipeline.flush_subject(guild, "__server__")
+        assert report.summary is not None
+        assert report.summary.adds == 1
+        server_facts = await client.facts.search(guild, "sarcasm", server_only=True)
+        assert server_facts
+        user_page = await client.facts.list_for_subject(
+            guild, author, limit=10, include_server=False
+        )
+        assert not user_page.items
         await client.close()

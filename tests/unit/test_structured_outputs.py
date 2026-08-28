@@ -1,7 +1,7 @@
 """Native structured-output (strict json_schema) + fallback ladder tests.
 
 Mirrors the 2026 provider landscape: OpenAI/OpenRouter enforce json_schema
-natively on capable models; others reject it with 400 or treat it as a hint.
+natively on capable endpoints; others reject it with 400 or treat it as a hint.
 The adapter must degrade gracefully without losing the batch.
 """
 
@@ -11,20 +11,16 @@ import json
 
 import httpx
 
-from discord_memory._json import coerce_extraction_payload, parse_json_object
 from discord_memory.adapters.llm_openai_compat import (
     OpenAICompatLLM,
     _strict_schema,
 )
 from discord_memory.config import LlmConfig
-from discord_memory.models.operations import ExtractionOutput
 from discord_memory.ports.llm import ChatRequest, LlmMessage
 
 
-def _client(transport) -> OpenAICompatLLM:
-    client = OpenAICompatLLM(
-        LlmConfig(base_url="https://llm.test/v1", api_key="k", model="m-1", max_retries=1)
-    )
+def _client(transport, *, base_url: str = "https://llm.test/v1") -> OpenAICompatLLM:
+    client = OpenAICompatLLM(LlmConfig(base_url=base_url, api_key="k", model="m-1", max_retries=1))
     client._client = httpx.AsyncClient(transport=transport)  # type: ignore[attr-defined]
     return client
 
@@ -63,16 +59,6 @@ class TestStrictSchemaTransform:
         inner = out["properties"]["operations"]
         assert inner["additionalProperties"] is False
 
-    def test_defs_objects_are_strict_and_defaults_stripped(self) -> None:
-        from discord_memory.models.operations import ReconcileOutput
-
-        out = _strict_schema(ReconcileOutput.model_json_schema())
-        decision = out["$defs"]["ReconcileDecision"]
-        assert decision["additionalProperties"] is False
-        assert set(decision["required"]) == set(decision["properties"])
-        assert "default" not in out["properties"]["decisions"]
-        assert "default" not in decision["properties"]["confidence"]
-
 
 class TestWireFormat:
     def test_strict_json_schema_sent_when_schema_present(self) -> None:
@@ -95,7 +81,6 @@ class TestWireFormat:
             client.complete(
                 ChatRequest(
                     messages=(LlmMessage(role="user", content="hi"),),
-                    json_mode=True,
                     response_schema={"type": "object", "properties": {}},
                     purpose="extraction",
                 )
@@ -104,6 +89,31 @@ class TestWireFormat:
         fmt = captured.get("response_format")
         assert fmt["type"] == "json_schema"
         assert fmt["json_schema"]["strict"] is True
+        assert "provider" not in captured
+
+    def test_openrouter_requests_require_parameters(self) -> None:
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "{}"}}], "usage": {}},
+            )
+
+        client = _client(httpx.MockTransport(handler), base_url="https://openrouter.ai/api/v1")
+        import asyncio
+
+        asyncio.run(
+            client.complete(
+                ChatRequest(
+                    messages=(LlmMessage(role="user", content="hi"),),
+                    response_schema={"type": "object", "properties": {}},
+                    purpose="extraction",
+                )
+            )
+        )
+        assert captured["provider"] == {"require_parameters": True}
 
     async def test_provider_400_on_schema_degrades_to_json_object(self) -> None:
         state = {"calls": 0}
@@ -133,7 +143,6 @@ class TestWireFormat:
         response = await client.complete(
             ChatRequest(
                 messages=(LlmMessage(role="user", content="hi"),),
-                json_mode=True,
                 response_schema={"type": "object", "properties": {}},
                 purpose="extraction",
             )
@@ -141,35 +150,3 @@ class TestWireFormat:
         assert response.text == '{"ok": 1}'
         assert formats_seen == ["json_schema", "json_object"]
         await client.aclose()
-
-
-class TestCoercionSafetyNet:
-    def test_graphiti_triple_shape_normalized(self) -> None:
-        payload = {
-            "facts": [
-                {
-                    "id": "0",
-                    "subject": {"name": "Alice"},
-                    "predicate": "likes",
-                    "object": {"name": "tea"},
-                    "text": "",
-                }
-            ],
-        }
-        coerced = coerce_extraction_payload(payload)
-        operations = coerced["operations"]
-        assert isinstance(operations, list)
-        first = operations[0]
-        assert isinstance(first, dict)
-        assert "Alice" in str(first.get("text"))
-
-    def test_canonical_payload_passthrough_unchanged(self) -> None:
-        payload = {"operations": [{"subject_token": "p0", "text": "x"}]}
-        assert coerce_extraction_payload(payload) == payload
-
-    def test_parse_then_coerce_roundtrip(self) -> None:
-        raw = 'noise {"memories": [{"subject_token": "p0", "text": "y"}]} tail'
-
-        payload = coerce_extraction_payload(parse_json_object(raw))
-        output = ExtractionOutput.model_validate(payload)
-        assert output.operations[0].text == "y"

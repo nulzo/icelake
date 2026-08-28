@@ -7,11 +7,10 @@ keeps this swap invisible (PLAN.md D1).
 
 from __future__ import annotations
 
-import math
 import struct
 
 from discord_memory.adapters.sqlite.connection import SqliteConnection
-from discord_memory.ports.vectors import VectorHit, VectorItem
+from discord_memory.ports.vectors import VectorHit, VectorItem, cosine
 
 
 def _pack(vector: tuple[float, ...]) -> bytes:
@@ -117,23 +116,6 @@ class SqliteVectorIndex:
             (guild_id,),
         )
         return int(row["n"]) if row is not None else 0
-
-
-def cosine(a: tuple[float, ...], b: tuple[float, ...]) -> float:
-    """Cosine similarity clipped to [0, 1]."""
-    if not a or len(a) != len(b):
-        return 0.0
-    dot = 0.0
-    norm_a = 0.0
-    norm_b = 0.0
-    for x, y in zip(a, b, strict=False):
-        dot += x * y
-        norm_a += x * x
-        norm_b += y * y
-    if norm_a <= 0.0 or norm_b <= 0.0:
-        return 0.0
-    similarity = dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
-    return max(0.0, min(1.0, similarity))
 
 
 __all__ = ["SqliteVectorIndex", "cosine"]

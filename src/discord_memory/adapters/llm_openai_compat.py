@@ -88,21 +88,21 @@ class OpenAICompatLLM:
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         attempt = 0
+        json_object_fallback = False
         while True:
             attempt += 1
             try:
-                return await self._complete_once(request)
+                return await self._complete_once(request, json_object_fallback=json_object_fallback)
             except httpx.HTTPStatusError as exc:
-                # Provider rejects native json_schema -> degrade to plain
-                # json_object rather than failing the batch (2026 provider
-                # landscape: enforcement varies; see OpenRouter docs).
-                if exc.response.status_code == 400 and request.response_schema is not None:
-                    request = request.model_copy(
-                        update={
-                            "response_schema": None,
-                            "json_mode": True,
-                        }
-                    )
+                # Endpoint rejects native json_schema -> degrade once to plain
+                # json_object rather than failing the batch. Support is
+                # per-endpoint (OpenRouter structured-outputs docs, 2026).
+                if (
+                    exc.response.status_code == 400
+                    and request.response_schema is not None
+                    and not json_object_fallback
+                ):
+                    json_object_fallback = True
                     continue
                 retries_exhausted = attempt > self._config.max_retries
                 if exc.response.status_code not in _RETRY_STATUS or retries_exhausted:
@@ -113,7 +113,9 @@ class OpenAICompatLLM:
                     raise
                 await asyncio.sleep(min(1.0 * attempt, 3.0))
 
-    async def _complete_once(self, request: ChatRequest) -> ChatResponse:
+    async def _complete_once(
+        self, request: ChatRequest, *, json_object_fallback: bool = False
+    ) -> ChatResponse:
         model = self._config.model or ""
         body: dict[str, object] = {
             "model": model,
@@ -121,11 +123,10 @@ class OpenAICompatLLM:
             "temperature": request.temperature,
             "max_tokens": request.max_tokens,
         }
-        if request.json_mode:
-            if request.response_schema is not None and (
-                self._config.structured_output_mode == "auto"
-                or self._config.structured_output_mode == "json_schema"
-            ):
+        if request.response_schema is not None:
+            if json_object_fallback:
+                body["response_format"] = {"type": "json_object"}
+            else:
                 body["response_format"] = {
                     "type": "json_schema",
                     "json_schema": {
@@ -136,8 +137,9 @@ class OpenAICompatLLM:
                         "schema": _strict_schema(request.response_schema),
                     },
                 }
-            else:
-                body["response_format"] = {"type": "json_object"}
+                if "openrouter.ai" in (self._config.base_url or ""):
+                    # Route only to endpoints that actually enforce json_schema.
+                    body["provider"] = {"require_parameters": True}
         headers = {"Content-Type": "application/json"}
         if self._config.api_key:
             headers["Authorization"] = f"Bearer {self._config.api_key}"

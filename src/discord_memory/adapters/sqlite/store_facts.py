@@ -823,6 +823,10 @@ class FactsMixin:
             "SELECT COUNT(*) AS n FROM dm_messages WHERE guild_id=? AND status='pending'",
             (guild_id,),
         )
+        claimed_row = await self._db.query_one(
+            "SELECT COUNT(*) AS n FROM dm_messages WHERE guild_id=? AND status='claimed'",
+            (guild_id,),
+        )
         dead_row = await self._db.query_one(
             "SELECT COUNT(*) AS n FROM dm_messages WHERE guild_id=? AND status='dead'",
             (guild_id,),
@@ -841,6 +845,7 @@ class FactsMixin:
             entity_count=count_of(entity_row),
             relation_count=count_of(relation_row),
             pending_messages=count_of(pending_row),
+            in_flight_messages=count_of(claimed_row),
             dead_letters=count_of(dead_row),
         )
 

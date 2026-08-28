@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 
-from pydantic import ValidationError
-
-from discord_memory._json import coerce_extraction_payload, parse_json_object
 from discord_memory.config import ExtractionConfig
 from discord_memory.ingest.gates import (
     GateDecision,
@@ -19,13 +15,9 @@ from discord_memory.ingest.gates import (
 from discord_memory.ingest.roster import Roster
 from discord_memory.models.facts import FactCategory
 from discord_memory.models.operations import ExtractionOutput, ProposedFact
-from discord_memory.ports.llm import ChatLLM, ChatRequest, LlmMessage
+from discord_memory.ports.llm import ChatLLM, LlmMessage
 from discord_memory.prompts import extraction as prompts
-
-
-logger = logging.getLogger(__name__)
-
-_EXTRACTION_SCHEMA: dict[str, object] = ExtractionOutput.model_json_schema()
+from discord_memory.structured import complete_structured
 
 
 @dataclass(slots=True)
@@ -62,6 +54,7 @@ class FactExtractor:
         roster: Roster,
         messages: tuple[tuple[str, str], ...],
         existing_memories_block: str,
+        guild_id: str | None = None,
     ) -> ExtractionResult:
         result = ExtractionResult()
         if self._llm is None or not messages:
@@ -71,53 +64,19 @@ class FactExtractor:
             messages_block=prompts.render_messages_block(messages),
             existing_memories_block=existing_memories_block,
         )
-        response = await self._llm.complete(
-            ChatRequest(
-                messages=(
-                    LlmMessage(role="system", content=prompts.EXTRACTION_SYSTEM_PROMPT),
-                    LlmMessage(role="user", content=user_prompt),
-                ),
-                json_mode=True,
-                max_tokens=1800,
-                purpose="extraction",
-                response_schema=_EXTRACTION_SCHEMA,
-            )
+        output = await complete_structured(
+            self._llm,
+            model=ExtractionOutput,
+            messages=(
+                LlmMessage(role="system", content=prompts.EXTRACTION_SYSTEM_PROMPT),
+                LlmMessage(role="user", content=user_prompt),
+            ),
+            max_tokens=1800,
+            purpose="extraction",
+            guild_id=guild_id,
         )
-        try:
-            payload = parse_json_object(response.text)
-            payload = coerce_extraction_payload(payload)
-            output = ExtractionOutput.model_validate(payload)
-        except (ValueError, ValidationError) as first_error:
-            # One-shot self-repair: show the model its mistake + exact schema.
-            repair_prompt = (
-                f"{user_prompt}\n\nYOUR PREVIOUS RESPONSE WAS INVALID ({first_error}). "
-                "Re-emit ONLY the corrected JSON. Top-level key MUST be "
-                '"operations"; each operation references participants by their '
-                "roster tokens (p0, p1, ...) exactly as listed above."
-            )
-            try:
-                repair_response = await self._llm.complete(
-                    ChatRequest(
-                        messages=(
-                            LlmMessage(role="system", content=prompts.EXTRACTION_SYSTEM_PROMPT),
-                            LlmMessage(role="user", content=repair_prompt),
-                        ),
-                        json_mode=True,
-                        max_tokens=1800,
-                        purpose="extraction",
-                        response_schema=_EXTRACTION_SCHEMA,
-                    )
-                )
-                payload = parse_json_object(repair_response.text)
-                payload = coerce_extraction_payload(payload)
-                output = ExtractionOutput.model_validate(payload)
-                logger.info("Extraction repaired after one retry")
-            except (ValueError, ValidationError) as repair_error:
-                logger.warning(
-                    "Extraction parse failed after repair: %s",
-                    repair_error,
-                )
-                return result
+        if output is None:
+            return result
 
         for operation in output.operations[: self._config.max_candidates_per_batch]:
             decision = self._vet(operation, roster, messages)

@@ -93,9 +93,15 @@ class ReconcileKind(StrEnum):
 
 
 class ReconcileDecision(FrozenModel):
-    """One reconciliation outcome against an existing neighbor fact."""
+    """One reconciliation outcome against an existing neighbor fact.
+
+    ``candidate_index`` identifies which candidate in a batched reconcile call
+    this decision belongs to; ``target_id`` carries the integer id remapping
+    shown in the prompt (mapped back to real fact ids by the reconciler).
+    """
 
     kind: ReconcileKind
+    candidate_index: int = Field(default=0, ge=0)
     target_id: str | None = None
     text: str | None = None
     confidence: float = Field(default=0.8, ge=0.0, le=1.0)
@@ -106,7 +112,7 @@ class ReconcileDecision(FrozenModel):
     def _empty_to_none(cls, value: object) -> object:
         if value in ("", "null", None):
             return None
-        return value
+        return str(value)
 
 
 class ReconcileOutput(FrozenModel):

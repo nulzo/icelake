@@ -154,6 +154,12 @@ class SqliteIngestQueue:
         )
         return True
 
+    async def release_key(self, key: BatchKey, *, owner: str) -> None:
+        await self._db.execute(
+            "DELETE FROM dm_batch_leases WHERE guild_id=? AND subject_key=? AND owner=?",
+            (key.guild_id, key.subject_key, owner),
+        )
+
     async def claim_batch(
         self,
         key: BatchKey,
@@ -169,13 +175,14 @@ class SqliteIngestQueue:
         ):
             return ClaimOutcome(key=key, locked_by_other=True)
 
-        await self._db.execute(
+        rows = await self._db.execute_returning(
             """UPDATE dm_messages SET status='claimed', lease_owner=?, lease_until=?
                WHERE message_id IN (
                    SELECT message_id FROM dm_messages
                    WHERE guild_id=? AND subject_key=? AND status='pending'
                    ORDER BY created_at ASC LIMIT ?
-               )""",
+               )
+               RETURNING *""",
             (
                 owner,
                 iso(now + timedelta(seconds=lease_seconds)),
@@ -184,12 +191,8 @@ class SqliteIngestQueue:
                 limit,
             ),
         )
-        rows = await self._db.query(
-            """SELECT * FROM dm_messages
-               WHERE guild_id=? AND subject_key=? AND status='claimed'
-                 AND lease_owner=? ORDER BY created_at ASC""",
-            (key.guild_id, key.subject_key, owner),
-        )
+        # RETURNING yields exactly the rows this call flipped — a concurrent
+        # same-owner claim sees zero rows instead of re-reading an in-flight batch.
         return ClaimOutcome(key=key, messages=tuple(_message_from_row(r) for r in rows))
 
     async def complete_messages(self, message_ids: tuple[str, ...], owner: str) -> int:

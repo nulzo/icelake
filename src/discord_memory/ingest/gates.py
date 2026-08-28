@@ -15,7 +15,12 @@ SNOWFLAKE = re.compile(r"\b\d{15,25}\b")
 MENTION_TAG = re.compile(r"<@!?&?\d+>")
 URL = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 QUESTION_START = re.compile(
-    r"^(do|does|did|is|are|was|were|who|what|when|where|why|how|can|could|should)\b",
+    # Wh-words lead questions, never synthesized facts. Auxiliaries only count
+    # with subject inversion ("is he", "does nolan" slips, but "is allergic"
+    # is a statement fragment, not a question).
+    r"^(?:who|what|when|where|why|how)\b"
+    r"|^(?:do|does|did|is|are|was|were|can|could|should|would|has|have|had)\s+"
+    r"(?:i|you|he|she|it|we|they|there|this|that)\b",
     re.IGNORECASE,
 )
 RANT_DENIAL = re.compile(r"\b(no no no|i don'?t|stop it)\b", re.IGNORECASE)

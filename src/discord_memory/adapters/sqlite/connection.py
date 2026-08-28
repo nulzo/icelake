@@ -71,6 +71,12 @@ CREATE INDEX IF NOT EXISTS ix_dm_facts_norm
     ON dm_facts (guild_id, subject_id, text_normalized);
 CREATE INDEX IF NOT EXISTS ix_dm_facts_strength ON dm_facts (guild_id, strength DESC);
 CREATE VIRTUAL TABLE IF NOT EXISTS dm_facts_fts USING fts5(text);
+CREATE TABLE IF NOT EXISTS dm_llm_cache (
+    key TEXT PRIMARY KEY,
+    response TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS dm_history (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id TEXT NOT NULL,
@@ -255,6 +261,16 @@ class SqliteConnection:
     async def query_one(self, sql: str, params: Params = ()) -> sqlite3.Row | None:
         rows = await self.query(sql, params)
         return rows[0] if rows else None
+
+    async def execute_returning(self, sql: str, params: Params = ()) -> list[sqlite3.Row]:
+        """Write statement with RETURNING: rows fetched and committed under one lock."""
+        conn = self._require_conn()
+        async with self._lock:
+            cursor = await asyncio.to_thread(conn.execute, sql, tuple(params))
+            rows = await asyncio.to_thread(cursor.fetchall)
+            await asyncio.to_thread(conn.commit)
+            cursor.close()
+            return list(rows)
 
     async def _execute(self, sql: str, params: Params = ()) -> None:
         conn = self._require_conn()

@@ -185,6 +185,11 @@ class MongoIngestQueue:
         )
         return bool(result.modified_count > 0)
 
+    async def release_key(self, key: BatchKey, *, owner: str) -> None:
+        await self.col.database["dm_batch_leases"].delete_one(
+            {"_id": f"{key.guild_id}:{key.subject_key}", "owner": owner}
+        )
+
     async def claim_batch(
         self,
         key: BatchKey,

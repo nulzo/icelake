@@ -49,7 +49,7 @@ from discord_memory.models.retrieval import (
     ScoredFact,
 )
 from discord_memory.ports.clock import Clock, IdGen, SystemClock, UlidIdGen
-from discord_memory.ports.llm import ChatLLM, Embedder, Meter
+from discord_memory.ports.llm import ChatLLM, Embedder, LlmCache, Meter
 from discord_memory.ports.queue import IngestQueue, StoredMessage
 from discord_memory.ports.store import MemoryStore
 from discord_memory.ports.vectors import VectorIndex
@@ -174,11 +174,6 @@ class DiscordMemory:
             else embedder_override  # type: ignore[assignment]
         )
 
-        llm_override = overrides.get("llm", _MISSING)
-        self._llm: ChatLLM | None = (
-            _build_llm(config) if llm_override is _MISSING else llm_override  # type: ignore[assignment]
-        )
-
         meter_override = overrides.get("meter", _MISSING)
         if meter_override is _MISSING:
             from discord_memory.adapters.meter import InMemoryMeter
@@ -186,6 +181,26 @@ class DiscordMemory:
             self._meter: Meter = InMemoryMeter(config.budgets, self._clock)
         else:
             self._meter = meter_override  # type: ignore[assignment]
+
+        llm_override = overrides.get("llm", _MISSING)
+        llm_cache: LlmCache | None = None
+        if config.llm.cache_responses:
+            candidate = getattr(self._store, "llm_cache", None)
+            llm_cache = candidate if isinstance(candidate, LlmCache) else None
+        self._llm: ChatLLM | None = (
+            _build_llm(config, self._meter, cache=llm_cache)
+            if llm_override is _MISSING
+            else llm_override  # type: ignore[assignment]
+        )
+        small_llm_override = overrides.get("small_llm", _MISSING)
+        if small_llm_override is not _MISSING:
+            self._small_llm: ChatLLM | None = small_llm_override  # type: ignore[assignment]
+        elif llm_override is _MISSING and config.llm.small_model:
+            self._small_llm = _build_llm(
+                config, self._meter, model=config.llm.small_model, cache=llm_cache
+            )
+        else:
+            self._small_llm = self._llm
 
         self._guard = BotGuard()
         consent = ConsentPolicy(self._store)
@@ -200,6 +215,7 @@ class DiscordMemory:
             vectors=self._vectors,
             embedder=self._embedder,
             llm=self._llm,
+            reconcile_llm=self._small_llm,
             meter=self._meter,
             subject_gate=self._subject_gate,
         )
@@ -227,11 +243,11 @@ class DiscordMemory:
         self.graph = GraphApi(store=self._store, startup_gate=_group_gate)
         self.admin = AdminApi(self._store, startup_gate=_group_gate)
         self.ops = _OpsApi(self)
-        self._classifier = CommandClassifier(self._llm)
+        self._classifier = CommandClassifier(self._small_llm)
         self._injection = InjectionBuilder()
         self._consolidation = ConsolidationService(
             store=self._store,
-            llm=self._llm,
+            llm=self._small_llm,
             embedder=self._embedder,
             config=config,
         )
@@ -275,9 +291,19 @@ class DiscordMemory:
             return
         self.closing = True
         self._shutdown_done = True
-        for task in self.worker_tasks:
-            task.cancel()
-        await asyncio.gather(*self.worker_tasks, return_exceptions=True)
+        if self.worker_tasks:
+            try:
+                # Let in-flight batches finish: the loop exits after its current
+                # pass, so their claims complete instead of stranding mid-commit.
+                await asyncio.wait_for(
+                    asyncio.gather(*self.worker_tasks, return_exceptions=True),
+                    timeout_seconds,
+                )
+            except TimeoutError:
+                logger.warning("worker drain timeout; cancelling in-flight batches")
+                for task in self.worker_tasks:
+                    task.cancel()
+                await asyncio.gather(*self.worker_tasks, return_exceptions=True)
         self.worker_tasks.clear()
         if drain:
             try:
@@ -459,6 +485,7 @@ class DiscordMemory:
             embedder=self._embedder,
             config=self.config.retrieval,
             guard=self._guard,
+            clock=self._clock,
             is_subject_blocked=_blocked,
             on_recalled=(
                 _reinforce_recalled if self.config.retrieval.reinforce_on_recall else None
@@ -731,12 +758,26 @@ def _in_memory_queue() -> IngestQueue:
     return InMemoryIngestQueue()
 
 
-def _build_llm(config: MemoryConfig) -> ChatLLM | None:
+def _build_llm(
+    config: MemoryConfig,
+    meter: Meter,
+    *,
+    model: str | None = None,
+    cache: LlmCache | None = None,
+) -> ChatLLM | None:
     if not config.llm.enabled:
         return None
+    from discord_memory.adapters.llm_cache import CachedLLM
     from discord_memory.adapters.llm_openai_compat import OpenAICompatLLM
+    from discord_memory.adapters.meter import MeteredLLM
 
-    return OpenAICompatLLM(config.llm)
+    llm_config = (
+        config.llm if model is None else config.llm.model_copy(update={"model": model})
+    )
+    llm: ChatLLM = OpenAICompatLLM(llm_config)
+    if cache is not None:
+        llm = CachedLLM(llm, cache)
+    return MeteredLLM(llm, meter)
 
 
 def _build_store(config: MemoryConfig) -> MemoryStore:

@@ -10,6 +10,8 @@ from typing import Any
 
 from discord_memory.config import RetrievalConfig
 from discord_memory.identity.guards import BotGuard
+from discord_memory.lifecycle.strength import retention, strength_signal
+from discord_memory.models.facts import FactRecord
 from discord_memory.models.retrieval import (
     CHANNELS_DEFAULT,
     ChannelName,
@@ -21,6 +23,7 @@ from discord_memory.models.retrieval import (
     ScoreComponents,
     ScoredFact,
 )
+from discord_memory.ports.clock import Clock
 from discord_memory.ports.llm import Embedder
 from discord_memory.ports.store import MemoryStore
 from discord_memory.ports.vectors import VectorIndex
@@ -51,6 +54,7 @@ class RecallService:
         guard: BotGuard | None = None,
         is_subject_blocked: Any = None,
         on_recalled: Any = None,
+        clock: Clock | None = None,
     ) -> None:
         self._store = store
         self._vectors = vectors
@@ -59,6 +63,7 @@ class RecallService:
         self._guard = guard
         self._is_subject_blocked = is_subject_blocked
         self._on_recalled = on_recalled
+        self._clock = clock
 
     async def recall(self, query: RecallQuery) -> RecallResult:
         selected = query.channels if query.channels else CHANNELS_DEFAULT
@@ -99,21 +104,52 @@ class RecallService:
             k=self._config.rrf_k,
             pool_size=self._config.rerank_pool_size,
         )
+        # One fetch for the fused pool: feeds the strength component and is
+        # reused by _materialize instead of a second get_facts round-trip.
+        pool_records = await self._store.get_facts(
+            query.guild_id, tuple(c.fact_id for c in fused)
+        )
         semantic_map: dict[str, float] = {}
         lexical_map: dict[str, float] = {}
+        entity_map: dict[str, float] = {}
         for out in outputs:
             semantic_map.update(out.semantic)
             lexical_map.update(out.lexical)
+            entity_map.update(out.entity)
 
         scored = hybrid_rerank(
             fused,
-            RerankInputs(semantic=semantic_map, lexical=lexical_map),
+            RerankInputs(
+                semantic=semantic_map,
+                lexical=lexical_map,
+                entity=entity_map,
+                strength=self._strength_map(pool_records),
+            ),
             weight_semantic=self._config.weight_semantic,
             weight_lexical=self._config.weight_lexical,
             weight_entity=self._config.weight_entity,
             weight_strength=self._config.weight_strength,
         )
-        return await self._materialize(query, scored, degraded)
+        return await self._materialize(query, scored, degraded, records=pool_records)
+
+    def _strength_map(self, records: tuple[FactRecord, ...]) -> dict[str, float]:
+        """Recency-aware strength: Ebbinghaus retention times log-scaled strength."""
+        if self._clock is None:
+            return {}
+        now = self._clock.now()
+        return {
+            record.id: strength_signal(
+                strength=record.strength,
+                retention_value=retention(
+                    last_reinforced_at=record.last_reinforced_at
+                    or record.created_at
+                    or now,
+                    now=now,
+                    strength=record.strength,
+                ),
+            )
+            for record in records
+        }
 
     async def _run_channels(
         self,
@@ -254,6 +290,7 @@ class RecallService:
         return ch.ChannelOutput(
             channel=ChannelName.ENTITY,
             ranked_ids=tuple(record.id for _row, record in linked),
+            entity={record.id: 1.0 for _row, record in linked},
         )
 
     async def _materialize(
@@ -261,9 +298,10 @@ class RecallService:
         query: RecallQuery,
         scored: list[RerankResult],
         degraded: list[str],
+        *,
+        records: tuple[FactRecord, ...],
     ) -> RecallResult:
         fact_ids = [fact_id for fact_id, score, _, _ in scored]
-        records = await self._store.get_facts(query.guild_id, tuple(fact_ids))
         by_id = {record.id: record for record in records}
         scores = {fact_id: score for fact_id, score, _, _ in scored}
         components_map = {fact_id: comps for fact_id, _, comps, _ in scored}

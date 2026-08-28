@@ -56,38 +56,65 @@ def combined_confidence(source_rank: int, weight: float, top_weight: float) -> f
     return round(0.6 * rank_component + 0.4 * weight_component, 4)
 
 
+# One-two token names; case-insensitive because chat is lowercase in practice
+# and the LLM normalizes case in extracted facts.
+_NAME = r"([a-z][a-z0-9'.-]*(?: [a-z][a-z0-9'.-]*)?)"
+
+# Second-token captures like "Klim and" / "Nolan but" are conjunction bleed,
+# not surnames — drop the trailing token.
+_TRAILING_NOISE = frozenset(
+    {"and", "but", "or", "so", "the", "a", "an", "is", "it", "to", "too", "also", "then"}
+)
+
 _SELF_NAME_PATTERNS = (
-    (
-        re.compile(
-            r"\b[Mm]y name(?:'s| is) ([A-Z][a-zA-Z'-]{1,20})"
-            r"(?: ([A-Z][a-zA-Z'-]{1,20}))?",
-        ),
-        0.88,
-    ),
-    (re.compile(r"\bcall me ([A-Z][a-zA-Z'-]{1,20})", re.IGNORECASE), 0.86),
-    (re.compile(r"\bgoes by ([A-Z][a-zA-Z'-]{1,20})", re.IGNORECASE), 0.85),
+    (re.compile(rf"\bmy name(?:'s| is) {_NAME}", re.IGNORECASE), 0.88),
+    (re.compile(rf"\bcall me {_NAME}", re.IGNORECASE), 0.86),
+    (re.compile(rf"\bgoes by {_NAME}", re.IGNORECASE), 0.85),
+)
+
+# Third-person forms found in extracted fact text ("nulzo's name is Nolan
+# Gregory", "Real name is Nolan Gregory"). Only safe on text whose subject
+# attribution is already known (facts), never on raw messages.
+_STATED_NAME_PATTERNS = (
+    (re.compile(rf"\b(?:real |full )?name is {_NAME}", re.IGNORECASE), 0.85),
 )
 
 
-def extract_self_name_aliases(text: str) -> list[tuple[str, float]]:
-    """Mine self-referential name mentions from fact/message text.
-
-    Matches capitalized 1-2-token names after markers like ``my name is X`` /
-    ``call me X`` / ``goes by X``. Returns ``(surface, weight)`` pairs.
-    """
+def _collect(
+    text: str, patterns: tuple[tuple[re.Pattern[str], float], ...]
+) -> list[tuple[str, float]]:
     found: list[tuple[str, float]] = []
     seen_spans: set[tuple[int, int]] = set()
-    for pattern, weight in _SELF_NAME_PATTERNS:
+    for pattern, weight in patterns:
         for match in pattern.finditer(text):
             span = match.span(1)
             if span in seen_spans:
                 continue
             seen_spans.add(span)
             surface = match.group(1)
-            if len(match.groups()) > 1 and match.group(2):
-                surface = f"{surface} {match.group(2)}"
+            parts = surface.split()
+            if len(parts) == 2 and parts[1].lower() in _TRAILING_NOISE:
+                surface = parts[0]
             found.append((surface, weight))
     return found
+
+
+def extract_self_name_aliases(text: str) -> list[tuple[str, float]]:
+    """Mine self-referential name mentions from raw message text.
+
+    Matches 1-2-token names after first-person markers like ``my name is X`` /
+    ``call me X`` / ``goes by X``. Bind results to the message author only.
+    """
+    return _collect(text, _SELF_NAME_PATTERNS)
+
+
+def extract_stated_name_aliases(text: str) -> list[tuple[str, float]]:
+    """Mine name statements from extracted fact text (third-person safe).
+
+    Matches ``name is X`` / ``real name is X`` in LLM-normalized facts; the
+    caller must bind results to the fact's subject, never the speaker.
+    """
+    return _collect(text, _STATED_NAME_PATTERNS)
 
 
 _KINSHIP_TERMS = frozenset(

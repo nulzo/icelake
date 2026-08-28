@@ -41,6 +41,37 @@ def test_llm_url_parses_key_host_model() -> None:
     assert config.llm.temperature == 0.5
 
 
+def test_llm_url_parses_small_model() -> None:
+    config = MemoryConfig(llm="openai://k@host/v1?model=big&small_model=cheap")
+    assert config.llm.model == "big"
+    assert config.llm.small_model == "cheap"
+
+
+def test_small_model_routes_reconcile_classify_consolidation() -> None:
+    from discord_memory import DiscordMemory
+
+    config = MemoryConfig(
+        storage="sqlite://:memory:",
+        llm="openai://k@host/v1?model=big&small_model=cheap",
+    )
+    client = DiscordMemory(config)
+    assert client._llm is not None and client._llm.model_name == "big"
+    assert client._small_llm is not None and client._small_llm.model_name == "cheap"
+    assert client._pipeline._reconciler._llm is client._small_llm
+    assert client._classifier._llm is client._small_llm
+
+
+def test_small_model_defaults_to_main_llm() -> None:
+    from discord_memory import DiscordMemory
+
+    config = MemoryConfig(
+        storage="sqlite://:memory:",
+        llm="openai://k@host/v1?model=big",
+    )
+    client = DiscordMemory(config)
+    assert client._small_llm is client._llm
+
+
 @pytest.mark.parametrize("env_name", ["TEST_LLM_KEY"])
 def test_llm_url_expands_env(monkeypatch: pytest.MonkeyPatch, env_name: str) -> None:
     monkeypatch.setenv(env_name, "secret-value")

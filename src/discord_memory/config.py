@@ -59,17 +59,21 @@ class StorageConfig(FrozenModel):
 
 
 class LlmConfig(FrozenModel):
-    """OpenAI-chat-completions-compatible provider settings."""
+    """OpenAI-chat-completions-compatible provider settings.
+
+    ``small_model`` routes cheap structured tasks (reconcile, classify, profile
+    summaries) to a smaller tier; ``None`` uses ``model`` for everything.
+    """
 
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
-    consolidation_model: str | None = None
+    small_model: str | None = None
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     max_tokens: int = Field(default=1200, ge=16)
     timeout_seconds: float = Field(default=30.0, gt=0)
     max_retries: int = Field(default=2, ge=0)
-    structured_output_mode: Literal["auto", "json_schema", "json_object"] = "auto"
+    cache_responses: bool = False
 
     @property
     def enabled(self) -> bool:
@@ -97,7 +101,7 @@ class LlmConfig(FrozenModel):
             base_url=base_url,
             api_key=api_key,
             model=model,
-            consolidation_model=q("consolidation_model"),
+            small_model=q("small_model"),
         )
         if temperature is not None:
             object.__setattr__(config, "temperature", float(temperature))
@@ -168,7 +172,10 @@ class ExtractionConfig(FrozenModel):
     min_confidence: float = Field(default=0.55, ge=0.0, le=1.0)
     max_candidates_per_batch: int = Field(default=12, ge=1)
     reconcile_collision_threshold: float = Field(default=0.85, ge=0.5, le=1.0)
-    near_duplicate_threshold: float = Field(default=0.92, ge=0.5, le=1.0)
+    # 0.96, not 0.92: near-dup reinforce bypasses the LLM, so it must only fire
+    # for true paraphrases. At 0.92, refinements like "promoted to charge nurse"
+    # were swallowed into "works as a nurse" without the update ever applying.
+    near_duplicate_threshold: float = Field(default=0.96, ge=0.5, le=1.0)
     noise_gate: bool = True
     auto_consolidate_after_adds: int = Field(default=5, ge=0)
     summary_sanity_threshold: float = Field(default=0.55, ge=0.0, le=1.0)

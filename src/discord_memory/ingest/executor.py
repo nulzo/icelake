@@ -12,12 +12,6 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from discord_memory.config import MemoryConfig
-from discord_memory.identity.aliases import (
-    extract_self_name_aliases,
-    is_third_party_name_reference,
-    normalize_alias,
-    weight_for_source,
-)
 from discord_memory.ingest.extraction import category_of
 from discord_memory.ingest.gates import normalize_text
 from discord_memory.lifecycle.strength import reinforced_strength
@@ -29,7 +23,6 @@ from discord_memory.models.facts import (
     FactRecord,
     SourceRef,
 )
-from discord_memory.models.identity import AliasSource
 from discord_memory.models.operations import ProposedFact
 from discord_memory.ports.clock import Clock, IdGen
 from discord_memory.ports.llm import Embedder
@@ -138,7 +131,6 @@ class FactCommitter:
             roster=roster,
             mentioned_ids=mentioned_ids,
         )
-        await self._mine_aliases(guild_id=guild_id, record=record)
         await self._store.append_history(
             guild_id,
             record.id,
@@ -200,6 +192,7 @@ class FactCommitter:
             guild_id,
             old_record.id,
             superseded_by_id=fresh.id,
+            valid_until=now,
             updated_at=now,
         )
         await self._store.append_history(
@@ -275,28 +268,6 @@ class FactCommitter:
             mentioned_ids=mentioned_ids,
             roster=roster,
         )
-
-    async def _mine_aliases(self, *, guild_id: str, record: FactRecord) -> None:
-        """Register subject aliases mined from fact text (PLAN.md §3.2 write-time).
-
-        Skips third-party facts and kinship/possessive references so a speaker's
-        statement about someone else never teaches us the subject's name.
-        """
-        if record.subject_id is None:
-            return
-        if record.attribution.type is AttributionType.THIRD_PARTY:
-            return
-        for surface, _weight in extract_self_name_aliases(record.text):
-            if is_third_party_name_reference(record.text, surface):
-                continue
-            await self._store.upsert_alias(
-                guild_id,
-                normalize_alias(surface),
-                record.subject_id,
-                AliasSource.REAL_NAME,
-                weight_for_source(AliasSource.REAL_NAME),
-            )
-
 
 class RosterLike(Protocol):
     """Structural subset of :class:`~discord_memory.ingest.roster.Roster`."""

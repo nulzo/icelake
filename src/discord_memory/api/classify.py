@@ -7,12 +7,13 @@ Returns a typed intent; execution is always the consumer's decision.
 from __future__ import annotations
 
 import re
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import Field
 
 from discord_memory.models.common import FrozenModel
-from discord_memory.ports.llm import ChatLLM, ChatRequest, LlmMessage
+from discord_memory.ports.llm import ChatLLM, LlmMessage
+from discord_memory.structured import complete_structured
 
 _COMMAND_PATTERN = re.compile(
     r"\b(remember|forget|don'?t remember|update|what do you know|what do you remember"
@@ -31,7 +32,7 @@ Respond ONLY with JSON:
   "confidence": 0.0-1.0}}"""
 
 
-class CommandAction(Enum):
+class CommandAction(StrEnum):
     REMEMBER = "remember"
     FORGET = "forget"
     UPDATE = "update"
@@ -67,41 +68,18 @@ class CommandClassifier:
             if lowered.startswith("forget ") or " forget that " in lowered:
                 return UserMemoryCommand(action=CommandAction.FORGET, confidence=0.6)
             return UserMemoryCommand(action=CommandAction.NONE, confidence=0.3)
-            return UserMemoryCommand(action=CommandAction.NONE, confidence=0.3)
 
-        response = await self._llm.complete(
-            ChatRequest(
-                messages=(
-                    LlmMessage(role="system", content="You classify user commands precisely."),
-                    LlmMessage(role="user", content=_CLASSIFY_PROMPT.format(text=text)),
-                ),
-                json_mode=True,
-                max_tokens=160,
-                purpose="classify_command",
-            )
+        command = await complete_structured(
+            self._llm,
+            model=UserMemoryCommand,
+            messages=(
+                LlmMessage(role="system", content="You classify user commands precisely."),
+                LlmMessage(role="user", content=_CLASSIFY_PROMPT.format(text=text)),
+            ),
+            max_tokens=160,
+            purpose="classify_command",
         )
-        return _parse(response.text)
-
-
-def _parse(text: str) -> UserMemoryCommand:
-    import json
-
-    try:
-        start = text.find("{")
-        end = text.rfind("}")
-        payload = json.loads(text[start : end + 1])
-        action = str(payload.get("action", "none")).lower()
-        try:
-            action_enum = CommandAction(action)
-        except ValueError:
-            action_enum = CommandAction.NONE
-        return UserMemoryCommand(
-            action=action_enum,
-            target_text=str(payload.get("target_text", "")),
-            confidence=float(payload.get("confidence", 0.0)),
-        )
-    except (ValueError, TypeError):
-        return UserMemoryCommand(action=CommandAction.NONE)
+        return command if command is not None else UserMemoryCommand()
 
 
 __all__ = ["CommandAction", "CommandClassifier", "UserMemoryCommand"]

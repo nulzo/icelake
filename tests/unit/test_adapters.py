@@ -14,7 +14,7 @@ from discord_memory.config import BudgetsConfig, EmbeddingsConfig, EmbeddingsPro
 from discord_memory.errors import ConfigError
 from discord_memory.models.admin import BudgetStep
 from discord_memory.ports.clock import FixedClock
-from discord_memory.ports.llm import ChatRequest, LlmMessage
+from discord_memory.ports.llm import ChatRequest, ChatResponse, LlmMessage
 
 
 class TestHashingEmbedder:
@@ -84,6 +84,91 @@ class TestInMemoryMeter:
         assert snapshot.prompt_tokens["extraction"] == 10
 
 
+class TestMeteredLLM:
+    async def test_records_usage_per_purpose(self) -> None:
+        from discord_memory.adapters.meter import MeteredLLM
+
+        class _Fake:
+            @property
+            def model_name(self) -> str:
+                return "google/gemini-3.7-flash"
+
+            async def complete(self, request: ChatRequest) -> ChatResponse:
+                return ChatResponse(text="{}", prompt_tokens=1000, completion_tokens=500)
+
+        meter = InMemoryMeter(BudgetsConfig(), FixedClock(TestInMemoryMeter.NOW))
+        llm = MeteredLLM(_Fake(), meter)
+        await llm.complete(
+            ChatRequest(
+                messages=(LlmMessage(role="user", content="hi"),),
+                purpose="extraction",
+            )
+        )
+        snapshot = meter.snapshot()
+        assert snapshot.calls["extraction"] == 1
+        assert snapshot.prompt_tokens["extraction"] == 1000
+        # 1000 in @ $0.375/M + 500 out @ $1.875/M, rounded to 6dp by the snapshot
+        assert snapshot.estimated_cost_usd["extraction"] == pytest.approx(0.001312)
+
+
+class TestCachedLLM:
+    async def test_hit_replays_without_inner_call_and_zero_tokens(self) -> None:
+        from discord_memory.adapters.llm_cache import CachedLLM
+        from discord_memory.adapters.sqlite.connection import SqliteConnection
+        from discord_memory.adapters.sqlite.llm_cache import SqliteLlmCache
+
+        calls = {"n": 0}
+
+        class _Fake:
+            @property
+            def model_name(self) -> str:
+                return "m-1"
+
+            async def complete(self, request: ChatRequest) -> ChatResponse:
+                calls["n"] += 1
+                return ChatResponse(text='{"ok": true}', prompt_tokens=10, completion_tokens=2)
+
+        db = SqliteConnection("sqlite://:memory:")
+        await db.connect()
+        await db.ensure_schema()
+        llm = CachedLLM(_Fake(), SqliteLlmCache(db))
+        request = ChatRequest(messages=(LlmMessage(role="user", content="hi"),))
+
+        first = await llm.complete(request)
+        second = await llm.complete(request)
+
+        assert first.text == '{"ok": true}' and second.text == '{"ok": true}'
+        assert calls["n"] == 1
+        assert second.prompt_tokens == 0 and second.completion_tokens == 0
+        await db.close()
+
+    async def test_distinct_requests_miss(self) -> None:
+        from discord_memory.adapters.llm_cache import CachedLLM
+
+        class _Fake:
+            @property
+            def model_name(self) -> str:
+                return "m-1"
+
+            async def complete(self, request: ChatRequest) -> ChatResponse:
+                return ChatResponse(text=request.messages[-1].content)
+
+        class _DictCache:
+            def __init__(self) -> None:
+                self.store: dict[str, ChatResponse] = {}
+
+            async def get(self, key: str) -> ChatResponse | None:
+                return self.store.get(key)
+
+            async def put(self, key: str, response: ChatResponse) -> None:
+                self.store[key] = response
+
+        llm = CachedLLM(_Fake(), _DictCache())
+        await llm.complete(ChatRequest(messages=(LlmMessage(role="user", content="a"),)))
+        await llm.complete(ChatRequest(messages=(LlmMessage(role="user", content="b"),)))
+        assert len(llm._cache.store) == 2
+
+
 class TestOpenAICompatLLM:
     def _client(self, transport) -> OpenAICompatLLM:
         config = LlmConfig(base_url="https://llm.test/v1", api_key="k", model="m-1", max_retries=1)
@@ -95,7 +180,7 @@ class TestOpenAICompatLLM:
         def handler(request: httpx.Request) -> httpx.Response:
             body = json.loads(request.content)
             assert body["model"] == "m-1"
-            assert body["response_format"] == {"type": "json_object"}
+            assert "response_format" not in body
             return httpx.Response(
                 200,
                 json={
@@ -109,7 +194,6 @@ class TestOpenAICompatLLM:
         response = await client.complete(
             ChatRequest(
                 messages=(LlmMessage(role="user", content="hi"),),
-                json_mode=True,
             )
         )
         assert response.text == '{"ok": true}'

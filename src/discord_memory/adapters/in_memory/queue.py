@@ -225,6 +225,13 @@ class InMemoryIngestQueue:
             self._lease_until[lease_key] = now + timedelta(seconds=lease_seconds)
             return True
 
+    async def release_key(self, key: BatchKey, *, owner: str) -> None:
+        lease_key = key.as_tuple
+        async with self._lock:
+            if self._lease_owner.get(lease_key) == owner:
+                self._lease_owner.pop(lease_key, None)
+                self._lease_until.pop(lease_key, None)
+
     async def prune_processed(self, *, older_than: datetime) -> int:
         cutoff = ensure_aware(older_than)
         doomed = [

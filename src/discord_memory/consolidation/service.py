@@ -75,6 +75,7 @@ class ConsolidationService:
                 ),
                 max_tokens=300,
                 purpose="summarize",
+                guild_id=guild_id,
             )
         )
         text = response.text.strip()

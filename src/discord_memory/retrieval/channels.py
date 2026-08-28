@@ -26,6 +26,7 @@ class ChannelOutput:
     ranked_ids: tuple[str, ...] = ()
     semantic: dict[str, float] = field(default_factory=dict)
     lexical: dict[str, float] = field(default_factory=dict)
+    entity: dict[str, float] = field(default_factory=dict)
 
 
 async def vector_channel(
@@ -160,7 +161,11 @@ async def entity_channel(
             if record.id not in seen:
                 seen.add(record.id)
                 ranked.append(record.id)
-    return ChannelOutput(channel=ChannelName.ENTITY, ranked_ids=tuple(ranked[:limit]))
+    return ChannelOutput(
+        channel=ChannelName.ENTITY,
+        ranked_ids=tuple(ranked[:limit]),
+        entity={fact_id: 1.0 for fact_id in ranked[:limit]},
+    )
 
 
 async def graph_hop_channel(

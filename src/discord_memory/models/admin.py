@@ -38,6 +38,7 @@ class GuildStats(FrozenModel):
     entity_count: int = 0
     relation_count: int = 0
     pending_messages: int = 0
+    in_flight_messages: int = 0  # claimed by a worker, not yet committed
     dead_letters: int = 0
 
 

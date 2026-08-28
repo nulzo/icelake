@@ -267,12 +267,13 @@ class TestReconcileUpdatePath:
         def reconcile_handler(request):
             import re
 
-            match = re.search(r"id=(fct_\S+)", request.messages[-1].content)
-            target = match.group(1) if match else ""
+            match = re.search(r"\[(\d+)\]", request.messages[-1].content)
+            target = int(match.group(1)) if match else None
             return json.dumps(
                 {
                     "decisions": [
                         {
+                            "candidate_index": 0,
                             "kind": "update",
                             "target_id": target,
                             "text": "alice works as a nurse practitioner at city hospital",
@@ -428,14 +429,7 @@ class TestSqliteMergeEntitiesRealMove:
 
 class TestExtractionResidualBranches:
     async def test_noop_decision_without_target_allowed(self) -> None:
-        from discord_memory.ingest.reconcile import parse_reconcile_output
+        from discord_memory.models.operations import ReconcileOutput
 
-        output = parse_reconcile_output(
-            json.dumps(
-                {
-                    "decisions": [{"kind": "noop"}],
-                }
-            )
-        )
-        assert output is not None and output.decisions[0].target_id is None
-        assert parse_reconcile_output("") is None
+        output = ReconcileOutput.model_validate({"decisions": [{"kind": "noop"}]})
+        assert output.decisions[0].target_id is None

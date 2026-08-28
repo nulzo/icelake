@@ -8,7 +8,6 @@ extraction response should lose nothing recoverable.
 from __future__ import annotations
 
 import json
-import re
 from typing import Final
 
 _FENCES: Final = (("```json", "```"), ("```JSON", "```"), ("```", "```"))
@@ -124,81 +123,3 @@ def parse_json_object(text: str) -> dict[str, object]:
 
 
 __all__ = ["parse_json_object"]
-
-
-def coerce_extraction_payload(payload: dict[str, object]) -> dict[str, object]:
-    """Normalize alternate LLM fact schemas into the canonical operations shape.
-
-    Live models (Gemini/DeepSeek/etc.) sometimes answer in Graphiti-style
-    triples ({"facts": [{"subject": ..., "predicate": ..., "object": ...}]})
-    or use "memories" instead of "operations". Strictly rejecting those threw
-    away entire batches — total learning loss. We accept the common variants,
-    synthesize text for bare triples, and leave anything unrecognizable to the
-    validation gates downstream.
-    """
-    if "operations" in payload and isinstance(payload["operations"], list):
-        return payload
-    for key in ("facts", "memories", "items", "results"):
-        raw = payload.get(key)
-        if isinstance(raw, list):
-            return {"operations": [_coerce_item(i) for i in raw]}
-    # A single triple-shaped object at top level.
-    coerced = _coerce_item(payload)
-    if coerced is not None:
-        return {"operations": [coerced]}
-    return payload
-
-
-def _coerce_item(item: object) -> dict[str, object] | None:
-    """Coerce one candidate record into an operations-style dict, or None."""
-    if not isinstance(item, dict):
-        return None
-    out: dict[str, object] = dict(item)
-
-    # Token normalization: "<p0>", 0, "p0" all become "p0".
-    for token_key in ("subject_token", "speaker_token"):
-        value = out.get(token_key)
-        if isinstance(value, int):
-            out[token_key] = f"p{value}"
-        elif isinstance(value, str):
-            stripped = value.strip().strip("<>").lower()
-            if stripped.isdigit():
-                out[token_key] = f"p{stripped}"
-            elif re.fullmatch(r"p\d+", stripped):
-                out[token_key] = stripped
-
-    # Graphiti-triple shape: {subject, predicate, object} with no text.
-    has_text = bool(str(out.get("text", "")).strip())
-    if not has_text:
-        subj = out.pop("subject", None) or out.pop("subject_entity", None)
-        pred = out.pop("predicate", None) or out.pop("verb", None) or out.pop("relationship", None)
-        obj = out.pop("object", None) or out.pop("object_entity", None)
-        if isinstance(subj, dict):
-            subj = subj.get("name") or subj.get("id")
-        if isinstance(obj, dict):
-            obj = obj.get("name") or obj.get("id")
-        if isinstance(pred, str) and subj and obj:
-            verb = str(pred).strip().replace("_", " ")
-            out["text"] = f"{subj} {verb.lower()} {obj}"
-            out.setdefault(
-                "relations",
-                [
-                    {
-                        "verb": str(pred).strip(),
-                        "from_token": out.get("subject_token"),
-                        "to_entity": obj if not str(obj).isdigit() else None,
-                        "to_token": obj if str(obj).isdigit() else None,
-                    }
-                ],
-            )
-            text_value = out["text"]
-            if isinstance(text_value, str):
-                out["text"] = text_value.strip()
-
-    # Drop triple bookkeeping keys we cannot map.
-    for junk in ("id", "uuid", "entity_types", "edge_type_map", "created_at"):
-        out.pop(junk, None)
-    return out
-
-
-__all__ += ["coerce_extraction_payload"]

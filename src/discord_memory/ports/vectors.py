@@ -2,9 +2,22 @@
 
 from __future__ import annotations
 
+import math
 from typing import Protocol, runtime_checkable
 
 from discord_memory.models.common import FrozenModel
+
+
+def cosine(a: tuple[float, ...], b: tuple[float, ...]) -> float:
+    """Cosine similarity clipped to [0, 1]."""
+    if len(a) != len(b) or not a:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return max(0.0, min(1.0, dot / (norm_a * norm_b)))
 
 
 class VectorItem(FrozenModel):

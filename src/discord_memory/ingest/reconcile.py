@@ -8,60 +8,70 @@ trigger the reconcile LLM call — non-colliding candidates commit as plain ADDs
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 
-from pydantic import ValidationError
-
-from discord_memory._json import parse_json_object as _parse_json_object
 from discord_memory.config import ExtractionConfig
 from discord_memory.ingest.gates import normalize_text
 from discord_memory.models.facts import FactRecord
 from discord_memory.models.operations import (
     ProposedFact,
     ReconcileDecision,
+    ReconcileKind,
     ReconcileOutput,
 )
-from discord_memory.ports.llm import ChatLLM, ChatRequest, Embedder, LlmMessage
+from discord_memory.ports.llm import ChatLLM, Embedder, LlmMessage
 from discord_memory.ports.store import MemoryStore
-from discord_memory.ports.vectors import VectorIndex
+from discord_memory.ports.vectors import VectorIndex, cosine
 from discord_memory.prompts import extraction as prompts
+from discord_memory.structured import complete_structured
 
 logger = logging.getLogger(__name__)
 
 MAX_NEIGHBORS_PER_CANDIDATE = 6
 
+# Conflicts are lexically dissimilar ("moved to Seattle" vs "lives in Omaha"), so
+# pure cosine misses them; category is the conflict scope. Same-category neighbors
+# above this floor join the collision set and let the reconcile LLM arbitrate.
+SAME_CATEGORY_COLLISION_FLOOR = 0.35
+
+# Negation / life-event phrasing signals a possible contradiction. Model-assigned
+# categories are too inconsistent to gate those pairs ("loves Red Bull" landed in
+# `preferences`, "quit drinking Red Bull" in `general` — they never collided), so
+# state-change candidates face reconcile against any neighbor above the floor.
+STATE_CHANGE = re.compile(
+    r"\b(quit|stopped|no longer|not anymore|anymore|never|"
+    r"(?:do|does|did)(?:n'?t| not)\b|"
+    r"moved|promoted|hired|fired|graduated|switched|left|broke up|divorced|retired|sold)\b",
+    re.IGNORECASE,
+)
+
 
 @dataclass(slots=True)
 class Collision:
-    """Neighbors of one candidate that require reconciliation."""
+    """Semantic neighbors of one candidate that require LLM reconciliation."""
 
     candidate: ProposedFact
     subject_id: str | None
     speaker_id: str | None
-    duplicates: tuple[FactRecord, ...] = ()
     semantic_neighbors: tuple[FactRecord, ...] = ()
 
     @property
     def neighbors(self) -> tuple[FactRecord, ...]:
-        return self.duplicates + self.semantic_neighbors
+        return self.semantic_neighbors
 
 
 @dataclass(slots=True)
 class ReconcilePlan:
-    """Split of vetted candidates into direct adds and collision-requiring ones."""
+    """Split of vetted candidates into reinforces, direct adds, and collisions."""
 
+    reinforces: list[tuple[FactRecord, ProposedFact, str | None, str | None]] = field(
+        default_factory=list,
+    )
     direct_adds: list[tuple[ProposedFact, str | None, str | None]] = field(
         default_factory=list,
     )
     collisions: list[Collision] = field(default_factory=list)
-
-
-def parse_reconcile_output(text: str) -> ReconcileOutput | None:
-    """Strict-parse a reconcile LLM response; ``None`` on any malformed output."""
-    try:
-        return ReconcileOutput.model_validate(_parse_json_object(text))
-    except (ValueError, ValidationError):
-        return None
 
 
 class Reconciler:
@@ -89,26 +99,35 @@ class Reconciler:
         batch_subject_id: str | None,
         embeddings_by_text: dict[str, tuple[float, ...]],
     ) -> ReconcilePlan:
-        """Partition candidates into direct adds vs collisions needing reconciliation."""
+        """Partition candidates into reinforces, direct adds, and LLM collisions.
+
+        Reinforces are deterministic: exact-normalized duplicates and neighbors at
+        or above ``near_duplicate_threshold`` need no LLM judgment (graphiti's fast
+        path). Only the ambiguous band below that pays for reconciliation.
+        """
         plan = ReconcilePlan()
+        kept: list[tuple[str | None, tuple[float, ...]]] = []
         for candidate, cand_subject, cand_speaker in candidates:
             normalized = normalize_text(candidate.text)
+            vector = embeddings_by_text.get(normalized)
+            if vector is not None and any(
+                subject == cand_subject
+                and cosine(vector, other) >= self._config.near_duplicate_threshold
+                for subject, other in kept
+            ):
+                # Paraphrase of an earlier candidate from the same response.
+                continue
+            if vector is not None:
+                kept.append((cand_subject, vector))
             duplicate = await self._store.find_duplicate(
                 guild_id,
                 cand_subject,
                 normalized,
             )
             if duplicate is not None:
-                plan.collisions.append(
-                    Collision(
-                        candidate=candidate,
-                        subject_id=cand_subject,
-                        speaker_id=cand_speaker,
-                        duplicates=(duplicate,),
-                    )
-                )
+                plan.reinforces.append((duplicate, candidate, cand_subject, cand_speaker))
                 continue
-            embedding = embeddings_by_text.get(normalized)
+            embedding = vector
             if embedding is None and self._embedder is not None:
                 (embedding,) = await self._embedder.embed((candidate.text,))
                 embeddings_by_text[normalized] = embedding
@@ -119,17 +138,21 @@ class Reconciler:
                 batch_subject_id=batch_subject_id,
                 embedding=embedding,
             )
-            if neighbors:
-                plan.collisions.append(
-                    Collision(
-                        candidate=candidate,
-                        subject_id=cand_subject,
-                        speaker_id=cand_speaker,
-                        semantic_neighbors=neighbors,
-                    )
-                )
-            else:
+            if not neighbors:
                 plan.direct_adds.append((candidate, cand_subject, cand_speaker))
+                continue
+            top_record, top_score = neighbors[0]
+            if top_score >= self._config.near_duplicate_threshold:
+                plan.reinforces.append((top_record, candidate, cand_subject, cand_speaker))
+                continue
+            plan.collisions.append(
+                Collision(
+                    candidate=candidate,
+                    subject_id=cand_subject,
+                    speaker_id=cand_speaker,
+                    semantic_neighbors=tuple(record for record, _ in neighbors),
+                )
+            )
         return plan
 
     async def _semantic_neighbors(
@@ -140,7 +163,8 @@ class Reconciler:
         cand_subject: str | None,
         batch_subject_id: str | None,
         embedding: tuple[float, ...] | None,
-    ) -> tuple[FactRecord, ...]:
+    ) -> tuple[tuple[FactRecord, float], ...]:
+        """Score-ordered active neighbors above the collision bars."""
         if self._vectors is None or embedding is None:
             return ()
         scope_ids: tuple[str, ...] | None
@@ -160,58 +184,89 @@ class Reconciler:
             candidate_cap=100,
         )
         threshold = self._config.reconcile_collision_threshold
-        strong = [hit for hit in hits if hit.score >= threshold]
-        if not strong:
+        if not hits:
             return ()
-        records = await self._store.get_facts(guild_id, tuple(hit.id for hit in strong))
-        active = [r for r in records if r.is_active]
-        return tuple(active)
+        records = await self._store.get_facts(guild_id, tuple(hit.id for hit in hits))
+        active_by_id = {record.id: record for record in records if record.is_active}
+        state_change = bool(STATE_CHANGE.search(candidate.text))
+        return tuple(
+            (active_by_id[hit.id], hit.score)
+            for hit in hits
+            if hit.id in active_by_id
+            and (
+                hit.score >= threshold
+                or (
+                    hit.score >= SAME_CATEGORY_COLLISION_FLOOR
+                    and (
+                        state_change
+                        or active_by_id[hit.id].category.value == candidate.category
+                    )
+                )
+            )
+        )
 
     async def resolve_collisions(
         self,
         collisions: list[Collision],
+        *,
+        guild_id: str | None = None,
     ) -> dict[int, tuple[ReconcileDecision, ...]]:
-        """Run the phase-2 LLM per collision; returns decisions keyed by collision index.
+        """One batched phase-2 LLM call for all collisions, keyed by collision index.
 
-        Malformed responses degrade safely to "add anyway" — callers treat a missing
-        entry as ADD.
+        Neighbor fact ids are remapped to small integers for the prompt (fewer
+        tokens, no id hallucination — mem0/graphiti both do this) and mapped back
+        locally. A malformed response degrades safely: callers apply the
+        conservative default to any collision missing from the result.
         """
-        results: dict[int, tuple[ReconcileDecision, ...]] = {}
-        for index, collision in enumerate(collisions):
-            if self._llm is None or not collision.neighbors:
-                continue
-            neighbors_block = "\n".join(
-                f"- id={record.id} :: {record.text}" for record in collision.neighbors
+        active = [(index, c) for index, c in enumerate(collisions) if c.neighbors]
+        if self._llm is None or not active:
+            return {}
+        id_map: dict[str, str] = {}
+        blocks: list[str] = []
+        for candidate_index, (_original, collision) in enumerate(active):
+            lines = []
+            for record in collision.neighbors:
+                remap = str(len(id_map))
+                id_map[remap] = record.id
+                lines.append(f"- [{remap}] {record.text}")
+            blocks.append(
+                f"CANDIDATE {candidate_index}:\n{collision.candidate.text}\n"
+                f"EXISTING MEMORIES:\n" + "\n".join(lines)
             )
-            prompt = prompts.render_reconcile_prompt(
-                candidate_text=collision.candidate.text,
-                neighbors_block=neighbors_block,
-            )
-            response = await self._llm.complete(
-                ChatRequest(
-                    messages=(
-                        LlmMessage(role="system", content=prompts.RECONCILE_SYSTEM_PROMPT),
-                        LlmMessage(role="user", content=prompt),
-                    ),
-                    json_mode=True,
-                    max_tokens=900,
-                    purpose="reconcile",
+        output = await complete_structured(
+            self._llm,
+            model=ReconcileOutput,
+            messages=(
+                LlmMessage(role="system", content=prompts.RECONCILE_SYSTEM_PROMPT),
+                LlmMessage(
+                    role="user",
+                    content=prompts.render_reconcile_prompt("\n\n".join(blocks)),
+                ),
+            ),
+            max_tokens=min(4000, 500 + 250 * len(active)),
+            purpose="reconcile",
+            guild_id=guild_id,
+        )
+        if output is None:
+            return {}
+        results: dict[int, list[ReconcileDecision]] = {}
+        for decision in output.decisions:
+            if decision.candidate_index >= len(active):
+                logger.warning(
+                    "Dropping decision for unknown candidate %d", decision.candidate_index
                 )
-            )
-            output = parse_reconcile_output(response.text)
-            if output is None:
-                logger.warning("Reconcile output unparseable; defaulting to ADD")
                 continue
+            original_index, collision = active[decision.candidate_index]
             known_ids = {record.id for record in collision.neighbors}
-            safe: list[ReconcileDecision] = []
-            for decision in output.decisions:
-                target_known = decision.target_id is not None and decision.target_id in known_ids
-                if decision.kind.value in {"noop", "add"} or target_known:
-                    safe.append(decision)
-                else:
-                    logger.warning(
-                        "Dropping %s decision with unknown target_id",
-                        decision.kind.value,
-                    )
-            results[index] = tuple(safe)
-        return results
+            target = id_map.get(decision.target_id or "") or None
+            if decision.kind is ReconcileKind.NOOP and target not in known_ids:
+                target = None  # caller falls back to the sole/strongest neighbor
+            if decision.kind.value in {"update", "invalidate"} and target not in known_ids:
+                logger.warning(
+                    "Dropping %s decision with unknown target_id",
+                    decision.kind.value,
+                )
+                continue
+            mapped = decision.model_copy(update={"target_id": target})
+            results.setdefault(original_index, []).append(mapped)
+        return {index: tuple(decisions) for index, decisions in results.items()}

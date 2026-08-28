@@ -12,17 +12,47 @@ import threading
 from discord_memory.config import BudgetsConfig
 from discord_memory.models.admin import BudgetStep, MeterSnapshot
 from discord_memory.ports.clock import Clock
+from discord_memory.ports.llm import ChatLLM, ChatRequest, ChatResponse, Meter
 
 _WARN_FRACTION = 0.8
 
 
 DEFAULT_USD_PER_MTOK: dict[str, tuple[float, float]] = {
     # model-substring -> (input $/Mtok, output $/Mtok); first match wins
+    "gemini-3.7-flash": (0.375, 1.875),
     "gemini-2.5-flash": (0.30, 2.50),
     "gemini-2.0-flash": (0.10, 0.40),
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-4o": (2.50, 10.00),
 }
+
+
+class MeteredLLM:
+    """ChatLLM decorator that records usage per purpose after each call.
+
+    Wired around the config-built LLM in the composition root so production
+    token spend is always metered; injected test doubles stay unmetered.
+    """
+
+    def __init__(self, inner: ChatLLM, meter: Meter) -> None:
+        self._inner = inner
+        self._meter = meter
+
+    @property
+    def model_name(self) -> str:
+        return self._inner.model_name
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        response = await self._inner.complete(request)
+        self._meter.record_llm(
+            request.purpose,
+            prompt_tokens=response.prompt_tokens,
+            completion_tokens=response.completion_tokens,
+            model=self._inner.model_name,
+        )
+        if request.guild_id is not None:
+            self._meter.charge_guild(request.guild_id, prompt_tokens=response.prompt_tokens)
+        return response
 
 
 class InMemoryMeter:
@@ -122,4 +152,4 @@ class InMemoryMeter:
             )
 
 
-__all__ = ["InMemoryMeter"]
+__all__ = ["InMemoryMeter", "MeteredLLM"]
