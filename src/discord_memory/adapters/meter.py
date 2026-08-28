@@ -49,6 +49,7 @@ class MeteredLLM:
             prompt_tokens=response.prompt_tokens,
             completion_tokens=response.completion_tokens,
             model=self._inner.model_name,
+            cost_usd=response.cost_usd,
         )
         if request.guild_id is not None:
             self._meter.charge_guild(request.guild_id, prompt_tokens=response.prompt_tokens)
@@ -85,8 +86,15 @@ class InMemoryMeter:
         prompt_tokens: int,
         completion_tokens: int,
         model: str,
+        cost_usd: float | None = None,
     ) -> None:
-        cost = self._estimate_cost(model, prompt_tokens, completion_tokens)
+        # Provider-reported cost wins; the static table is the fallback for
+        # providers that don't report charges.
+        cost = (
+            cost_usd
+            if cost_usd is not None
+            else self._estimate_cost(model, prompt_tokens, completion_tokens)
+        )
         with self._lock:
             self._calls[purpose] = self._calls.get(purpose, 0) + 1
             self._prompt_tokens[purpose] = self._prompt_tokens.get(purpose, 0) + prompt_tokens

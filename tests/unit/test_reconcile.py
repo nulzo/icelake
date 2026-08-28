@@ -137,8 +137,9 @@ class TestDeterministicReinforce:
 class TestBatchedResolve:
     async def test_one_call_for_many_collisions_with_id_remap(self) -> None:
         store, vectors = InMemoryStore(), InMemoryVectorIndex()
-        first, second = _fact("lives in omaha", fact_id="fct_a"), _fact(
-            "works as a nurse", fact_id="fct_b"
+        first, second = (
+            _fact("lives in omaha", fact_id="fct_a"),
+            _fact("works as a nurse", fact_id="fct_b"),
         )
         await _seed(store, vectors, first, (1.0, 0.0))
         await _seed(store, vectors, second, (0.0, 1.0))

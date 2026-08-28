@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from pydantic import BaseModel
 
 from discord_memory.ports.llm import ChatRequest, LlmMessage
@@ -44,6 +46,9 @@ class TestCompleteStructured:
         retry_messages = llm.calls[1].messages
         assert retry_messages[-2].role == "assistant"
         assert "failed validation" in retry_messages[-1].content
+        # Repair feedback carries the schema so endpoints without constrained
+        # decoding learn the expected shape, not just the error.
+        assert json.dumps(Widget.model_json_schema()) in retry_messages[-1].content
 
     async def test_double_failure_returns_none(self) -> None:
         llm = ScriptedLLM({"widget": "garbage"})

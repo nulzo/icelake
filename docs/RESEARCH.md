@@ -338,6 +338,89 @@ reinforces that need no judgment).
 > fast-flush its own batches. If the library ever ingests untrusted timestamps,
 > age on enqueue time instead.
 
+> **Field findings, round 3 (2026-08-28, cross-model bench review).** The 9-model
+> benchmark surfaced two structural defects and one harness classification leak:
+>
+> 9. **`require_parameters` 404s hard-failed models.** OpenRouter's constraint
+>    excludes endpoints lacking full parameter support; when every healthy
+>    endpoint is excluded it returns 404 at attempt 0 (never executed — safe to
+>    replay). Provider quirks now live in an `OpenRouterLLM` subclass of the
+>    generic OpenAI-compat client (composition root selects by host), and a 404
+>    on a constrained structured request degrades once to unconstrained routing
+>    while keeping json_schema. The base client carries no provider sniffing.
+> 10. **Curation path published no events.** `facts.remember/update/forget/
+>    reinforce` bypassed the event bus entirely — only pipeline commits fired
+>    `FactCommitted`/`FactSupersededEvent`. The curation API now publishes both
+>    (update = refine, old==new id; forget = retire, new=None), so bots get one
+>    deterministic hook surface regardless of write path.
+> 11. **Harness leak: model quality masquerading as library guarantees.** Three
+>    "hard" sim checks (event-bus fired, pagination volume) implicitly required
+>    strong extraction recall, so weak models exit-1'd on checks whose mechanism
+>    was fine. The probes now drive the public curation API deterministically;
+>    model-dependent outcomes stay in the `expect` (soft) tier.
+> 12. **Repair feedback never showed the schema.** `complete_structured`'s repair
+>    turn carried only the pydantic error ("extra inputs are not permitted") —
+>    which says what's wrong, not what shape is expected. On endpoints *with*
+>    constrained decoding this never matters (the schema is enforced wire-side);
+>    on endpoints without it (what you get after a `require_parameters` 404
+>    degrade), the model freestyles a plausible envelope — gpt-5.6-luna emitted
+>    `{"facts": [...]}`, then "fixed" it to `{"memories": [...]}` — and every
+>    batch was dropped (1 extracted fact in a full sim run). Embedding
+>    `json.dumps(schema)` in the repair turn makes the same model emit perfect
+>    schema-conformant JSON. This is the instructor/library-standard reask
+>    pattern, and it only costs tokens when a repair actually happens.
+>
+> Residual latency note: after a 404 degrade, every structured call still pays
+> one wasted constrained round-trip before falling back. A process-lifetime
+> capability latch (stop sending `require_parameters` after the first 404,
+> re-probe periodically) would halve HTTP calls on such models; deferred as a
+> tuning decision, not a correctness issue.
+>
+> **Field findings, round 4 (2026-08-28, gpt-5.6-luna deep-dive).** The luna
+> bench run (1 extracted fact) turned out to be a three-layer library defect,
+> not a model deficiency — luna fully supports structured outputs:
+>
+> 13. **`temperature` broke `require_parameters` routing.** The constraint gates
+>    on *every* parameter in the request, and no luna endpoint lists
+>    `temperature` (reasoning-model family). Sending `temperature: 0.0`
+>    unconditionally excluded all 7 endpoints → 404 at attempt 0, every call.
+>    The 404 degrade ladder is now parameter-aware: strip incidental params
+>    (temperature) while keeping the constraint, drop the constraint only if
+>    the 404 persists.
+> 14. **`_strict_schema` never transformed `$defs`.** Pydantic nests models via
+>    `$ref`/`$defs`; the transform only rewrote the root object, so OpenAI's
+>    strict validator rejected the whole schema (400: "'required' ... Missing
+>    'kind'"), we silently degraded to `json_object`, and the model freestyled
+>    a plausible-but-wrong envelope. Gemini's endpoints accept lenient schemas,
+>    which is why this stayed invisible until a strict-validator model was
+>    benched — the pigeonholing concern, confirmed in the schema layer. The
+>    transform now covers `$defs`; luna returns schema-perfect output on the
+>    first pass with full constrained decoding.
+>
+> Chain in one line: temperature → 404 → (fixed) → strict 400 → json_object
+> fallback → freestyle JSON → repair without schema → drop. Every layer is now
+> fixed: strip-incidentals routing, `$defs` strict transform, schema-in-repair.
+>
+> **Design revision (same day, post-review).** The degrade ladder above was the
+> wrong philosophy: silent fallbacks let an integrator run a model at
+> massively degraded quality without noticing. Replaced with explicit
+> capability declaration (the mem0/graphiti/LiteLLM pattern): `LlmConfig`
+> gains `temperature=None` (omit the parameter), `structured_outputs=
+> "strict"|"json_object"`, and `params={}` (expert passthrough merged into the
+> request body). All arbitrary fallbacks are deleted — 400/404/422 now raise
+> `LlmCapabilityError` naming the model, the provider's error, and the knob
+> that fixes it. This also wired up `config.temperature`, which was a dead
+> knob (the adapter only ever read the per-request default).
+>
+> The loud-failure switch immediately paid for itself: luna's first strict
+> pass surfaced a fourth schema bug the fallbacks had been hiding — pydantic
+> emits `{"$ref": ..., "default": ...}` for enum fields with defaults, and
+> OpenAI's strict validator rejects both `$ref` siblings *and* `allOf` in
+> property position. `_strict_schema` now inlines the referenced definition
+> (dropping `default`) for exactly that case; bare `$ref`s stay untouched.
+> Result: luna runs the full suite at 81/81 hard checks with **zero** retries,
+> 30 LLM calls total, $0.014154 — cheaper per run than gemini-3.7-flash.
+
 
 ### P0 — accuracy & reliability, cheap (do first)
 

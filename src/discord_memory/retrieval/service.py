@@ -106,9 +106,7 @@ class RecallService:
         )
         # One fetch for the fused pool: feeds the strength component and is
         # reused by _materialize instead of a second get_facts round-trip.
-        pool_records = await self._store.get_facts(
-            query.guild_id, tuple(c.fact_id for c in fused)
-        )
+        pool_records = await self._store.get_facts(query.guild_id, tuple(c.fact_id for c in fused))
         semantic_map: dict[str, float] = {}
         lexical_map: dict[str, float] = {}
         entity_map: dict[str, float] = {}
@@ -141,9 +139,7 @@ class RecallService:
             record.id: strength_signal(
                 strength=record.strength,
                 retention_value=retention(
-                    last_reinforced_at=record.last_reinforced_at
-                    or record.created_at
-                    or now,
+                    last_reinforced_at=record.last_reinforced_at or record.created_at or now,
                     now=now,
                     strength=record.strength,
                 ),

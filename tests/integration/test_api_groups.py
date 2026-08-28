@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
+from discord_memory import FactCommitted, FactSupersededEvent
 from discord_memory.errors import FactNotFoundError, SubjectNotAllowedError
 from discord_memory.models.facts import FactCategory
 
@@ -66,6 +69,28 @@ class TestFactsApi:
         assert all(item.id != fact.id or item.is_active for item in page.items)
         with pytest.raises(FactNotFoundError):
             await client.facts.get("g1", "fct_missing")
+        await client.close()
+
+    async def test_curation_publishes_events(self, make_client) -> None:
+        client, _ = make_client(llm=False)
+        await client.start()
+        fired: list[object] = []
+        client.events.subscribe(FactCommitted, fired.append)
+        client.events.subscribe(FactSupersededEvent, fired.append)
+        fact = await client.facts.remember(
+            guild_id="g1", subject_id="u1", text="keeps a sourdough starter"
+        )
+        await client.facts.reinforce(fact.id, guild_id="g1")
+        await client.facts.update(fact.id, guild_id="g1", text="keeps two starters", reason="probe")
+        await client.facts.forget(fact.id, guild_id="g1", reason="done")
+        await asyncio.sleep(0)  # handlers dispatch via loop.call_soon
+        committed = [e for e in fired if isinstance(e, FactCommitted)]
+        superseded = [e for e in fired if isinstance(e, FactSupersededEvent)]
+        assert [e.was_reinforcement for e in committed] == [False, True]
+        assert [(e.old_fact_id, e.new_fact_id) for e in superseded] == [
+            (fact.id, fact.id),
+            (fact.id, None),
+        ]
         await client.close()
 
 

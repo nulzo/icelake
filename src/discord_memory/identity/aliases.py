@@ -75,9 +75,7 @@ _SELF_NAME_PATTERNS = (
 # Third-person forms found in extracted fact text ("nulzo's name is Nolan
 # Gregory", "Real name is Nolan Gregory"). Only safe on text whose subject
 # attribution is already known (facts), never on raw messages.
-_STATED_NAME_PATTERNS = (
-    (re.compile(rf"\b(?:real |full )?name is {_NAME}", re.IGNORECASE), 0.85),
-)
+_STATED_NAME_PATTERNS = ((re.compile(rf"\b(?:real |full )?name is {_NAME}", re.IGNORECASE), 0.85),)
 
 
 def _collect(

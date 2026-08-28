@@ -197,10 +197,7 @@ class Reconciler:
                 hit.score >= threshold
                 or (
                     hit.score >= SAME_CATEGORY_COLLISION_FLOOR
-                    and (
-                        state_change
-                        or active_by_id[hit.id].category.value == candidate.category
-                    )
+                    and (state_change or active_by_id[hit.id].category.value == candidate.category)
                 )
             )
         )

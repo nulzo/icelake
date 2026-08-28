@@ -127,7 +127,7 @@ parentheses; every duration suffixed `_seconds/_minutes/_days`, every budget
 | Group | Key knobs |
 |---|---|
 | `storage` | backend parsed from URL; `pool_size (10)`; `schema_auto_migrate (True)` |
-| `llm` | endpoint URL(s); `model`; `small_model (None→same as model; routes reconcile/classify/summaries)`; `reasoning_effort (None; low/medium/high forwarded as OpenRouter reasoning.effort)`; `temperature (0.0)`; `request_timeout_seconds (30)`; `max_retries (2)` |
+| `llm` | endpoint URL(s); `model`; `small_model (None→same as model; routes reconcile/classify/summaries)`; `reasoning_effort (None; low/medium/high forwarded as OpenRouter reasoning.effort)`; `temperature (0.0; none omits the parameter)`; `structured_outputs (strict|json_object)`; `params ({})`; `request_timeout_seconds (30)`; `max_retries (2)` |
 | `embeddings` | provider; `dimensions`; `batch_size (32)`; `cache_enabled (True)` |
 | `batching` | `batch_size_messages (10)`; `max_age_seconds (300)`; `lease_seconds (120)`; `server_scope_window (100)` |
 | `extraction` | `min_confidence (0.55)`; `max_candidates_per_batch (12)`; `reconcile_collision_threshold (0.85)`; `noise_gate (True)` |
@@ -140,6 +140,23 @@ parentheses; every duration suffixed `_seconds/_minutes/_days`, every budget
 
 Unknown keys raise `ConfigError` (typo-protection by construction). Every knob maps to
 a documented tradeoff in PLAN.md Parts 4–9.
+
+Provider adapters: any OpenAI-compatible endpoint works (`openai://key@host/v1?model=…`).
+When the host is `openrouter.ai`, the client automatically uses the OpenRouter
+adapter, which adds `usage.include` (real per-call cost), the `reasoning.effort`
+dial, and `provider.require_parameters` for structured requests in `strict` mode.
+
+Capability mismatches fail loudly, never silently: an endpoint rejecting the
+parameter set (HTTP 400/404/422) raises `LlmCapabilityError` naming the model,
+the provider's error, and the knob that fixes it. Declare what your model's
+endpoints actually support via `LlmConfig`:
+
+- `temperature=None` omits the parameter (reasoning-model endpoints like
+  GPT-5.x reject it, and `require_parameters` then excludes every endpoint);
+- `structured_outputs="json_object"` declares endpoints that can't enforce
+  `json_schema` (shape is recovered by the schema-feedback repair turn);
+- `params={...}` passes expert extras straight into the request body
+  (`seed`, `top_p`, OpenRouter `provider` routing prefs, ...).
 
 ---
 
@@ -424,6 +441,11 @@ def log_batch(evt: BatchCompleted) -> None:
 #              ExtractionFailed(job_id, attempt, error_kind)
 #              BudgetWarning(guild_id, fraction_used, next_ladder_step)
 #              ComponentDegraded(component, reason)      # e.g. vector index unavailable
+#
+# Both the ingest pipeline AND the curation API (facts.remember / update /
+# forget / reinforce) publish FactCommitted / FactSupersededEvent. For
+# facts.update the payload is (old_id == new_id) — an in-place refinement;
+# for facts.forget new_id is None — a retirement.
 ```
 
 Rationale for existence: moderation UX, dashboards, and alerting without forcing every

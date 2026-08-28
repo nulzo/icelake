@@ -24,15 +24,7 @@ from typing import Any
 
 # Defaults all have entries in the meter's price table, so cost estimates are
 # meaningful. Any OpenRouter chat model id works; unknown models report cost 0.
-DEFAULT_MODELS = (
-    "google/gemini-3.7-flash",
-    "qwen/qwen3.8-flash",
-    "minimax/minimax-m3",
-    "openai/gpt-5.6-luna",
-    "inclusionai/ling-3.0-flash",
-    "x-ai/grok-4.6",
-    "moonshotai/kimi-k3"
-)
+DEFAULT_MODELS = ("openai/gpt-5.6-luna",)
 
 COLUMNS = (
     "model",
@@ -61,7 +53,7 @@ def _counts(raw: dict[str, Any]) -> tuple[str, str, str]:
         f"{b.get('expectations', 0) - b.get('weak', 0)}/{b.get('expectations', 0)}"
     )
     llm = raw.get("llm", {})
-    usage = f"{llm.get('calls', 0)}|{llm.get('prompt_tokens', 0)}|${llm.get('cost_usd', 0.0):.4f}"
+    usage = f"{llm.get('calls', 0)}|{llm.get('prompt_tokens', 0)}|${llm.get('cost_usd', 0.0):.6f}"
     return hard, exp, usage
 
 
@@ -145,11 +137,17 @@ def main() -> None:
         default=None,
         help="forwarded to every run, e.g. --reasoning low for reasoning models",
     )
+    parser.add_argument(
+        "--temperature",
+        default=None,
+        help="forwarded to every run; 'none' omits the parameter (reasoning-model endpoints)",
+    )
     args = parser.parse_args()
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     jobs = args.jobs or len(models)
     extra = ["--reasoning", args.reasoning] if args.reasoning else []
+    extra += ["--temperature", args.temperature] if args.temperature else []
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     sim = Path(__file__).resolve().parent / "e2e_simulation.py"

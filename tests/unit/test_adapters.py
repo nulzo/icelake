@@ -9,9 +9,10 @@ import pytest
 
 from discord_memory.adapters.embedders import HashingEmbedder
 from discord_memory.adapters.llm_openai_compat import OpenAICompatLLM
+from discord_memory.adapters.llm_openrouter import OpenRouterLLM
 from discord_memory.adapters.meter import InMemoryMeter
 from discord_memory.config import BudgetsConfig, EmbeddingsConfig, EmbeddingsProvider, LlmConfig
-from discord_memory.errors import ConfigError
+from discord_memory.errors import ConfigError, LlmCapabilityError
 from discord_memory.models.admin import BudgetStep
 from discord_memory.ports.clock import FixedClock
 from discord_memory.ports.llm import ChatRequest, ChatResponse, LlmMessage
@@ -82,6 +83,28 @@ class TestInMemoryMeter:
         snapshot = meter.snapshot()
         assert snapshot.calls["extraction"] == 1
         assert snapshot.prompt_tokens["extraction"] == 10
+
+    def test_provider_reported_cost_wins_over_price_table(self) -> None:
+        meter = InMemoryMeter(BudgetsConfig(), FixedClock(self.NOW))
+        meter.record_llm(
+            "extraction",
+            prompt_tokens=1_000_000,
+            completion_tokens=0,
+            model="gemini-3.7-flash",
+            cost_usd=0.5,
+        )
+        assert meter.snapshot().estimated_cost_usd["extraction"] == 0.5
+
+    def test_actual_cost_recorded_for_unpriced_model(self) -> None:
+        meter = InMemoryMeter(BudgetsConfig(), FixedClock(self.NOW))
+        meter.record_llm(
+            "extraction",
+            prompt_tokens=10,
+            completion_tokens=5,
+            model="brand-new-model",
+            cost_usd=0.000012,
+        )
+        assert meter.snapshot().estimated_cost_usd["extraction"] == 0.000012
 
 
 class TestMeteredLLM:
@@ -236,6 +259,39 @@ class TestOpenAICompatLLM:
         assert calls["n"] == 2  # initial attempt + 1 retry
         await client.aclose()
 
+
+class TestOpenRouterLLM:
+    def _client(self, transport, **overrides) -> OpenRouterLLM:
+        config = LlmConfig(
+            base_url="https://openrouter.ai/api/v1",
+            api_key="k",
+            model="m-1",
+            max_retries=0,
+            **overrides,
+        )
+        client = OpenRouterLLM(config)
+        client._client = httpx.AsyncClient(transport=transport)  # type: ignore[attr-defined]
+        return client
+
+    async def test_requests_and_parses_actual_cost(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            assert body["usage"] == {"include": True}
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": "ok"}}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.0000123},
+                },
+            )
+
+        client = self._client(httpx.MockTransport(handler))
+        response = await client.complete(
+            ChatRequest(messages=(LlmMessage(role="user", content="hi"),))
+        )
+        assert response.cost_usd == 0.0000123
+        await client.aclose()
+
     async def test_reasoning_effort_sent_only_when_configured(self) -> None:
         bodies: list[dict] = []
 
@@ -243,11 +299,7 @@ class TestOpenAICompatLLM:
             bodies.append(json.loads(request.content))
             return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
 
-        config = LlmConfig(
-            base_url="https://llm.test/v1", api_key="k", model="m-1", reasoning_effort="low"
-        )
-        client = OpenAICompatLLM(config)
-        client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # type: ignore[attr-defined]
+        client = self._client(httpx.MockTransport(handler), reasoning_effort="low")
         await client.complete(ChatRequest(messages=(LlmMessage(role="user", content="hi"),)))
         assert bodies[0]["reasoning"] == {"effort": "low"}
         await client.aclose()
@@ -256,6 +308,122 @@ class TestOpenAICompatLLM:
         await plain.complete(ChatRequest(messages=(LlmMessage(role="user", content="hi"),)))
         assert "reasoning" not in bodies[1]
         await plain.aclose()
+
+    async def test_schema_requests_require_parameters(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            assert body["provider"] == {"require_parameters": True}
+            assert body["response_format"]["type"] == "json_schema"
+            return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+        client = self._client(httpx.MockTransport(handler))
+        await client.complete(
+            ChatRequest(
+                messages=(LlmMessage(role="user", content="hi"),),
+                response_schema={"type": "object", "properties": {}},
+            )
+        )
+        await client.aclose()
+
+    async def test_404_raises_capability_error_with_guidance(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                404, json={"error": {"code": 404, "message": "No endpoints found"}}
+            )
+
+        client = self._client(httpx.MockTransport(handler))
+        with pytest.raises(LlmCapabilityError, match="temperature=None"):
+            await client.complete(
+                ChatRequest(
+                    messages=(LlmMessage(role="user", content="hi"),),
+                    response_schema={"type": "object", "properties": {}},
+                )
+            )
+        await client.aclose()
+
+    async def test_404_without_schema_raises_capability_error(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, json={"error": {"message": "No endpoints found"}})
+
+        client = self._client(httpx.MockTransport(handler))
+        with pytest.raises(LlmCapabilityError, match="Check model id"):
+            await client.complete(ChatRequest(messages=(LlmMessage(role="user", content="hi"),)))
+        await client.aclose()
+
+    async def test_json_object_mode_sends_no_constraint(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            assert body["response_format"] == {"type": "json_object"}
+            assert "provider" not in body
+            return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+        client = self._client(httpx.MockTransport(handler), structured_outputs="json_object")
+        await client.complete(
+            ChatRequest(
+                messages=(LlmMessage(role="user", content="hi"),),
+                response_schema={"type": "object", "properties": {}},
+            )
+        )
+        await client.aclose()
+
+    async def test_params_passthrough_merges_provider_prefs(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            # User provider prefs survive; require_parameters merges in.
+            assert body["provider"] == {"order": ["openai"], "require_parameters": True}
+            assert body["seed"] == 7
+            return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+        client = self._client(
+            httpx.MockTransport(handler), params={"provider": {"order": ["openai"]}, "seed": 7}
+        )
+        await client.complete(
+            ChatRequest(
+                messages=(LlmMessage(role="user", content="hi"),),
+                response_schema={"type": "object", "properties": {}},
+            )
+        )
+        await client.aclose()
+
+    async def test_temperature_omitted_when_configured_none(self) -> None:
+        bodies: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            bodies.append(json.loads(request.content))
+            return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+        client = self._client(httpx.MockTransport(handler), temperature=None)
+        await client.complete(ChatRequest(messages=(LlmMessage(role="user", content="hi"),)))
+        assert "temperature" not in bodies[0]
+        await client.aclose()
+
+        # Per-request override wins over the config default.
+        client2 = self._client(httpx.MockTransport(handler))
+        await client2.complete(
+            ChatRequest(messages=(LlmMessage(role="user", content="hi"),), temperature=0.7)
+        )
+        assert bodies[1]["temperature"] == 0.7
+        await client2.aclose()
+
+    async def test_base_client_sends_no_provider_extras(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            assert "provider" not in body
+            assert "usage" not in body
+            assert "reasoning" not in body
+            return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+        config = LlmConfig(
+            base_url="https://llm.test/v1",
+            api_key="k",
+            model="m-1",
+            max_retries=0,
+            reasoning_effort="low",
+        )
+        client = OpenAICompatLLM(config)
+        client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # type: ignore[attr-defined]
+        await client.complete(ChatRequest(messages=(LlmMessage(role="user", content="hi"),)))
+        await client.aclose()
 
 
 import json  # noqa: E402

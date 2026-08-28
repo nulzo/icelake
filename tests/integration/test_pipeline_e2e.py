@@ -405,9 +405,7 @@ class TestReconciliation:
         batched = [call for call in embedder.calls if candidate_texts <= set(call)]
         assert len(batched) == 1, embedder.calls
         # No per-candidate embed calls anywhere in the batch.
-        singles = [
-            call for call in embedder.calls if len(call) == 1 and call[0] in candidate_texts
-        ]
+        singles = [call for call in embedder.calls if len(call) == 1 and call[0] in candidate_texts]
         assert not singles, embedder.calls
         await client.close()
 

@@ -242,12 +242,9 @@ class IngestPipeline:
         if claim.locked_by_other:
             return BatchReport(key=key, skipped_reason="locked")
         try:
-            window: tuple[StoredMessage, ...] = (
-                claim.messages
-                or await self._queue.recent_messages(
-                    key.guild_id,
-                    self._config.batching.server_scope_window,
-                )
+            window: tuple[StoredMessage, ...] = claim.messages or await self._queue.recent_messages(
+                key.guild_id,
+                self._config.batching.server_scope_window,
             )
 
             # Watermark: only messages NEWER than the last community pass. Without
@@ -520,9 +517,7 @@ class IngestPipeline:
             if not add_candidate:
                 # Conservative default on unresolved collisions: reinforce the
                 # strongest semantic neighbor instead of adding a near-duplicate.
-                neighbor = (
-                    collision.semantic_neighbors[0] if collision.semantic_neighbors else None
-                )
+                neighbor = collision.semantic_neighbors[0] if collision.semantic_neighbors else None
                 if neighbor is not None:
                     await self._committer.commit_reinforce(neighbor, collision.candidate)
                     summary.reinforces += 1

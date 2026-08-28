@@ -100,7 +100,12 @@ class FactCommitted(FrozenModel):
 
 
 class FactSupersededEvent(FrozenModel):
-    """An old fact was replaced by a newer one (hook payload)."""
+    """A fact was replaced, refined in place, or retired (hook payload).
+
+    ``new_fact_id`` equals ``old_fact_id`` for in-place refinements
+    (``facts.update``) and is ``None`` when no successor exists
+    (``facts.forget``, invalidate-without-successor).
+    """
 
     guild_id: str
     old_fact_id: str

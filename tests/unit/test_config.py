@@ -53,6 +53,18 @@ def test_llm_url_parses_reasoning_effort() -> None:
     assert MemoryConfig(llm="openai://k@host/v1?model=big").llm.reasoning_effort is None
 
 
+def test_llm_url_parses_capability_knobs() -> None:
+    config = MemoryConfig(
+        llm="openai://k@host/v1?model=big&temperature=none&structured_outputs=json_object"
+    )
+    assert config.llm.temperature is None
+    assert config.llm.structured_outputs == "json_object"
+
+    defaulted = MemoryConfig(llm="openai://k@host/v1?model=big&temperature=0.2")
+    assert defaulted.llm.temperature == 0.2
+    assert defaulted.llm.structured_outputs == "strict"
+
+
 def test_small_model_routes_reconcile_classify_consolidation() -> None:
     from discord_memory import DiscordMemory
 
@@ -76,6 +88,26 @@ def test_small_model_defaults_to_main_llm() -> None:
     )
     client = DiscordMemory(config)
     assert client._small_llm is client._llm
+
+
+def test_openrouter_host_selects_openrouter_adapter() -> None:
+    from discord_memory import DiscordMemory
+    from discord_memory.adapters.llm_openai_compat import OpenAICompatLLM
+    from discord_memory.adapters.llm_openrouter import OpenRouterLLM
+
+    openrouter = DiscordMemory(
+        MemoryConfig(
+            storage="sqlite://:memory:",
+            llm="openai://k@openrouter.ai/api/v1?model=big",
+        )
+    )
+    assert isinstance(openrouter._llm._inner, OpenRouterLLM)  # MeteredLLM wraps it
+
+    generic = DiscordMemory(
+        MemoryConfig(storage="sqlite://:memory:", llm="openai://k@host/v1?model=big")
+    )
+    inner = generic._llm._inner  # type: ignore[union-attr]
+    assert type(inner) is OpenAICompatLLM
 
 
 @pytest.mark.parametrize("env_name", ["TEST_LLM_KEY"])

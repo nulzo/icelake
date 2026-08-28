@@ -238,6 +238,7 @@ class DiscordMemory:
             config=config,
             subject_gate=self._subject_gate,
             startup_gate=_group_gate,
+            event_bus=self.events,
         )
         self.identity = IdentityApi(self._store, startup_gate=_group_gate)
         self.graph = GraphApi(store=self._store, startup_gate=_group_gate)
@@ -768,13 +769,11 @@ def _build_llm(
     if not config.llm.enabled:
         return None
     from discord_memory.adapters.llm_cache import CachedLLM
-    from discord_memory.adapters.llm_openai_compat import OpenAICompatLLM
+    from discord_memory.adapters.llm_openai_compat import build_chat_llm
     from discord_memory.adapters.meter import MeteredLLM
 
-    llm_config = (
-        config.llm if model is None else config.llm.model_copy(update={"model": model})
-    )
-    llm: ChatLLM = OpenAICompatLLM(llm_config)
+    llm_config = config.llm if model is None else config.llm.model_copy(update={"model": model})
+    llm: ChatLLM = build_chat_llm(llm_config)
     if cache is not None:
         llm = CachedLLM(llm, cache)
     return MeteredLLM(llm, meter)

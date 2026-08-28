@@ -20,10 +20,12 @@ class ChatRequest(FrozenModel):
     ``response_schema`` (a JSON-Schema dict) requests *native* structured output
     via ``response_format: {"type": "json_schema"}`` — enforced server-side on
     capable providers, best-effort elsewhere. Omit it for plain-text completions.
+    ``temperature=None`` defers to the configured default; if that is also
+    ``None`` the parameter is omitted entirely (endpoints that reject it).
     """
 
     messages: tuple[LlmMessage, ...]
-    temperature: float = 0.0
+    temperature: float | None = None
     max_tokens: int = 1024
     response_schema: dict[str, object] | None = None
     purpose: str = "general"
@@ -37,6 +39,9 @@ class ChatResponse(FrozenModel):
     model: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # Provider-reported charge (OpenRouter usage.cost); None = estimate from the
+    # meter's price table instead.
+    cost_usd: float | None = None
 
 
 @runtime_checkable
@@ -83,6 +88,7 @@ class Meter(Protocol):
         prompt_tokens: int,
         completion_tokens: int,
         model: str,
+        cost_usd: float | None = None,
     ) -> None: ...
 
     def increment(self, name: str, value: float = 1.0) -> None: ...

@@ -67,6 +67,24 @@ class LlmConfig(FrozenModel):
     reconcile, and classify are structured tasks that gain little from long
     reasoning, so ``low`` cuts latency and completion-token cost sharply on
     reasoning models. ``None`` sends nothing (provider default).
+
+    Capability declarations — set these to match what the model's endpoints
+    actually accept; mismatches fail loudly (``LlmCapabilityError``) instead of
+    silently degrading:
+
+    - ``temperature``: default ``0.0`` (deterministic extraction). Set to
+      ``None`` to omit the parameter entirely — reasoning-model endpoints
+      (e.g. GPT-5.x on OpenAI/Azure) reject it, and OpenRouter's
+      ``require_parameters`` then excludes every endpoint.
+    - ``structured_outputs``: ``"strict"`` sends ``json_schema`` (constrained
+      decoding on enforcing endpoints; OpenRouter also pins routing with
+      ``require_parameters``). ``"json_object"`` declares the endpoints only
+      guarantee valid JSON — shape is then recovered by the schema-feedback
+      repair turn.
+    - ``params``: expert passthrough merged into every request body (``seed``,
+      ``top_p``, OpenRouter ``provider`` preferences, ...). Library-managed
+      keys (``model``, ``messages``, ``response_format``, ``max_tokens``)
+      take precedence over colliding entries.
     """
 
     base_url: str | None = None
@@ -74,7 +92,9 @@ class LlmConfig(FrozenModel):
     model: str | None = None
     small_model: str | None = None
     reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = None
-    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    temperature: float | None = Field(default=0.0, ge=0.0, le=2.0)
+    structured_outputs: Literal["strict", "json_object"] = "strict"
+    params: dict[str, object] = Field(default_factory=dict)
     max_tokens: int = Field(default=1200, ge=16)
     timeout_seconds: float = Field(default=30.0, gt=0)
     max_retries: int = Field(default=2, ge=0)
@@ -108,9 +128,12 @@ class LlmConfig(FrozenModel):
             model=model,
             small_model=q("small_model"),
             reasoning_effort=q("reasoning"),  # type: ignore[arg-type]  # pydantic validates the Literal
+            structured_outputs=q("structured_outputs") or "strict",  # type: ignore[arg-type]
         )
         if temperature is not None:
-            object.__setattr__(config, "temperature", float(temperature))
+            # "none" omits the parameter entirely (endpoints that reject it).
+            value = None if temperature.strip().lower() == "none" else float(temperature)
+            object.__setattr__(config, "temperature", value)
         return config
 
 

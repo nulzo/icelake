@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from discord_memory.config import MemoryConfig
 from discord_memory.errors import (
@@ -19,6 +19,7 @@ from discord_memory.ingest.gates import (
     text_hygiene_gate,
 )
 from discord_memory.models.common import Page, TokenUsage
+from discord_memory.models.events import FactCommitted, FactSupersededEvent
 from discord_memory.models.facts import (
     Attribution,
     AttributionType,
@@ -33,6 +34,9 @@ from discord_memory.ports.clock import Clock, IdGen
 from discord_memory.ports.llm import Embedder
 from discord_memory.ports.store import MemoryStore
 from discord_memory.ports.vectors import VectorIndex, VectorItem
+
+if TYPE_CHECKING:
+    from discord_memory.api.events import EventBus
 
 
 async def _noop_gate_async() -> None:
@@ -53,6 +57,7 @@ class FactsApi:
         config: MemoryConfig,
         subject_gate: SubjectGate,
         startup_gate: Callable[[], Any] | None = None,
+        event_bus: EventBus | None = None,
     ) -> None:
         self._store = store
         self._vectors = vectors
@@ -62,6 +67,7 @@ class FactsApi:
         self._config = config
         self._gate = subject_gate
         self._startup_gate = startup_gate or _noop_gate_async
+        self._event_bus = event_bus
 
     async def remember(
         self,
@@ -113,6 +119,7 @@ class FactsApi:
                 confidence=max(duplicate.confidence, confidence),
             )
             assert updated is not None
+            self._publish_committed(updated, was_reinforcement=True)
             return updated
 
         third_party = bool(speaker_id and speaker_id != subject_id)
@@ -161,6 +168,7 @@ class FactsApi:
             mentioned_ids=tuple(uid for uid in (actor_id,) if uid and uid != subject_id),
             roster=roster,
         )
+        self._publish_committed(record, was_reinforcement=False)
         return record
 
     async def get_all(
@@ -215,6 +223,7 @@ class FactsApi:
             FactHistoryEntry(at=now, kind="superseded", detail=detail),
         )
         await self._index(updated_fields)  # stale vector would misdirect recall
+        self._publish_superseded(guild_id, fact_id, fact_id, reason)
         return updated_fields
 
     async def forget(
@@ -234,6 +243,7 @@ class FactsApi:
                 detail=reason or f"by {actor_id or 'admin'}",
             ),
         )
+        self._publish_superseded(guild_id, fact_id, None, reason)
 
     async def reinforce(self, fact_id: str, *, guild_id: str) -> FactRecord:
         record = await self.get(guild_id, fact_id)
@@ -249,6 +259,7 @@ class FactsApi:
             confidence=record.confidence,
         )
         assert updated is not None
+        self._publish_committed(updated, was_reinforcement=True)
         return updated
 
     async def history(self, fact_id: str, *, guild_id: str) -> tuple[FactHistoryEntry, ...]:
@@ -290,6 +301,31 @@ class FactsApi:
             server_only=server_only,
             limit=limit,
         )
+
+    def _publish_committed(self, record: FactRecord, *, was_reinforcement: bool) -> None:
+        if self._event_bus is not None:
+            self._event_bus.publish(
+                FactCommitted(
+                    guild_id=record.guild_id,
+                    fact_id=record.id,
+                    subject_id=record.subject_id,
+                    text=record.text,
+                    was_reinforcement=was_reinforcement,
+                )
+            )
+
+    def _publish_superseded(
+        self, guild_id: str, old_fact_id: str, new_fact_id: str | None, reason: str
+    ) -> None:
+        if self._event_bus is not None:
+            self._event_bus.publish(
+                FactSupersededEvent(
+                    guild_id=guild_id,
+                    old_fact_id=old_fact_id,
+                    new_fact_id=new_fact_id,
+                    reason=reason,
+                )
+            )
 
     async def _index(self, record: FactRecord) -> None:
         if self._vectors is None or self._embedder is None:

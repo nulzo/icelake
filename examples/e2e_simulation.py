@@ -82,6 +82,7 @@ BOB = "100000000000000002"  # username/display: "bobby"
 CAROL = "100000000000000003"  # username/display: "carol"
 DAVE = "100000000000000004"  # never speaks; cold-start backfill only
 BOT = "100000000000000009"  # a bot account; never a subject
+PROBE = "100000000000000010"  # deterministic curation probes; never speaks
 PEOPLE = ((ALICE, "nulzo"), (BOB, "bobby"), (CAROL, "carol"))
 
 # Same provider URLs as examples/omni_style_bot.py.
@@ -311,7 +312,8 @@ async def phase_noise(suite: Suite, memory: DiscordMemory, sim: Simulator) -> No
     second = await memory.observe(duplicate)
     suite.check(
         "same message id twice is a duplicate",
-        first.status.value == "accepted" and second.reason is not None
+        first.status.value == "accepted"
+        and second.reason is not None
         and second.reason.value == "duplicate",
         f"{first.status} / {second.status} {second.reason}",
     )
@@ -337,10 +339,14 @@ async def phase_styles(suite: Suite, memory: DiscordMemory, sim: Simulator) -> N
     await print_state(memory)
 
     facts = await active_facts(memory, ALICE)
-    suite.expect("caps/slang: a fact about the puppy", bool(mentions(facts, r"biscuit|puppy")),
-                 str(facts))
-    biscuit = [f for f in await all_facts(memory, ALICE)
-               if f.is_active and re.search(r"biscuit|puppy", f.text, re.IGNORECASE)]
+    suite.expect(
+        "caps/slang: a fact about the puppy", bool(mentions(facts, r"biscuit|puppy")), str(facts)
+    )
+    biscuit = [
+        f
+        for f in await all_facts(memory, ALICE)
+        if f.is_active and re.search(r"biscuit|puppy", f.text, re.IGNORECASE)
+    ]
     suite.expect(
         "puppy restatement merged into ONE active fact (update/reinforce, not add)",
         len(biscuit) == 1,
@@ -491,12 +497,12 @@ async def phase_contradiction(suite: Suite, memory: DiscordMemory, sim: Simulato
 async def phase_pollution(suite: Suite, memory: DiscordMemory, sim: Simulator) -> None:
     print("\n== Phase 8: cross-user pollution — facts anchor to the right person ==")
     await sim.say(
-        ALICE, "nulzo", "bobby is obsessed with mechanical keyboards, he has like twelve",
+        ALICE,
+        "nulzo",
+        "bobby is obsessed with mechanical keyboards, he has like twelve",
         mentions=(BOB,),
     )
-    await sim.say(
-        BOB, "bobby", "nolan taught me go basics last weekend", mentions=(ALICE,)
-    )
+    await sim.say(BOB, "bobby", "nolan taught me go basics last weekend", mentions=(ALICE,))
     # Rapid interleaved conversation in one batch window via the bulk entry point.
     receipts = await memory.observe_many(
         (
@@ -525,8 +531,7 @@ async def phase_pollution(suite: Suite, memory: DiscordMemory, sim: Simulator) -
         and not mentions(alice_facts, r"mechanical keyboard|twelve"),
         f"bob={bob_facts} alice={alice_facts}",
     )
-    suite.expect("alice: purple present", bool(mentions(alice_facts, r"purple")),
-                 str(alice_facts))
+    suite.expect("alice: purple present", bool(mentions(alice_facts, r"purple")), str(alice_facts))
     suite.check(
         "alice: no bleed from bob's drums or carol's cat",
         not mentions(alice_facts, r"drum") and not mentions(alice_facts, r"whiskers|\bcat\b"),
@@ -547,9 +552,7 @@ async def phase_pollution(suite: Suite, memory: DiscordMemory, sim: Simulator) -
         str(carol_facts),
     )
 
-    pair = await memory.recall(
-        RecallQuery(guild_id=GUILD, text="keyboards", pair_ids=(ALICE, BOB))
-    )
+    pair = await memory.recall(RecallQuery(guild_id=GUILD, text="keyboards", pair_ids=(ALICE, BOB)))
     suite.expect(
         "pair recall surfaces a fact linking alice and bob",
         bool(pair.facts),
@@ -560,9 +563,7 @@ async def phase_pollution(suite: Suite, memory: DiscordMemory, sim: Simulator) -
 
 async def phase_name_guards(suite: Suite, memory: DiscordMemory, sim: Simulator) -> None:
     print("\n== Phase 9: third-party names never bind to the speaker ==")
-    bob_aliases_before = {
-        a.alias_norm for a in await memory.identity.aliases_of(GUILD, BOB)
-    }
+    bob_aliases_before = {a.alias_norm for a in await memory.identity.aliases_of(GUILD, BOB)}
     await sim.say(BOB, "bobby", "nolan's last name is gregory, right?")
     await sim.say(CAROL, "carol", "my friend steve is visiting this weekend")
     await sim.say(CAROL, "carol", "he hasn't been here in years")
@@ -611,9 +612,7 @@ async def phase_manual_curation(suite: Suite, memory: DiscordMemory, sim: Simula
     suite.check("forget: fact soft-removed", not gone.is_active)
 
     history = await memory.facts.history(fact.id, guild_id=GUILD)
-    suite.check(
-        "history: full audit trail", len(history) >= 2, str([e.kind for e in history])
-    )
+    suite.check("history: full audit trail", len(history) >= 2, str([e.kind for e in history]))
 
     # extract_now: the synchronous bypass for messages that must land immediately.
     receipt = await memory.extract_now(
@@ -626,17 +625,21 @@ async def phase_manual_curation(suite: Suite, memory: DiscordMemory, sim: Simula
         str(await active_facts(memory, ALICE)),
     )
 
-    # Pagination over the public listing API.
-    page1 = await memory.facts.list_for_subject(GUILD, ALICE, include_server=False, limit=2)
+    # Pagination over the public listing API — driven by curation probes so the
+    # check tests the mechanism, not the model's extraction volume.
+    for i in range(3):
+        await memory.facts.remember(
+            guild_id=GUILD, subject_id=PROBE, text=f"probe user pagination fact {i}"
+        )
+    page1 = await memory.facts.list_for_subject(GUILD, PROBE, include_server=False, limit=2)
     suite.check("pagination: first page respects limit", len(page1.items) <= 2)
+    suite.check("pagination: enough facts to paginate", page1.next_cursor is not None, str(page1))
     if page1.next_cursor is not None:
         page2 = await memory.facts.list_for_subject(
-            GUILD, ALICE, include_server=False, limit=2, cursor=page1.next_cursor
+            GUILD, PROBE, include_server=False, limit=2, cursor=page1.next_cursor
         )
         overlap = {f.id for f in page1.items} & {f.id for f in page2.items}
         suite.check("pagination: pages do not overlap", not overlap, str(overlap))
-    else:
-        suite.check("pagination: enough facts to paginate", False, "no next_cursor")
     await check_no_duplicates(suite, memory)
 
 
@@ -725,9 +728,7 @@ async def phase_multitenancy(suite: Suite, memory: DiscordMemory, sim: Simulator
         shadowfax_g2.resolved is not None and shadowfax_g2.resolved.user_id == ALICE,
     )
     shadowfax_g1 = await memory.identity.resolve(GUILD, "shadowfax")
-    suite.check(
-        "guild1: shadowfax alias does not leak", shadowfax_g1.resolved is None
-    )
+    suite.check("guild1: shadowfax alias does not leak", shadowfax_g1.resolved is None)
     leak = await memory.recall(
         RecallQuery(guild_id=GUILD, text="rocket league", subject_ids=(ALICE,))
     )
@@ -741,9 +742,7 @@ async def phase_multitenancy(suite: Suite, memory: DiscordMemory, sim: Simulator
 
 async def phase_retrieval(suite: Suite, memory: DiscordMemory, pre_move_wall: datetime) -> None:
     print("\n== Phase 14: retrieval deep-dive ==")
-    lexical = await memory.recall(
-        RecallQuery(guild_id=GUILD, text="biscuit", subject_ids=(ALICE,))
-    )
+    lexical = await memory.recall(RecallQuery(guild_id=GUILD, text="biscuit", subject_ids=(ALICE,)))
     suite.expect(
         "lexical: exact-word query surfaces the puppy fact",
         bool(mentions([f.fact.text for f in lexical.facts], r"biscuit|puppy")),
@@ -756,9 +755,7 @@ async def phase_retrieval(suite: Suite, memory: DiscordMemory, pre_move_wall: da
             str([f.matched_channels for f in lexical.facts]),
         )
 
-    semantic = await memory.recall(
-        RecallQuery(guild_id=GUILD, text="caffeine", subject_ids=(BOB,))
-    )
+    semantic = await memory.recall(RecallQuery(guild_id=GUILD, text="caffeine", subject_ids=(BOB,)))
     suite.expect(
         "semantic: synonym query (caffeine) surfaces the coffee fact",
         bool(mentions([f.fact.text for f in semantic.facts], r"coffee")),
@@ -831,9 +828,7 @@ async def phase_retrieval(suite: Suite, memory: DiscordMemory, pre_move_wall: da
         for _ in range(3):
             await memory.facts.reinforce(go_fact.id, guild_id=GUILD)
         ranked = await memory.recall(
-            RecallQuery(
-                guild_id=GUILD, text="what does nolan enjoy", subject_ids=(ALICE,), top_k=8
-            )
+            RecallQuery(guild_id=GUILD, text="what does nolan enjoy", subject_ids=(ALICE,), top_k=8)
         )
         strengths = {f.fact.id: f.components.strength for f in ranked.facts}
         others = [s for fact_id, s in strengths.items() if fact_id != go_fact.id]
@@ -909,8 +904,7 @@ async def phase_retrieval(suite: Suite, memory: DiscordMemory, pre_move_wall: da
     )
     suite.expect(
         "token budget trims the injection block",
-        bool(ctx.injection_block)
-        and len(ctx_tight.injection_block) < len(ctx.injection_block),
+        bool(ctx.injection_block) and len(ctx_tight.injection_block) < len(ctx.injection_block),
         f"{len(ctx.injection_block)} -> {len(ctx_tight.injection_block)} chars",
     )
 
@@ -942,12 +936,39 @@ async def phase_ops(
         f"{none} calls {before} -> {after}",
     )
 
+    # Event bus: deterministic probes via the public curation API. These test
+    # the publish mechanism, not extraction volume, so model quality can't
+    # turn a library guarantee into a flaky check.
+    fired: dict[str, list[object]] = {"committed": [], "superseded": []}
+    memory.events.subscribe(FactCommitted, lambda e: fired["committed"].append(e))
+    memory.events.subscribe(FactSupersededEvent, lambda e: fired["superseded"].append(e))
+
+    probe = await memory.facts.remember(
+        guild_id=GUILD, subject_id=PROBE, text="probe user keeps a sourdough starter"
+    )
+    await memory.facts.reinforce(probe.id, guild_id=GUILD)
+    await memory.facts.update(
+        probe.id, guild_id=GUILD, text="probe user keeps two sourdough starters", reason="probe"
+    )
+    await memory.facts.forget(probe.id, guild_id=GUILD, reason="probe complete")
     await asyncio.sleep(0.2)  # event handlers dispatch via loop.call_soon
-    suite.check("event bus: FactCommitted fired", events["committed"] >= 10, str(events))
+
+    committed = fired["committed"]
     suite.check(
-        "event bus: FactSupersededEvent fired for retired facts",
-        events["superseded"] >= 1,
-        str(events),
+        "event bus: curation publishes FactCommitted (add then reinforce)",
+        len(committed) == 2
+        and all(getattr(e, "fact_id", None) == probe.id for e in committed)
+        and [getattr(e, "was_reinforcement", None) for e in committed] == [False, True],
+        str(committed),
+    )
+    superseded = fired["superseded"]
+    transitions = [
+        (getattr(e, "old_fact_id", None), getattr(e, "new_fact_id", "missing")) for e in superseded
+    ]
+    suite.check(
+        "event bus: curation publishes FactSupersededEvent (refine then retire)",
+        transitions == [(probe.id, probe.id), (probe.id, None)],
+        str(superseded),
     )
     suite.check("event bus: BatchCompleted fired", events["batches"] >= 10, str(events))
 
@@ -988,7 +1009,8 @@ async def phase_lifecycle(suite: Suite, llm_url: str) -> None:
     )
     suite.check(
         "observe after close rejects cleanly (never raises)",
-        receipt.status.value == "rejected" and receipt.reason is not None
+        receipt.status.value == "rejected"
+        and receipt.reason is not None
         and receipt.reason.value == "storage_unavailable",
         str(receipt),
     )
@@ -1065,9 +1087,7 @@ async def phase_cache(suite: Suite, db_path: Path, llm_url: str) -> None:
     print("\n== Phase 19: LLM response cache — identical requests replay free ==")
     llm_config = LlmConfig.from_url(llm_url).model_copy(update={"cache_responses": True})
     memory = DiscordMemory(
-        MemoryConfig(
-            storage=f"sqlite:///{db_path}", llm=llm_config, workers={"enabled": False}
-        )
+        MemoryConfig(storage=f"sqlite:///{db_path}", llm=llm_config, workers={"enabled": False})
     )
     await memory.start()
     try:
@@ -1125,9 +1145,7 @@ async def phase_community(suite: Suite, db_path: Path, llm_url: str) -> MeterSna
     try:
         # Clock starts after suite A so the server-window watermark (ordered by
         # message time) can never filter these messages out as "already seen".
-        sim = Simulator(
-            memory, id_prefix="b", start_at=datetime(2026, 8, 27, 13, 0, 0, tzinfo=UTC)
-        )
+        sim = Simulator(memory, id_prefix="b", start_at=datetime(2026, 8, 27, 13, 0, 0, tzinfo=UTC))
 
         async def game_night_wave() -> None:
             for user_id, name in PEOPLE[:2]:
@@ -1192,13 +1210,11 @@ async def phase_community(suite: Suite, db_path: Path, llm_url: str) -> MeterSna
 async def run(memory: DiscordMemory, llm_url: str) -> Suite:
     suite = Suite()
     sim = Simulator(memory)
-    events = {"committed": 0, "superseded": 0, "batches": 0}
+    events = {"batches": 0}
 
     def bump(name: str):
         return lambda _e: events.__setitem__(name, events[name] + 1)
 
-    memory.events.subscribe(FactCommitted, bump("committed"))
-    memory.events.subscribe(FactSupersededEvent, bump("superseded"))
     memory.events.subscribe(BatchCompleted, bump("batches"))
 
     await phase_adds(suite, memory, sim)
@@ -1312,6 +1328,12 @@ def main() -> None:
         help="reasoning effort passthrough (OpenRouter); 'low' tames reasoning models",
     )
     parser.add_argument(
+        "--temperature",
+        default=None,
+        help="sampling temperature, or 'none' to omit the parameter entirely "
+        "(required by reasoning-model endpoints that reject it, e.g. gpt-5.6-luna)",
+    )
+    parser.add_argument(
         "--report",
         default=None,
         metavar="PATH",
@@ -1330,6 +1352,8 @@ def main() -> None:
     llm_url = LLM_URL_TEMPLATE.format(model=args.model)
     if args.reasoning:
         llm_url += f"&reasoning={args.reasoning}"
+    if args.temperature is not None:
+        llm_url += f"&temperature={args.temperature}"
     db_path = Path(args.db)
     if db_path.exists():
         db_path.unlink()  # deterministic starting state

@@ -46,6 +46,16 @@ class StorageUnavailableError(DiscordMemoryError):
     """Storage backend could not be reached or prepared."""
 
 
+class LlmCapabilityError(DiscordMemoryError):
+    """The LLM endpoint rejected the request's parameter set (HTTP 400/404/422).
+
+    Raised instead of silently degrading: the message names the model, the
+    provider's own error text, and the ``LlmConfig`` knobs
+    (``temperature=None``, ``structured_outputs="json_object"``, ``params``)
+    that resolve it. Fix the configuration; don't retry.
+    """
+
+
 class BudgetExceededError(DiscordMemoryError):
     """A hard-stop budget was exhausted for the requested operation."""
 

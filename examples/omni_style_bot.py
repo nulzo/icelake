@@ -35,7 +35,7 @@ from discord_memory import (
     MemoryConfig,
     MessageEvent,
 )
-from discord_memory.adapters.llm_openai_compat import OpenAICompatLLM
+from discord_memory.adapters.llm_openai_compat import OpenAICompatLLM, build_chat_llm
 from discord_memory.config import LlmConfig
 from discord_memory.ports.llm import ChatRequest, LlmMessage
 
@@ -345,7 +345,7 @@ _reply_llm: OpenAICompatLLM | None = None
 def _reply_llm_client() -> OpenAICompatLLM:
     global _reply_llm
     if _reply_llm is None:
-        _reply_llm = OpenAICompatLLM(LlmConfig.from_url(LLM_URL))
+        _reply_llm = build_chat_llm(LlmConfig.from_url(LLM_URL))
     return _reply_llm
 
 

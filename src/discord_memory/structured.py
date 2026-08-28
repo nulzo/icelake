@@ -10,6 +10,7 @@ default to ADD, treat as no command). Per-call-site parsers are forbidden.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from pydantic import BaseModel, ValidationError
@@ -53,8 +54,12 @@ async def complete_structured[T: BaseModel](
             LlmMessage(role="assistant", content=first),
             LlmMessage(
                 role="user",
+                # The schema must ride along: on endpoints without constrained
+                # decoding the model never saw it, and the bare validation error
+                # only says what's wrong — not what shape is expected.
                 content=f"Your response failed validation ({error}). "
-                "Re-emit ONLY the corrected JSON conforming to the schema.",
+                "Re-emit ONLY the corrected JSON conforming to this schema:\n"
+                f"{json.dumps(schema)}",
             ),
         )
         second = await call(feedback)

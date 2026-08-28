@@ -269,6 +269,7 @@ class FactCommitter:
             roster=roster,
         )
 
+
 class RosterLike(Protocol):
     """Structural subset of :class:`~discord_memory.ingest.roster.Roster`."""
 

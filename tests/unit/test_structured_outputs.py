@@ -1,8 +1,8 @@
-"""Native structured-output (strict json_schema) + fallback ladder tests.
+"""Native structured-output (strict json_schema) wire-format tests.
 
 Mirrors the 2026 provider landscape: OpenAI/OpenRouter enforce json_schema
-natively on capable endpoints; others reject it with 400 or treat it as a hint.
-The adapter must degrade gracefully without losing the batch.
+natively on capable endpoints. Capability mismatches (400/404/422) raise
+``LlmCapabilityError`` loudly — the adapter never silently degrades.
 """
 
 from __future__ import annotations
@@ -10,12 +10,16 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
+from pydantic import BaseModel
 
 from discord_memory.adapters.llm_openai_compat import (
     OpenAICompatLLM,
     _strict_schema,
 )
+from discord_memory.adapters.llm_openrouter import OpenRouterLLM
 from discord_memory.config import LlmConfig
+from discord_memory.errors import LlmCapabilityError
 from discord_memory.ports.llm import ChatRequest, LlmMessage
 
 
@@ -59,6 +63,43 @@ class TestStrictSchemaTransform:
         inner = out["properties"]["operations"]
         assert inner["additionalProperties"] is False
 
+    def test_defs_are_transformed_for_strict_validators(self) -> None:
+        # Pydantic nests models under $defs + $ref; OpenAI's strict validator
+        # rejects the whole schema if any $def keeps a partial required list.
+        class Entity(BaseModel):
+            name: str
+            kind: str = "other"
+
+        class Output(BaseModel):
+            entities: list[Entity]
+
+        out = _strict_schema(Output.model_json_schema())
+        entity = out["$defs"]["Entity"]
+        assert entity["additionalProperties"] is False
+        assert set(entity["required"]) == {"name", "kind"}
+
+    def test_ref_with_default_is_inlined(self) -> None:
+        # Pydantic emits {"$ref": ..., "default": ...} for enum fields with
+        # defaults; OpenAI's strict validator rejects $ref siblings and allOf
+        # in property position, so the definition is inlined instead.
+        from enum import StrEnum
+
+        class Action(StrEnum):
+            NONE = "none"
+            QUERY = "query"
+
+        class Output(BaseModel):
+            action: Action = Action.NONE
+            other: Action  # bare $ref stays a $ref
+
+        out = _strict_schema(Output.model_json_schema())
+        action = out["properties"]["action"]
+        assert action["enum"] == ["none", "query"]
+        assert action["type"] == "string"
+        assert "default" not in action and "$ref" not in action
+        assert out["properties"]["other"] == {"$ref": "#/$defs/Action"}
+        assert set(out["required"]) == {"action", "other"}
+
 
 class TestWireFormat:
     def test_strict_json_schema_sent_when_schema_present(self) -> None:
@@ -101,7 +142,12 @@ class TestWireFormat:
                 json={"choices": [{"message": {"content": "{}"}}], "usage": {}},
             )
 
-        client = _client(httpx.MockTransport(handler), base_url="https://openrouter.ai/api/v1")
+        client = OpenRouterLLM(
+            LlmConfig(
+                base_url="https://openrouter.ai/api/v1", api_key="k", model="m-1", max_retries=1
+            )
+        )
+        client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # type: ignore[attr-defined]
         import asyncio
 
         asyncio.run(
@@ -115,38 +161,22 @@ class TestWireFormat:
         )
         assert captured["provider"] == {"require_parameters": True}
 
-    async def test_provider_400_on_schema_degrades_to_json_object(self) -> None:
-        state = {"calls": 0}
-        formats_seen: list[str] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            state["calls"] += 1
-            body = json.loads(request.content)
-            fmt = body.get("response_format", {}).get("type", "none")
-            formats_seen.append(fmt)
-            if fmt == "json_schema":
-                return httpx.Response(
-                    400,
-                    json={
-                        "error": {"message": "response_format json_schema unsupported"},
-                    },
-                )
+    async def test_provider_400_on_schema_raises_capability_error(self) -> None:
+        # No silent json_object degrade: capability mismatches fail loudly so
+        # integrators fix the declared capabilities instead of losing quality.
+        def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(
-                200,
-                json={
-                    "choices": [{"message": {"content": '{"ok": 1}'}}],
-                    "usage": {},
-                },
+                400,
+                json={"error": {"message": "response_format json_schema unsupported"}},
             )
 
         client = _client(httpx.MockTransport(handler))
-        response = await client.complete(
-            ChatRequest(
-                messages=(LlmMessage(role="user", content="hi"),),
-                response_schema={"type": "object", "properties": {}},
-                purpose="extraction",
+        with pytest.raises(LlmCapabilityError, match="structured_outputs='json_object'"):
+            await client.complete(
+                ChatRequest(
+                    messages=(LlmMessage(role="user", content="hi"),),
+                    response_schema={"type": "object", "properties": {}},
+                    purpose="extraction",
+                )
             )
-        )
-        assert response.text == '{"ok": 1}'
-        assert formats_seen == ["json_schema", "json_object"]
         await client.aclose()

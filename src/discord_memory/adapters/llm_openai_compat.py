@@ -1,7 +1,11 @@
 """OpenAI chat-completions-compatible LLM adapter (OpenRouter/OpenAI/Ollama/vLLM).
 
 Async httpx client; retries transient failures with exponential backoff; reports token
-usage so the Meter can enforce budgets.
+usage so the Meter can enforce budgets. Capability mismatches (HTTP 400/404/422)
+raise ``LlmCapabilityError`` immediately — the library never silently degrades
+output quality; configuration declares what the model's endpoints support.
+Provider-specific behavior lives in subclasses (e.g.
+``llm_openrouter.OpenRouterLLM``) via the ``_apply_provider_extras`` hook.
 """
 
 from __future__ import annotations
@@ -12,11 +16,13 @@ import logging
 import httpx
 
 from discord_memory.config import LlmConfig
+from discord_memory.errors import LlmCapabilityError
 from discord_memory.ports.llm import ChatRequest, ChatResponse
 
 logger = logging.getLogger(__name__)
 
 _RETRY_STATUS = {408, 409, 429, 500, 502, 503, 504}
+_CAPABILITY_STATUS = {400, 404, 422}
 
 
 def _strict_schema(schema: dict[str, object]) -> dict[str, object]:
@@ -24,8 +30,14 @@ def _strict_schema(schema: dict[str, object]) -> dict[str, object]:
 
     Strict mode requires: every property listed in ``required`` and
     ``additionalProperties: false`` on every object; optional fields become
-    ``anyOf: [type, null]``. Non-object schemas pass through unchanged.
+    ``anyOf: [type, null]``. Pydantic nests models under ``$defs`` + ``$ref``,
+    so the transform must cover both the root and every definition — strict
+    validators (OpenAI) reject the whole schema otherwise. Non-object schemas
+    pass through unchanged.
     """
+
+    defs = schema.get("$defs")
+    definitions: dict[str, object] = defs if isinstance(defs, dict) else {}
 
     def transform(node: dict[str, object]) -> dict[str, object]:
         if node.get("type") != "object" and "properties" not in node:
@@ -40,7 +52,23 @@ def _strict_schema(schema: dict[str, object]) -> dict[str, object]:
         new_props: dict[str, dict[str, object]] = {}
         for name, raw_prop in properties.items():
             prop = dict(raw_prop) if isinstance(raw_prop, dict) else {"type": "string"}
-            if isinstance(prop.get("anyOf"), list):
+            ref = prop.get("$ref")
+            if isinstance(ref, str) and len(prop) > 1:
+                # Strict validators reject $ref with sibling keywords (pydantic
+                # emits {"$ref": ..., "default": ...} for enum fields with
+                # defaults) and forbid allOf here — inline the definition and
+                # drop the default (meaningless: the field is required).
+                target = definitions.get(ref.removeprefix("#/$defs/"))
+                description = prop.get("description")
+                prop = (
+                    {k: v for k, v in dict(target).items() if k != "default"}
+                    if isinstance(target, dict)
+                    else {"$ref": ref}
+                )
+                if description is not None:
+                    prop["description"] = description
+                required.append(name)
+            elif isinstance(prop.get("anyOf"), list):
                 # already optional-shaped (e.g. anyOf [T, null])
                 any_of = prop["anyOf"]
                 has_null = any(isinstance(v, dict) and v.get("type") == "null" for v in any_of)
@@ -69,7 +97,13 @@ def _strict_schema(schema: dict[str, object]) -> dict[str, object]:
         }
         return out
 
-    return transform(schema)
+    root = transform(schema)
+    if definitions:
+        root["$defs"] = {
+            key: transform(value) if isinstance(value, dict) else value
+            for key, value in definitions.items()
+        }
+    return root
 
 
 class OpenAICompatLLM:
@@ -88,24 +122,16 @@ class OpenAICompatLLM:
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         attempt = 0
-        json_object_fallback = False
         while True:
             attempt += 1
             try:
-                return await self._complete_once(request, json_object_fallback=json_object_fallback)
+                return await self._complete_once(request)
             except httpx.HTTPStatusError as exc:
-                # Endpoint rejects native json_schema -> degrade once to plain
-                # json_object rather than failing the batch. Support is
-                # per-endpoint (OpenRouter structured-outputs docs, 2026).
-                if (
-                    exc.response.status_code == 400
-                    and request.response_schema is not None
-                    and not json_object_fallback
-                ):
-                    json_object_fallback = True
-                    continue
+                status = exc.response.status_code
+                if status in _CAPABILITY_STATUS:
+                    raise _capability_error(self._config, exc, request) from exc
                 retries_exhausted = attempt > self._config.max_retries
-                if exc.response.status_code not in _RETRY_STATUS or retries_exhausted:
+                if status not in _RETRY_STATUS or retries_exhausted:
                     raise
                 await asyncio.sleep(min(2.0 * attempt, 5.0))
             except (httpx.TransportError, TimeoutError):
@@ -113,36 +139,34 @@ class OpenAICompatLLM:
                     raise
                 await asyncio.sleep(min(1.0 * attempt, 3.0))
 
-    async def _complete_once(
-        self, request: ChatRequest, *, json_object_fallback: bool = False
-    ) -> ChatResponse:
+    def _apply_provider_extras(self, body: dict[str, object], request: ChatRequest) -> None:
+        """Subclass hook for provider-specific request fields (base: none)."""
+
+    async def _complete_once(self, request: ChatRequest) -> ChatResponse:
         model = self._config.model or ""
-        body: dict[str, object] = {
-            "model": model,
-            "messages": [message.model_dump() for message in request.messages],
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
-        }
-        if self._config.reasoning_effort:
-            # OpenRouter reasoning dial; ignored by providers without reasoning.
-            body["reasoning"] = {"effort": self._config.reasoning_effort}
+        # User-declared passthrough first; library-managed keys win collisions.
+        body: dict[str, object] = dict(self._config.params)
+        body["model"] = model
+        body["messages"] = [message.model_dump() for message in request.messages]
+        temperature = (
+            request.temperature if request.temperature is not None else self._config.temperature
+        )
+        if temperature is not None:
+            body["temperature"] = temperature
+        body["max_tokens"] = request.max_tokens
         if request.response_schema is not None:
-            if json_object_fallback:
-                body["response_format"] = {"type": "json_object"}
-            else:
+            if self._config.structured_outputs == "strict":
                 body["response_format"] = {
                     "type": "json_schema",
                     "json_schema": {
                         "name": f"{request.purpose}_output",
-                        # Strict enforcement on capable providers; others treat
-                        # it as a strong hint (OpenRouter docs, 2026).
                         "strict": True,
                         "schema": _strict_schema(request.response_schema),
                     },
                 }
-                if "openrouter.ai" in (self._config.base_url or ""):
-                    # Route only to endpoints that actually enforce json_schema.
-                    body["provider"] = {"require_parameters": True}
+            else:
+                body["response_format"] = {"type": "json_object"}
+        self._apply_provider_extras(body, request)
         headers = {"Content-Type": "application/json"}
         if self._config.api_key:
             headers["Authorization"] = f"Bearer {self._config.api_key}"
@@ -169,10 +193,41 @@ class OpenAICompatLLM:
             model=str(payload.get("model", model)),
             prompt_tokens=int(usage.get("prompt_tokens", 0)),
             completion_tokens=int(usage.get("completion_tokens", 0)),
+            cost_usd=(float(cost) if (cost := usage.get("cost")) is not None else None),
         )
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
 
-__all__ = ["OpenAICompatLLM"]
+__all__ = ["OpenAICompatLLM", "build_chat_llm"]
+
+
+def _capability_error(
+    config: LlmConfig, exc: httpx.HTTPStatusError, request: ChatRequest
+) -> LlmCapabilityError:
+    """Build an actionable capability-mismatch error from a 400/404/422."""
+    detail = exc.response.text.strip().replace("\n", " ")[:300]
+    guidance = (
+        f"model {config.model!r} rejected the request "
+        f"(HTTP {exc.response.status_code}): {detail}. "
+        "Declare the endpoint's actual capabilities in LlmConfig instead of "
+        "retrying: temperature=None if it rejects sampling params, "
+        "structured_outputs='json_object' if it cannot enforce json_schema."
+    )
+    if request.response_schema is None:
+        guidance = (
+            f"model {config.model!r} rejected the request "
+            f"(HTTP {exc.response.status_code}): {detail}. "
+            "Check model id and LlmConfig.params against the provider's supported parameters."
+        )
+    return LlmCapabilityError(guidance)
+
+
+def build_chat_llm(config: LlmConfig) -> OpenAICompatLLM:
+    """Pick the adapter for an endpoint: provider quirks live in subclasses."""
+    if "openrouter.ai" in (config.base_url or ""):
+        from discord_memory.adapters.llm_openrouter import OpenRouterLLM
+
+        return OpenRouterLLM(config)
+    return OpenAICompatLLM(config)

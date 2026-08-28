@@ -116,9 +116,7 @@ class TestAtomicLeases:
         assert not second.locked_by_other
         assert second.messages == ()
         # After completion + release_key, the key is free and nothing re-claims.
-        await queue.complete_messages(
-            tuple(m.message_id for m in first.messages), owner="w1"
-        )
+        await queue.complete_messages(tuple(m.message_id for m in first.messages), owner="w1")
         await queue.release_key(key, owner="w1")
         third = await queue.claim_batch(key, now=now, lease_seconds=60, owner="w2", limit=10)
         assert third.messages == ()
