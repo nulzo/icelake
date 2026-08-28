@@ -123,6 +123,9 @@ class OpenAICompatLLM:
             "temperature": request.temperature,
             "max_tokens": request.max_tokens,
         }
+        if self._config.reasoning_effort:
+            # OpenRouter reasoning dial; ignored by providers without reasoning.
+            body["reasoning"] = {"effort": self._config.reasoning_effort}
         if request.response_schema is not None:
             if json_object_fallback:
                 body["response_format"] = {"type": "json_object"}

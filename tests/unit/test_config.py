@@ -47,6 +47,12 @@ def test_llm_url_parses_small_model() -> None:
     assert config.llm.small_model == "cheap"
 
 
+def test_llm_url_parses_reasoning_effort() -> None:
+    config = MemoryConfig(llm="openai://k@host/v1?model=big&reasoning=low")
+    assert config.llm.reasoning_effort == "low"
+    assert MemoryConfig(llm="openai://k@host/v1?model=big").llm.reasoning_effort is None
+
+
 def test_small_model_routes_reconcile_classify_consolidation() -> None:
     from discord_memory import DiscordMemory
 

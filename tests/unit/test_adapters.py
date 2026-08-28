@@ -236,5 +236,26 @@ class TestOpenAICompatLLM:
         assert calls["n"] == 2  # initial attempt + 1 retry
         await client.aclose()
 
+    async def test_reasoning_effort_sent_only_when_configured(self) -> None:
+        bodies: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            bodies.append(json.loads(request.content))
+            return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+        config = LlmConfig(
+            base_url="https://llm.test/v1", api_key="k", model="m-1", reasoning_effort="low"
+        )
+        client = OpenAICompatLLM(config)
+        client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # type: ignore[attr-defined]
+        await client.complete(ChatRequest(messages=(LlmMessage(role="user", content="hi"),)))
+        assert bodies[0]["reasoning"] == {"effort": "low"}
+        await client.aclose()
+
+        plain = self._client(httpx.MockTransport(handler))
+        await plain.complete(ChatRequest(messages=(LlmMessage(role="user", content="hi"),)))
+        assert "reasoning" not in bodies[1]
+        await plain.aclose()
+
 
 import json  # noqa: E402

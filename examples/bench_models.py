@@ -99,7 +99,7 @@ def _report_markdown(raws: list[dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _run_one(model: str, out: Path, sim: Path) -> dict[str, Any]:
+def _run_one(model: str, out: Path, sim: Path, extra: list[str]) -> dict[str, Any]:
     """One full sim run for one model, output captured to <out>/<model>.log."""
     name = _slug(model)
     raw_path = out / f"{name}.json"
@@ -115,6 +115,7 @@ def _run_one(model: str, out: Path, sim: Path) -> dict[str, Any]:
                 str(out / f"{name}.db"),
                 "--report",
                 str(raw_path),
+                *extra,
             ],
             stdout=log,
             stderr=subprocess.STDOUT,
@@ -138,10 +139,17 @@ def main() -> None:
         default=None,
         help="max concurrent runs (default: all models at once)",
     )
+    parser.add_argument(
+        "--reasoning",
+        choices=("minimal", "low", "medium", "high"),
+        default=None,
+        help="forwarded to every run, e.g. --reasoning low for reasoning models",
+    )
     args = parser.parse_args()
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     jobs = args.jobs or len(models)
+    extra = ["--reasoning", args.reasoning] if args.reasoning else []
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     sim = Path(__file__).resolve().parent / "e2e_simulation.py"
@@ -149,7 +157,7 @@ def main() -> None:
     started = time.monotonic()
     raws: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=jobs) as pool:
-        futures = {pool.submit(_run_one, model, out, sim): model for model in models}
+        futures = {pool.submit(_run_one, model, out, sim, extra): model for model in models}
         for future in as_completed(futures):
             raw = future.result()
             raws.append(raw)

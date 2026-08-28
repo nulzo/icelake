@@ -1306,6 +1306,12 @@ def main() -> None:
         help=f"OpenRouter chat model to exercise (default {DEFAULT_MODEL})",
     )
     parser.add_argument(
+        "--reasoning",
+        choices=("minimal", "low", "medium", "high"),
+        default=None,
+        help="reasoning effort passthrough (OpenRouter); 'low' tames reasoning models",
+    )
+    parser.add_argument(
         "--report",
         default=None,
         metavar="PATH",
@@ -1322,6 +1328,8 @@ def main() -> None:
         raise SystemExit("set OPENROUTER_API_KEY (or add it to .env); this suite runs the real LLM")
 
     llm_url = LLM_URL_TEMPLATE.format(model=args.model)
+    if args.reasoning:
+        llm_url += f"&reasoning={args.reasoning}"
     db_path = Path(args.db)
     if db_path.exists():
         db_path.unlink()  # deterministic starting state

@@ -127,7 +127,7 @@ parentheses; every duration suffixed `_seconds/_minutes/_days`, every budget
 | Group | Key knobs |
 |---|---|
 | `storage` | backend parsed from URL; `pool_size (10)`; `schema_auto_migrate (True)` |
-| `llm` | endpoint URL(s); `model`; `small_model (None→same as model; routes reconcile/classify/summaries)`; `temperature (0.0)`; `request_timeout_seconds (30)`; `max_retries (2)` |
+| `llm` | endpoint URL(s); `model`; `small_model (None→same as model; routes reconcile/classify/summaries)`; `reasoning_effort (None; low/medium/high forwarded as OpenRouter reasoning.effort)`; `temperature (0.0)`; `request_timeout_seconds (30)`; `max_retries (2)` |
 | `embeddings` | provider; `dimensions`; `batch_size (32)`; `cache_enabled (True)` |
 | `batching` | `batch_size_messages (10)`; `max_age_seconds (300)`; `lease_seconds (120)`; `server_scope_window (100)` |
 | `extraction` | `min_confidence (0.55)`; `max_candidates_per_batch (12)`; `reconcile_collision_threshold (0.85)`; `noise_gate (True)` |

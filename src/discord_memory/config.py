@@ -63,12 +63,17 @@ class LlmConfig(FrozenModel):
 
     ``small_model`` routes cheap structured tasks (reconcile, classify, profile
     summaries) to a smaller tier; ``None`` uses ``model`` for everything.
+    ``reasoning_effort`` forwards OpenRouter's ``reasoning.effort`` — extraction,
+    reconcile, and classify are structured tasks that gain little from long
+    reasoning, so ``low`` cuts latency and completion-token cost sharply on
+    reasoning models. ``None`` sends nothing (provider default).
     """
 
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
     small_model: str | None = None
+    reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = None
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     max_tokens: int = Field(default=1200, ge=16)
     timeout_seconds: float = Field(default=30.0, gt=0)
@@ -102,6 +107,7 @@ class LlmConfig(FrozenModel):
             api_key=api_key,
             model=model,
             small_model=q("small_model"),
+            reasoning_effort=q("reasoning"),  # type: ignore[arg-type]  # pydantic validates the Literal
         )
         if temperature is not None:
             object.__setattr__(config, "temperature", float(temperature))
