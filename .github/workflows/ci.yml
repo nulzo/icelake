@@ -53,16 +53,12 @@ jobs:
       - run: uv sync --group dev
       - name: Wait for MongoDB
         run: |
-          uv run python - <<'PY'
-          import socket, time, sys
-          for _ in range(30):
-              try:
-                  socket.create_connection(("127.0.0.1", 27017), 1).close()
-                  sys.exit(0)
-              except OSError:
-                  time.sleep(1)
-          sys.exit("MongoDB did not become ready")
-          PY
+          for i in $(seq 1 30); do
+            uv run python -c "import socket; socket.create_connection(('127.0.0.1', 27017), 1).close()" && exit 0
+            sleep 1
+          done
+          echo "MongoDB did not become ready" >&2
+          exit 1
       - run: uv run pytest tests/ -q --cov=icelake --cov-report=xml
       - uses: codecov/codecov-action@v5
         if: matrix.python-version == '3.12'

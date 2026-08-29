@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   release:
@@ -76,12 +77,24 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add pyproject.toml uv.lock CHANGELOG.md changelog.d
           git commit -m "release: v${{ steps.bump.outputs.version }}"
-          git tag "v${{ steps.bump.outputs.version }}"
+          git tag -a "v${{ steps.bump.outputs.version }}" -m "v${{ steps.bump.outputs.version }}"
 
       - name: Push stable release to main
         if: inputs.prerelease == 'none'
-        run: git push origin HEAD:main --follow-tags
+        run: git push origin HEAD:main
 
-      - name: Push pre-release tag only
-        if: inputs.prerelease != 'none'
+      - name: Push tag
         run: git push origin "v${{ steps.bump.outputs.version }}"
+
+      - name: Trigger PyPI publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # GITHUB_TOKEN tag pushes do not start other workflows; dispatch explicitly.
+          # Retry briefly in case the tag is not yet visible as a dispatch ref.
+          for i in 1 2 3 4 5; do
+            gh workflow run publish.yml --ref "v${{ steps.bump.outputs.version }}" && exit 0
+            sleep 2
+          done
+          echo "Failed to dispatch publish.yml for v${{ steps.bump.outputs.version }}" >&2
+          exit 1
