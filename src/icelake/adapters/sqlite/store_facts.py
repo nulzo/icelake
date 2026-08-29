@@ -16,6 +16,7 @@ from icelake.models.facts import (
     FactCategory,
     FactHistoryEntry,
     FactRecord,
+    FactScope,
     MemoryTier,
     ProfileSummary,
     SourceRef,
@@ -92,7 +93,7 @@ def fact_insert_params(record: FactRecord) -> tuple[object, ...]:
         record.category.value,
         record.confidence,
         record.tier.value,
-        record.scope,
+        record.scope.value,
         json.dumps(attribution),
         record.occurrences,
         record.strength,
@@ -178,7 +179,7 @@ class FactsMixin:
         strength: float,
         last_reinforced_at: datetime,
         expires_at: datetime | None,
-        tier: str,
+        tier: MemoryTier,
         confidence: float,
         extra_citations: tuple[SourceRef, ...] = (),
     ) -> FactRecord | None:
@@ -207,7 +208,7 @@ class FactsMixin:
                 strength,
                 iso(last_reinforced_at),
                 iso(expires_at),
-                tier,
+                tier.value,
                 confidence,
                 *citation_param,
                 iso(last_reinforced_at),
@@ -253,7 +254,7 @@ class FactsMixin:
         text_normalized: str | None = None,
         category: FactCategory | None = None,
         confidence: float | None = None,
-        tier: str | None = None,
+        tier: MemoryTier | None = None,
         expires_at: datetime | None = None,
         updated_at: datetime,
     ) -> FactRecord | None:
@@ -276,7 +277,7 @@ class FactsMixin:
             params.append(confidence)
         if tier is not None:
             sets.append("tier=?")
-            params.append(tier)
+            params.append(tier.value)
         if expires_at is not None:
             sets.append("expires_at=?")
             params.append(iso(expires_at))
@@ -420,7 +421,7 @@ class FactsMixin:
                 guild_id,
                 fact_id,
                 iso(entry.at),
-                str(getattr(entry.kind, "value", entry.kind)),
+                entry.kind.value,
                 entry.detail,
                 entry.fact_version,
             ),
@@ -854,8 +855,8 @@ class FactsMixin:
             guild_id=guild_id,
             total_facts=count_of(total_row),
             active_facts=count_of(active_row),
-            by_tier={r["tier"]: int(r["n"]) for r in tier_rows},
-            by_scope={r["scope"]: int(r["n"]) for r in scope_rows},
+            by_tier={MemoryTier(r["tier"]): int(r["n"]) for r in tier_rows},
+            by_scope={FactScope(r["scope"]): int(r["n"]) for r in scope_rows},
             user_count=count_of(users_row),
             entity_count=count_of(entity_row),
             relation_count=count_of(relation_row),

@@ -27,7 +27,8 @@ if not _mongo_available():
     )
 
 from icelake.adapters.mongo import MongoStore  # noqa: E402
-from icelake.models.graph import LinkRow, NodeType  # noqa: E402
+from icelake.models.facts import MemoryTier  # noqa: E402
+from icelake.models.graph import EntityKind, LinkRow, NodeType  # noqa: E402
 from icelake.models.identity import AliasSource  # noqa: E402
 from tests.integration.test_store_conformance import make_fact  # noqa: E402
 
@@ -80,7 +81,7 @@ class TestMongoConformance:
             strength=3.0,
             last_reinforced_at=now + timedelta(hours=1),
             expires_at=None,
-            tier="long_term",
+            tier=MemoryTier.LONG_TERM,
             confidence=0.95,
         )
         assert updated is not None and updated.occurrences == 2
@@ -138,7 +139,7 @@ class TestMongoConformance:
         assert len(positives) == 1
 
     async def test_entities_merge(self, store: MongoStore) -> None:
-        await store.upsert_entity("g", "films", "Films", "concept", ("film",))
+        await store.upsert_entity("g", "films", "Films", EntityKind.CONCEPT, ("film",))
         await store.bump_entity_facts("g", "films", delta=3)
         moved = await store.merge_entities("g", ("films",), to_slug="movies")
         assert moved == 1

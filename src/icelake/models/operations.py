@@ -13,25 +13,31 @@ from enum import StrEnum
 from pydantic import Field, field_validator
 
 from icelake.models.common import FrozenModel
+from icelake.models.facts import FactCategory
+from icelake.models.graph import EntityKind, RelationVerb
 
 
 class ProposedEntity(FrozenModel):
     """Named entity a fact is about; becomes/links an entity node."""
 
     name: str = Field(min_length=1, max_length=64)
-    kind: str = "concept"
+    kind: EntityKind = EntityKind.CONCEPT
 
     @field_validator("kind", mode="before")
     @classmethod
     def _coerce_kind(cls, value: object) -> str:
-        text = str(value or "concept").strip().lower()
-        return text if text in {"person", "place", "concept", "org"} else "concept"
+        text = str(value or EntityKind.CONCEPT).strip().lower()
+        return text if text in set(EntityKind) else EntityKind.CONCEPT
 
 
 class ProposedRelation(FrozenModel):
-    """Typed edge proposal. Endpoints reference roster tokens or entity names."""
+    """Typed edge proposal. Endpoints reference roster tokens or entity names.
 
-    verb: str = Field(min_length=2, max_length=48)
+    ``verb`` accepts any string — extraction produces an open vocabulary —
+    but prefer :class:`RelationVerb` members, which carry a polarity mapping.
+    """
+
+    verb: RelationVerb | str = Field(min_length=2, max_length=48)
     from_token: str | None = None
     to_token: str | None = None
     from_entity: str | None = None
@@ -48,7 +54,7 @@ class ProposedFact(FrozenModel):
     subject_token: str = Field(min_length=1)
     speaker_token: str | None = None
     text: str = Field(min_length=1, max_length=400)
-    category: str = "general"
+    category: FactCategory = FactCategory.GENERAL
     confidence: float = Field(default=0.8, ge=0.0, le=1.0)
     source_message_indexes: tuple[int, ...] = ()
     entities: tuple[ProposedEntity, ...] = ()
@@ -57,21 +63,8 @@ class ProposedFact(FrozenModel):
     @field_validator("category", mode="before")
     @classmethod
     def _coerce_category(cls, value: object) -> str:
-        allowed = {
-            "personal",
-            "preferences",
-            "interests",
-            "professional",
-            "relationships",
-            "goals",
-            "experiences",
-            "personality",
-            "culture",
-            "rules",
-            "general",
-        }
-        text = str(value or "general").strip().lower()
-        return text if text in allowed else "general"
+        text = str(value or FactCategory.GENERAL).strip().lower()
+        return text if text in set(FactCategory) else FactCategory.GENERAL
 
 
 class ExtractionOutput(FrozenModel):

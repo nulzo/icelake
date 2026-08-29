@@ -101,9 +101,9 @@ class TestGraphHopChannel:
 class TestSimilarUsers:
     async def test_shared_entity_trait_ranks(self, linked_world) -> None:
         similar = await linked_world.graph.similar_users(GUILD, ALICE)
-        ids = [user_id for user_id, _score in similar]
+        ids = [hit.user_id for hit in similar]
         assert BOB in ids
-        top_score = similar[0][1]
+        top_score = similar[0].score
         assert 0 < top_score <= 1.0
 
     async def test_isolated_user_has_no_similar(self, make_client) -> None:

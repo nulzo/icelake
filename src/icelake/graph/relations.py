@@ -3,39 +3,39 @@ from __future__ import annotations
 import math
 from datetime import datetime
 
-from icelake.models.graph import Polarity, RelationEdge
+from icelake.models.graph import Polarity, RelationEdge, RelationVerb
 
 _NEGATIVE_VERBS = frozenset(
     {
-        "dislikes",
-        "hates",
-        "called_out",
-        "argues_with",
-        "distrusts",
-        "feuds_with",
-        "disapproves_of",
-        "avoids",
+        RelationVerb.DISLIKES,
+        RelationVerb.HATES,
+        RelationVerb.CALLED_OUT,
+        RelationVerb.ARGUES_WITH,
+        RelationVerb.DISTRUSTS,
+        RelationVerb.FEUDS_WITH,
+        RelationVerb.DISAPPROVES_OF,
+        RelationVerb.AVOIDS,
     }
 )
 
 _POSITIVE_VERBS = frozenset(
     {
-        "likes",
-        "loves",
-        "enjoys",
-        "prefers",
-        "friends_with",
-        "friend_of",
-        "supports",
-        "admires",
-        "collaborates_with",
-        "teammate_of",
-        "fan_of",
+        RelationVerb.LIKES,
+        RelationVerb.LOVES,
+        RelationVerb.ENJOYS,
+        RelationVerb.PREFERS,
+        RelationVerb.FRIENDS_WITH,
+        RelationVerb.FRIEND_OF,
+        RelationVerb.SUPPORTS,
+        RelationVerb.ADMIRES,
+        RelationVerb.COLLABORATES_WITH,
+        RelationVerb.TEAMMATE_OF,
+        RelationVerb.FAN_OF,
     }
 )
 
 
-def polarity_for_verb(verb: str) -> Polarity:
+def polarity_for_verb(verb: str | RelationVerb) -> Polarity:
     """Map a relation verb to its polarity; unknown verbs are NEUTRAL."""
     normalized = verb.strip().lower().replace(" ", "_")
     if normalized in _NEGATIVE_VERBS:

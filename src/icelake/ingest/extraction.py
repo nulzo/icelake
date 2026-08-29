@@ -14,9 +14,9 @@ from icelake.ingest.gates import (
     text_hygiene_gate,
 )
 from icelake.ingest.roster import Roster
-from icelake.models.facts import FactCategory
+from icelake.models.admin import MeterPurpose
 from icelake.models.operations import ExtractionOutput, ProposedFact
-from icelake.ports.llm import ChatLLM, LlmMessage
+from icelake.ports.llm import ChatLLM, LlmMessage, MessageRole
 from icelake.prompts import extraction as prompts
 from icelake.structured import complete_structured
 
@@ -77,15 +77,15 @@ class FactExtractor:
             model=ExtractionOutput,
             messages=(
                 LlmMessage(
-                    role="system",
+                    role=MessageRole.SYSTEM,
                     content=(
                         f"{prompts.EXTRACTION_SYSTEM_PROMPT}\n\n{prompts.EXTRACTION_INSTRUCTIONS}"
                     ),
                 ),
-                LlmMessage(role="user", content=user_prompt),
+                LlmMessage(role=MessageRole.USER, content=user_prompt),
             ),
             max_tokens=self._max_tokens,
-            purpose="extraction",
+            purpose=MeterPurpose.EXTRACTION,
             guild_id=guild_id,
         )
         if output is None:
@@ -140,10 +140,3 @@ class FactExtractor:
             subject_id=subject_id,
             speaker_id=speaker_id,
         )
-
-
-def category_of(proposal: ProposedFact) -> FactCategory:
-    try:
-        return FactCategory(proposal.category)
-    except ValueError:
-        return FactCategory.GENERAL

@@ -114,7 +114,7 @@ class RecallResult(FrozenModel):
     citations: tuple[Citation, ...] = ()
     resolutions: tuple[Resolution, ...] = ()
     warnings: tuple[RecallWarning, ...] = ()
-    degraded_channels: tuple[str, ...] = ()
+    degraded_channels: tuple[ChannelName, ...] = ()
     usage: TokenUsage = TokenUsage()
 
 

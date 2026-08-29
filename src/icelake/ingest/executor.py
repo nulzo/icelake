@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from icelake.config import MemoryConfig
-from icelake.ingest.extraction import category_of
 from icelake.ingest.gates import normalize_text
 from icelake.lifecycle.strength import reinforced_strength
 from icelake.lifecycle.tiers import assign_tier
@@ -20,7 +19,9 @@ from icelake.models.facts import (
     Attribution,
     AttributionType,
     FactHistoryEntry,
+    FactHistoryKind,
     FactRecord,
+    FactScope,
     SourceRef,
 )
 from icelake.models.operations import ProposedFact
@@ -81,7 +82,7 @@ class FactCommitter:
         named_id = speaker_id if third_party else subject_id
         tier, expires_after = assign_tier(
             text=text,
-            category=category_of(proposal),
+            category=proposal.category,
             confidence=proposal.confidence,
             occurrences=1,
             manual=False,
@@ -94,10 +95,10 @@ class FactCommitter:
             subject_id=subject_id,
             text=text,
             text_normalized=normalize_text(text),
-            category=category_of(proposal),
+            category=proposal.category,
             confidence=proposal.confidence,
             tier=tier,
-            scope="server" if subject_id is None else "user",
+            scope=FactScope.SERVER if subject_id is None else FactScope.USER,
             attribution=Attribution(
                 type=AttributionType.THIRD_PARTY if third_party else AttributionType.SELF,
                 speaker_id=speaker_id if third_party else None,
@@ -144,7 +145,7 @@ class FactCommitter:
                 record.id,
                 FactHistoryEntry(
                     at=now,
-                    kind="created",
+                    kind=FactHistoryKind.CREATED,
                     detail=f"extracted conf={proposal.confidence:.2f}",
                 ),
             )
@@ -170,7 +171,7 @@ class FactCommitter:
             strength=new_strength,
             last_reinforced_at=now,
             expires_at=(now + expires_after) if expires_after is not None else None,
-            tier=tier.value,
+            tier=tier,
             confidence=new_confidence,
         )
         return updated or existing
@@ -220,7 +221,7 @@ class FactCommitter:
                 old_record.id,
                 FactHistoryEntry(
                     at=now,
-                    kind="superseded",
+                    kind=FactHistoryKind.SUPERSEDED,
                     detail=reason or "refined",
                 ),
             )
@@ -246,7 +247,7 @@ class FactCommitter:
                     old_record.id,
                     FactHistoryEntry(
                         at=now,
-                        kind="invalidated",
+                        kind=FactHistoryKind.INVALIDATED,
                         detail=reason or "contradicted",
                     ),
                 )

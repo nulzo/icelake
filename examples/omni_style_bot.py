@@ -31,13 +31,16 @@ from discord import app_commands
 from discord.ext import commands
 
 from icelake import (
+    ChatRequest,
     DiscordMemory,
+    LlmMessage,
     MemoryConfig,
     MessageEvent,
+    MessageRole,
+    NodeType,
 )
 from icelake.adapters.llm_openai_compat import OpenAICompatLLM, build_chat_llm
 from icelake.config import LlmConfig
-from icelake.ports.llm import ChatRequest, LlmMessage
 
 logging.basicConfig(level=logging.INFO)
 # logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -212,8 +215,8 @@ class OmniStyleBot(commands.Bot):
             await interaction.response.send_message("No relations yet.", ephemeral=True)
             return
 
-        async def label(node_type: str, node_id: str) -> str:
-            if node_type != "user":
+        async def label(node_type: NodeType, node_id: str) -> str:
+            if node_type is not NodeType.USER:
                 return node_id  # entity slugs are already human-readable
             member = interaction.guild.get_member(int(node_id)) if interaction.guild else None
             if member is not None:
@@ -223,8 +226,8 @@ class OmniStyleBot(commands.Bot):
             return await self.memory.identity.display_name(guild_id, node_id) or "a former member"
 
         lines = [
-            f"• {await label(edge.src_type.value, edge.src_id)} "
-            f"—{edge.verb}→ {await label(edge.dst_type.value, edge.dst_id)} "
+            f"• {await label(edge.src_type, edge.src_id)} "
+            f"—{edge.verb}→ {await label(edge.dst_type, edge.dst_id)} "
             f"({edge.polarity.value})"
             for edge in edges
         ]
@@ -239,11 +242,11 @@ class OmniStyleBot(commands.Bot):
         a_entities = {
             edge.dst_id
             for edge in await self.memory.graph.relations_of(guild_id, str(a.id), limit=200)
-            if edge.dst_type.value == "entity"
+            if edge.dst_type is NodeType.ENTITY
         }
         b_edges = await self.memory.graph.relations_of(guild_id, str(b.id), limit=200)
         shared = sorted(
-            {edge.dst_id for edge in b_edges if edge.dst_type.value == "entity"} & a_entities
+            {edge.dst_id for edge in b_edges if edge.dst_type is NodeType.ENTITY} & a_entities
         )
         body = ", ".join(shared) if shared else "nothing notable yet"
         await interaction.response.send_message(
@@ -356,15 +359,17 @@ def _reply_llm_client() -> OpenAICompatLLM:
 
 
 async def generate(system_prompt: str, history, question: str) -> str:
-    messages: list[LlmMessage] = [LlmMessage(role="system", content=system_prompt)]
+    messages: list[LlmMessage] = [LlmMessage(role=MessageRole.SYSTEM, content=system_prompt)]
     for author, content in history:
         if content.strip():
-            messages.append(LlmMessage(role="user", content=f"{author}: {content}"))
-    messages.append(LlmMessage(role="user", content=question))
+            messages.append(LlmMessage(role=MessageRole.USER, content=f"{author}: {content}"))
+    messages.append(LlmMessage(role=MessageRole.USER, content=question))
     response = await _reply_llm_client().complete(
         ChatRequest(
             messages=tuple(messages),
             max_tokens=900,
+            # Consumer-defined purpose: the meter vocabulary is open; the
+            # library's own calls use MeterPurpose members.
             purpose="reply",
         )
     )

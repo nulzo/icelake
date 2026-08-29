@@ -8,7 +8,7 @@ from enum import StrEnum
 from typing import Any
 
 from icelake.models.common import FrozenModel
-from icelake.models.facts import FactRecord
+from icelake.models.facts import FactRecord, FactScope, MemoryTier
 from icelake.models.graph import EntityRecord, RelationEdge
 
 
@@ -32,8 +32,8 @@ class GuildStats(FrozenModel):
     guild_id: str
     total_facts: int = 0
     active_facts: int = 0
-    by_tier: Mapping[str, int] = {}
-    by_scope: Mapping[str, int] = {}
+    by_tier: Mapping[MemoryTier, int] = {}
+    by_scope: Mapping[FactScope, int] = {}
     user_count: int = 0
     entity_count: int = 0
     relation_count: int = 0
@@ -84,8 +84,27 @@ class BudgetStep(StrEnum):
     SKIP_CONSOLIDATION = "skip_consolidation"
 
 
+class MeterPurpose(StrEnum):
+    """The library's own LLM call purposes — the keys used in meter snapshots.
+
+    The set is open: ``ChatRequest.purpose`` accepts any string so consumers
+    can attribute their own calls (e.g. ``"reply"``). These members cover
+    every purpose the library itself charges.
+    """
+
+    GENERAL = "general"
+    EXTRACTION = "extraction"
+    RECONCILE = "reconcile"
+    SUMMARIZE = "summarize"
+    CLASSIFY_COMMAND = "classify_command"
+
+
 class MeterSnapshot(FrozenModel):
-    """Cumulative counters by purpose; consumers ship their own dashboards."""
+    """Cumulative counters keyed by purpose (see :class:`MeterPurpose`).
+
+    Keys are strings because consumers can charge their own purposes; the
+    library's own keys always match a :class:`MeterPurpose` value.
+    """
 
     calls: Mapping[str, int] = {}
     prompt_tokens: Mapping[str, int] = {}

@@ -61,7 +61,7 @@ def fact_to_doc(record: FactRecord) -> dict[str, Any]:
         "category": record.category.value,
         "confidence": record.confidence,
         "tier": record.tier.value,
-        "scope": record.scope,
+        "scope": record.scope.value,
         "attribution": attribution,
         "occurrences": record.occurrences,
         "strength": record.strength,
@@ -226,7 +226,7 @@ def entity_to_doc(record: EntityRecord) -> dict[str, Any]:
         "guild_id": record.guild_id,
         "slug": record.slug,
         "name": record.name,
-        "kind": record.kind,
+        "kind": record.kind.value,
         "aliases": list(record.aliases),
         "fact_count": record.fact_count,
         "linked_user_id": record.linked_user_id,
@@ -235,12 +235,11 @@ def entity_to_doc(record: EntityRecord) -> dict[str, Any]:
 
 
 def entity_from_doc(doc: dict[str, Any]) -> EntityRecord:
-    kind: EntityKind = doc.get("kind", "concept")
     return EntityRecord(
         guild_id=doc["guild_id"],
         slug=doc["slug"],
         name=doc["name"],
-        kind=kind,
+        kind=EntityKind(doc.get("kind", "concept")),
         aliases=tuple(doc.get("aliases", [])),
         fact_count=int(doc.get("fact_count", 0)),
         linked_user_id=doc.get("linked_user_id"),

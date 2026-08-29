@@ -10,7 +10,7 @@ from icelake.lifecycle.strength import (
     strength_signal,
 )
 from icelake.lifecycle.tiers import assign_tier
-from icelake.models.facts import FactCategory
+from icelake.models.facts import FactCategory, MemoryTier
 
 
 class TestTierAssignment:
@@ -147,16 +147,19 @@ class TestStrengthDecay:
 
     def test_forgetting_gate(self) -> None:
         assert should_forget(
-            retention_value=0.01, tier="mid_term", manual=False, forget_retention_floor=0.05
+            retention_value=0.01,
+            tier=MemoryTier.MID_TERM,
+            manual=False,
+            forget_retention_floor=0.05,
         )
         assert not should_forget(
-            retention_value=0.01, tier="core", manual=False, forget_retention_floor=0.05
+            retention_value=0.01, tier=MemoryTier.CORE, manual=False, forget_retention_floor=0.05
         )
         assert not should_forget(
-            retention_value=0.01, tier="mid_term", manual=True, forget_retention_floor=0.05
+            retention_value=0.01, tier=MemoryTier.MID_TERM, manual=True, forget_retention_floor=0.05
         )
         assert not should_forget(
-            retention_value=0.5, tier="mid_term", manual=False, forget_retention_floor=0.05
+            retention_value=0.5, tier=MemoryTier.MID_TERM, manual=False, forget_retention_floor=0.05
         )
 
     def test_strength_signal_bounded(self) -> None:

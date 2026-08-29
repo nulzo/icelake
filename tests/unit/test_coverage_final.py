@@ -9,6 +9,7 @@ import pytest
 
 from icelake.api.groups import AdminApi, GraphApi, IdentityApi
 from icelake.models.facts import SourceRef, SourceRole
+from icelake.models.graph import EntityKind
 from icelake.models.identity import AliasSource
 from icelake.models.retrieval import ScoredFact
 from icelake.retrieval.injection import InjectionBuilder, snippet
@@ -444,7 +445,7 @@ class TestSqliteMergeEntitiesRealMove:
 
         store = SqliteStore("sqlite://:memory:")
         await store.setup()
-        await store.upsert_entity("g", "films", "Films", "concept", ("film",))
+        await store.upsert_entity("g", "films", "Films", EntityKind.CONCEPT, ("film",))
         await store.bump_entity_facts("g", "films", delta=3)
         moved = await store.merge_entities("g", ("films",), to_slug="movies")
         assert moved == 1

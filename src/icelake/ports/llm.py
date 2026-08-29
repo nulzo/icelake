@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Literal, Protocol, runtime_checkable
+from enum import StrEnum
+from typing import Protocol, runtime_checkable
 
-from icelake.models.admin import BudgetStep, MeterSnapshot
+from icelake.models.admin import BudgetStep, MeterPurpose, MeterSnapshot
 from icelake.models.common import FrozenModel
 
 
+class MessageRole(StrEnum):
+    """Chat message roles (OpenAI chat-completions vocabulary)."""
+
+    SYSTEM = "system"
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
 class LlmMessage(FrozenModel):
-    role: Literal["system", "user", "assistant"]
+    role: MessageRole
     content: str
 
 
@@ -28,7 +37,7 @@ class ChatRequest(FrozenModel):
     temperature: float | None = None
     max_tokens: int = 1024
     response_schema: dict[str, object] | None = None
-    purpose: str = "general"
+    purpose: MeterPurpose | str = MeterPurpose.GENERAL
     timeout_seconds: float | None = None
     # Budget attribution metadata — providers ignore it; MeteredLLM charges it.
     guild_id: str | None = None
@@ -83,7 +92,7 @@ class Meter(Protocol):
 
     def record_llm(
         self,
-        purpose: str,
+        purpose: MeterPurpose | str,
         *,
         prompt_tokens: int,
         completion_tokens: int,

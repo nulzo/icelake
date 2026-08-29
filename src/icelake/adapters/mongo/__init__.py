@@ -38,6 +38,7 @@ from icelake.models.facts import (
     FactCategory,
     FactHistoryEntry,
     FactRecord,
+    MemoryTier,
     ProfileSummary,
     SourceRef,
 )
@@ -57,7 +58,7 @@ def _iso(moment: datetime | None) -> str | None:
 
 
 def _history_kind(entry: FactHistoryEntry) -> str:
-    return str(getattr(entry.kind, "value", entry.kind))
+    return entry.kind.value
 
 
 class MongoStore:
@@ -271,7 +272,7 @@ class MongoStore:
         strength: float,
         last_reinforced_at: datetime,
         expires_at: datetime | None,
-        tier: str,
+        tier: MemoryTier,
         confidence: float,
         extra_citations: tuple[SourceRef, ...] = (),
     ) -> FactRecord | None:
@@ -281,7 +282,7 @@ class MongoStore:
                 "strength": strength,
                 "last_reinforced_at": _iso(last_reinforced_at),
                 "expires_at": _iso(expires_at),
-                "tier": tier,
+                "tier": tier.value,
                 "confidence": confidence,
             },
         }
@@ -331,7 +332,7 @@ class MongoStore:
         text_normalized: str | None = None,
         category: FactCategory | None = None,
         confidence: float | None = None,
-        tier: str | None = None,
+        tier: MemoryTier | None = None,
         expires_at: datetime | None = None,
         updated_at: datetime,
     ) -> FactRecord | None:
@@ -345,7 +346,7 @@ class MongoStore:
         if confidence is not None:
             sets["confidence"] = confidence
         if tier is not None:
-            sets["tier"] = tier
+            sets["tier"] = tier.value
         if expires_at is not None:
             sets["expires_at"] = _iso(expires_at)
         result = await self.db["dm_facts"].update_many(
@@ -830,7 +831,7 @@ class MongoStore:
         await self.db["dm_entities"].update_one(
             {"guild_id": guild_id, "slug": slug},
             {
-                "$set": {"name": name, "kind": kind},
+                "$set": {"name": name, "kind": kind.value},
                 "$addToSet": {"aliases": {"$each": list(aliases)}},
             },
             upsert=True,

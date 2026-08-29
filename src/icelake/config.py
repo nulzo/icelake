@@ -34,6 +34,14 @@ def _expand(value: str) -> str:
     return value
 
 
+class StorageBackend(StrEnum):
+    """Persistence backend selected by a ``StorageConfig`` URL scheme."""
+
+    SQLITE = "sqlite"
+    MONGO = "mongo"
+    POSTGRES = "postgres"
+
+
 class StorageConfig(FrozenModel):
     """Persistence backend selection."""
 
@@ -45,14 +53,14 @@ class StorageConfig(FrozenModel):
         return self
 
     @property
-    def backend(self) -> str:
+    def backend(self) -> StorageBackend:
         scheme = urlsplit(self.url).scheme
         if scheme in {"sqlite", "memory", ""}:
-            return "sqlite"
+            return StorageBackend.SQLITE
         if scheme in {"mongodb", "mongodb+srv"}:
-            return "mongo"
+            return StorageBackend.MONGO
         if scheme in {"postgres", "postgresql"}:
-            return "postgres"
+            return StorageBackend.POSTGRES
         raise ConfigError(f"unsupported storage url scheme {scheme!r}")
 
 

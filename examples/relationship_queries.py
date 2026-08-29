@@ -25,11 +25,13 @@ from icelake import (
     DiscordMemory,
     MemoryConfig,
     MessageEvent,
+    NodeType,
+    ProposedEntity,
+    ProposedRelation,
     RecallQuery,
+    RelationVerb,
     channels,
 )
-from icelake.models.graph import NodeType
-from icelake.models.operations import ProposedEntity, ProposedRelation
 
 GUILD = "555"
 MEMBERS = {
@@ -72,16 +74,19 @@ async def _teach(
     speaker: str | None = None,
     likes: tuple[str, ...] = (),
     dislikes: tuple[str, ...] = (),
-    edges: tuple[tuple[str, str, str], ...] = (),
+    edges: tuple[tuple[RelationVerb, str, str], ...] = (),
 ) -> None:
     """Curate one fact + graph participation. ``edges`` are (verb, from, to) member names."""
     subject_id = MEMBERS[subject]
     speaker_id = MEMBERS[speaker] if speaker else None
     entities = tuple(ProposedEntity(name=name) for name in (*likes, *dislikes))
     relations = [
-        *(ProposedRelation(verb="likes", from_token=subject_id, to_entity=name) for name in likes),
         *(
-            ProposedRelation(verb="dislikes", from_token=subject_id, to_entity=name)
+            ProposedRelation(verb=RelationVerb.LIKES, from_token=subject_id, to_entity=name)
+            for name in likes
+        ),
+        *(
+            ProposedRelation(verb=RelationVerb.DISLIKES, from_token=subject_id, to_entity=name)
             for name in dislikes
         ),
         *(
@@ -136,7 +141,7 @@ async def seed_community(memory: DiscordMemory) -> None:
         subject="dave",
         text="dave ships Rust with alice and plays chess on lunch",
         likes=("Rust", "Chess"),
-        edges=(("teammate_of", "dave", "alice"),),
+        edges=((RelationVerb.TEAMMATE_OF, "dave", "alice"),),
     )
     await _teach(
         memory,
@@ -144,14 +149,14 @@ async def seed_community(memory: DiscordMemory) -> None:
         text="eve plays chess but cannot stand coffee",
         likes=("Chess",),
         dislikes=("Coffee",),
-        edges=(("friend_of", "eve", "carol"),),
+        edges=((RelationVerb.FRIEND_OF, "eve", "carol"),),
     )
     await _teach(
         memory,
         subject="frank",
         text="frank is in bob's board-game group and dabbles in Rust",
         likes=("Board Games", "Rust"),
-        edges=(("friend_of", "frank", "bob"),),
+        edges=((RelationVerb.FRIEND_OF, "frank", "bob"),),
     )
     await _teach(
         memory,
@@ -170,7 +175,7 @@ async def seed_community(memory: DiscordMemory) -> None:
         subject="bob",
         speaker="carol",
         text="carol called bob a sore loser during game night",
-        edges=(("called_out", "carol", "bob"),),
+        edges=((RelationVerb.CALLED_OUT, "carol", "bob"),),
     )
 
 
@@ -255,7 +260,7 @@ async def main() -> None:
         print("=== 5. Similar members (shared entities; polarity is ignored) ===")
         for seed in ("alice", "bob", "henrik"):
             similar = await memory.graph.similar_users(GUILD, MEMBERS[seed], limit=4)
-            shown = ", ".join(f"{_who(uid)} {score:.2f}" for uid, score in similar) or "(none)"
+            shown = ", ".join(f"{_who(hit.user_id)} {hit.score:.2f}" for hit in similar) or "(none)"
             print(f"  like {seed}: {shown}")
 
         stats = await memory.stats(GUILD)

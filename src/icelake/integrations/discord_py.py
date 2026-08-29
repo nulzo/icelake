@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from typing import Unpack
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from icelake.api.client import DiscordMemory
+from icelake.api.client import DiscordMemory, MemoryOverrides
 from icelake.config import MemoryConfig
 from icelake.errors import SubjectNotAllowedError
 from icelake.models.events import MessageEvent
@@ -77,7 +78,7 @@ async def prompt_from_message(
 async def setup_discord_memory(
     bot: commands.Bot,
     config: MemoryConfig,
-    **client_overrides: object,
+    **client_overrides: Unpack[MemoryOverrides],
 ) -> DiscordMemory:
     """Build the client, wire listeners + ``/memory`` commands onto ``bot``.
 

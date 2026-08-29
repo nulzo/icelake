@@ -275,6 +275,7 @@ class TestMongoStoreEdges:
     async def test_transition_missing_returns_none(self) -> None:
 
         from icelake.adapters.mongo import MongoStore
+        from icelake.models.facts import MemoryTier
 
         store = MongoStore("mongodb://127.0.0.1:27017/icelake_edges")
         await store.setup()
@@ -300,7 +301,7 @@ class TestMongoStoreEdges:
                 strength=2.0,
                 last_reinforced_at=datetime.now(UTC),
                 expires_at=None,
-                tier="core",
+                tier=MemoryTier.CORE,
                 confidence=0.9,
             )
             is None

@@ -8,12 +8,11 @@ import pytest
 
 from icelake.config import ExtractionConfig
 from icelake.errors import StructuredOutputError
-from icelake.ingest.extraction import (
-    FactExtractor,
-    category_of,
-)
+from icelake.ingest.extraction import FactExtractor
 from icelake.ingest.roster import Roster
-from icelake.models.operations import ExtractionOutput, ProposedFact
+from icelake.models.facts import FactCategory
+from icelake.models.graph import EntityKind
+from icelake.models.operations import ExtractionOutput, ProposedEntity, ProposedFact
 from tests.conftest import ScriptedLLM
 
 
@@ -35,21 +34,19 @@ class TestParsing:
         output = ExtractionOutput.model_validate(
             {"operations": [{"subject_token": "p0", "text": "t"}]},
         )
-        assert output.operations[0].category == "general"
+        assert output.operations[0].category is FactCategory.GENERAL
 
     def test_category_coercion_unknown_falls_back(self) -> None:
         proposal = ProposedFact(subject_token="p0", text="x", category="weird")
-        assert proposal.category == "general"
+        assert proposal.category is FactCategory.GENERAL
+
+    def test_category_is_typed_enum(self) -> None:
+        fact = ProposedFact(subject_token="p0", text="x y z w", category="goals")
+        assert fact.category is FactCategory.GOALS
 
     def test_entity_kind_coercion(self) -> None:
-        from icelake.models.operations import ProposedEntity
-
         entity = ProposedEntity(name="Paris", kind="city")
-        assert entity.kind == "concept"
-
-    def test_category_of_helper(self) -> None:
-        fact = ProposedFact(subject_token="p0", text="x y z w", category="goals")
-        assert category_of(fact).value == "goals"
+        assert entity.kind is EntityKind.CONCEPT
 
 
 class TestExtractVetting:

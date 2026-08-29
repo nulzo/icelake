@@ -11,8 +11,9 @@ from enum import StrEnum
 
 from pydantic import Field
 
+from icelake.models.admin import MeterPurpose
 from icelake.models.common import FrozenModel
-from icelake.ports.llm import ChatLLM, LlmMessage
+from icelake.ports.llm import ChatLLM, LlmMessage, MessageRole
 from icelake.structured import complete_structured
 
 _COMMAND_PATTERN = re.compile(
@@ -73,11 +74,13 @@ class CommandClassifier:
             self._llm,
             model=UserMemoryCommand,
             messages=(
-                LlmMessage(role="system", content="You classify user commands precisely."),
-                LlmMessage(role="user", content=_CLASSIFY_PROMPT.format(text=text)),
+                LlmMessage(
+                    role=MessageRole.SYSTEM, content="You classify user commands precisely."
+                ),
+                LlmMessage(role=MessageRole.USER, content=_CLASSIFY_PROMPT.format(text=text)),
             ),
             max_tokens=160,
-            purpose="classify_command",
+            purpose=MeterPurpose.CLASSIFY_COMMAND,
         )
         return command if command is not None else UserMemoryCommand()
 

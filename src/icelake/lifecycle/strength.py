@@ -9,6 +9,8 @@ from __future__ import annotations
 import math
 from datetime import datetime
 
+from icelake.models.facts import MemoryTier
+
 REINFORCE_STRENGTH_STEP = 1.0
 MIN_STRENGTH = 1.0
 
@@ -34,12 +36,12 @@ def reinforced_strength(current_strength: float) -> float:
 def should_forget(
     *,
     retention_value: float,
-    tier: str,
+    tier: MemoryTier,
     manual: bool,
     forget_retention_floor: float,
 ) -> bool:
     """Forgetting gate: weak retention, non-core, never manual facts."""
-    if tier == "core" or manual:
+    if tier is MemoryTier.CORE or manual:
         return False
     return retention_value < forget_retention_floor
 

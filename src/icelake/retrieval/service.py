@@ -156,7 +156,7 @@ class RecallService:
         subject_ids: tuple[str, ...] | None,
         server_only: bool,
         as_of: datetime | None = None,
-    ) -> tuple[list[ch.ChannelOutput], list[str]]:
+    ) -> tuple[list[ch.ChannelOutput], list[ChannelName]]:
         tasks: dict[ChannelName, object] = {}
 
         if ChannelName.VECTOR in selected:
@@ -219,11 +219,11 @@ class RecallService:
         ]
         results = await asyncio.gather(*coros, return_exceptions=True)
         outputs: list[ch.ChannelOutput] = []
-        degraded: list[str] = []
+        degraded: list[ChannelName] = []
         for key, result in zip(keys, results, strict=True):
             if isinstance(result, BaseException):
                 logger.warning("channel %s raised", key, exc_info=result)
-                degraded.append(key.value)
+                degraded.append(key)
                 continue
             outputs.append(result)
         return outputs, degraded
@@ -300,7 +300,7 @@ class RecallService:
         self,
         query: RecallQuery,
         scored: list[RerankResult],
-        degraded: list[str],
+        degraded: list[ChannelName],
         *,
         records: tuple[FactRecord, ...],
     ) -> RecallResult:
@@ -312,7 +312,7 @@ class RecallService:
 
         per_subject: dict[str, int] = {}
         facts: list[ScoredFact] = []
-        warnings: list[str] = []
+        warnings: list[RecallWarning] = []
         trimmed = False
         for fact_id in fact_ids:
             record = by_id.get(fact_id)
@@ -367,7 +367,7 @@ class RecallService:
                 )
             )
         if trimmed:
-            warnings.append("budget_trimmed")
+            warnings.append(RecallWarning.BUDGET_TRIMMED)
         if self._on_recalled is not None and facts:
             try:
                 await self._on_recalled([f.fact.id for f in facts])
@@ -376,20 +376,8 @@ class RecallService:
         return RecallResult(
             facts=tuple(facts),
             degraded_channels=tuple(degraded),
-            warnings=_to_warnings(warnings),
+            warnings=tuple(warnings),
         )
-
-
-def _to_warnings(names: list[str]) -> tuple[RecallWarning, ...]:
-    from icelake.models.retrieval import RecallWarning
-
-    mapped: list[RecallWarning] = []
-    for name in names:
-        try:
-            mapped.append(RecallWarning(name))
-        except ValueError:
-            continue
-    return tuple(mapped)
 
 
 __all__ = ["RecallService"]

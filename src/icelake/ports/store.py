@@ -16,6 +16,7 @@ from icelake.models.facts import (
     FactCategory,
     FactHistoryEntry,
     FactRecord,
+    MemoryTier,
     ProfileSummary,
     SourceRef,
 )
@@ -112,7 +113,7 @@ class MemoryStore(Protocol):
         strength: float,
         last_reinforced_at: datetime,
         expires_at: datetime | None,
-        tier: str,
+        tier: MemoryTier,
         confidence: float,
         extra_citations: tuple[SourceRef, ...] = (),
     ) -> FactRecord | None:
@@ -138,7 +139,7 @@ class MemoryStore(Protocol):
         text_normalized: str | None = None,
         category: FactCategory | None = None,
         confidence: float | None = None,
-        tier: str | None = None,
+        tier: MemoryTier | None = None,
         expires_at: datetime | None = None,
         updated_at: datetime,
     ) -> FactRecord | None: ...

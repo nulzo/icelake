@@ -11,13 +11,14 @@ import asyncio
 import logging
 import re
 from collections.abc import Iterable
+from typing import TypedDict, Unpack
 
 from icelake.adapters.embedders import build_embedder
 from icelake.api.classify import CommandClassifier, UserMemoryCommand
 from icelake.api.events import EventBus
 from icelake.api.facts_api import FactsApi
 from icelake.api.groups import AdminApi, GraphApi, IdentityApi
-from icelake.config import MemoryConfig
+from icelake.config import MemoryConfig, StorageBackend
 from icelake.consolidation.service import ConsolidationService
 from icelake.errors import ConfigError, StorageUnavailableError
 from icelake.identity.aliases import strongest_alias
@@ -39,6 +40,7 @@ from icelake.models.events import (
     ObserveStatus,
     RejectReason,
 )
+from icelake.models.facts import AttributionType
 from icelake.models.identity import AliasSource
 from icelake.models.retrieval import (
     CHANNELS_DISCOVERY,
@@ -61,7 +63,6 @@ from icelake.retrieval.service import RecallService
 logger = logging.getLogger(__name__)
 log = logger
 
-_MISSING = object()
 _SERVER_BLOCK_FACTS = 3
 _SNIPPET_CHARS = 160
 
@@ -168,62 +169,71 @@ class _OpsApi:
         )
 
 
+class MemoryOverrides(TypedDict, total=False):
+    """Optional port injections for ``DiscordMemory(config, **overrides)``.
+
+    Every key is a documented port. Omitting a key builds the adapter from
+    config; passing ``None`` for ``llm`` / ``small_llm`` / ``embedder`` /
+    ``vectors`` explicitly disables that capability (degraded mode).
+    """
+
+    clock: Clock
+    id_gen: IdGen
+    store: MemoryStore
+    queue: IngestQueue
+    vectors: VectorIndex | None
+    embedder: Embedder | None
+    meter: Meter
+    llm: ChatLLM | None
+    small_llm: ChatLLM | None
+
+
 class DiscordMemory:
     """The only class consumers need. See docs/API.md for the full contract."""
 
-    def __init__(self, config: MemoryConfig, **overrides: object) -> None:
+    def __init__(self, config: MemoryConfig, **overrides: Unpack[MemoryOverrides]) -> None:
         self.config = config
         self.events = EventBus()
-        clock = overrides.get("clock", _MISSING)
-        self._clock: Clock = SystemClock() if clock is _MISSING else clock  # type: ignore[assignment]
-        id_gen = overrides.get("id_gen", _MISSING)
-        self._id_gen: IdGen = UlidIdGen() if id_gen is _MISSING else id_gen  # type: ignore[assignment]
+        self._clock: Clock = overrides["clock"] if "clock" in overrides else SystemClock()
+        self._id_gen: IdGen = overrides["id_gen"] if "id_gen" in overrides else UlidIdGen()
 
-        store_override = overrides.get("store", _MISSING)
         self._store: MemoryStore = (
-            _build_store(config) if store_override is _MISSING else store_override  # type: ignore[assignment]
+            overrides["store"] if "store" in overrides else _build_store(config)
         )
-        queue_override = overrides.get("queue", _MISSING)
         backend_queue = getattr(self._store, "queue", None)
-        self._queue: IngestQueue = (
-            backend_queue if queue_override is _MISSING else queue_override  # type: ignore[assignment]
-        ) or _in_memory_queue()
-
-        vectors_override = overrides.get("vectors", _MISSING)
-        if vectors_override is _MISSING:
-            self._vectors: VectorIndex | None = getattr(self._store, "vectors", None)
+        if "queue" in overrides:
+            self._queue: IngestQueue = overrides["queue"] or _in_memory_queue()
         else:
-            self._vectors = vectors_override  # type: ignore[assignment]
+            self._queue = backend_queue or _in_memory_queue()
 
-        embedder_override = overrides.get("embedder", _MISSING)
+        if "vectors" in overrides:
+            self._vectors: VectorIndex | None = overrides["vectors"]
+        else:
+            self._vectors = getattr(self._store, "vectors", None)
+
         self._embedder: Embedder | None = (
-            build_embedder(config.embeddings)
-            if embedder_override is _MISSING
-            else embedder_override  # type: ignore[assignment]
+            overrides["embedder"] if "embedder" in overrides else build_embedder(config.embeddings)
         )
 
-        meter_override = overrides.get("meter", _MISSING)
-        if meter_override is _MISSING:
+        if "meter" in overrides:
+            self._meter: Meter = overrides["meter"]
+        else:
             from icelake.adapters.meter import UsageMeter
 
-            self._meter: Meter = UsageMeter(config.budgets, self._clock, store=self._store)
-        else:
-            self._meter = meter_override  # type: ignore[assignment]
+            self._meter = UsageMeter(config.budgets, self._clock, store=self._store)
 
-        llm_override = overrides.get("llm", _MISSING)
         llm_cache: LlmCache | None = None
         if config.llm.cache_responses:
             candidate = getattr(self._store, "llm_cache", None)
             llm_cache = candidate if isinstance(candidate, LlmCache) else None
         self._llm: ChatLLM | None = (
-            _build_llm(config, self._meter, cache=llm_cache)
-            if llm_override is _MISSING
-            else llm_override  # type: ignore[assignment]
+            overrides["llm"]
+            if "llm" in overrides
+            else _build_llm(config, self._meter, cache=llm_cache)
         )
-        small_llm_override = overrides.get("small_llm", _MISSING)
-        if small_llm_override is not _MISSING:
-            self._small_llm: ChatLLM | None = small_llm_override  # type: ignore[assignment]
-        elif llm_override is _MISSING and config.llm.small_model:
+        if "small_llm" in overrides:
+            self._small_llm: ChatLLM | None = overrides["small_llm"]
+        elif "llm" not in overrides and config.llm.small_model:
             self._small_llm = _build_llm(
                 config, self._meter, model=config.llm.small_model, cache=llm_cache
             )
@@ -711,7 +721,7 @@ class DiscordMemory:
             _re.IGNORECASE,
         )
         for record, score in hits:
-            if record.subject_id is None or record.attribution.type.value == "third_party":
+            if record.subject_id is None or record.attribution.type is AttributionType.THIRD_PARTY:
                 continue
             if pattern.search(record.text.lower()):
                 matched_users.setdefault(
@@ -800,11 +810,11 @@ def _build_llm(
 
 def _build_store(config: MemoryConfig) -> MemoryStore:
     backend = config.storage.backend
-    if backend == "sqlite":
+    if backend is StorageBackend.SQLITE:
         from icelake.adapters.sqlite.store import SqliteStore
 
         return SqliteStore(config.storage.url)
-    if backend == "mongo":
+    if backend is StorageBackend.MONGO:
         from icelake.adapters.mongo import MongoStore
 
         url = config.storage.url
@@ -812,7 +822,7 @@ def _build_store(config: MemoryConfig) -> MemoryStore:
         if database in {"mongodb", "mongodb+srv"} or not database:
             database = "icelake"
         return MongoStore(url, database=database)
-    if backend == "postgres":
+    if backend is StorageBackend.POSTGRES:
         raise ConfigError(
             "postgresql storage is not implemented yet; use sqlite:///... or mongodb://..."
         )
@@ -822,4 +832,4 @@ def _build_store(config: MemoryConfig) -> MemoryStore:
     )
 
 
-__all__ = ["DiscordMemory"]
+__all__ = ["DiscordMemory", "MemoryOverrides"]

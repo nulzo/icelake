@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 from icelake.config import ExtractionConfig
 from icelake.ingest.gates import normalize_text
+from icelake.models.admin import MeterPurpose
 from icelake.models.facts import FactRecord
 from icelake.models.operations import (
     ProposedFact,
@@ -20,7 +21,7 @@ from icelake.models.operations import (
     ReconcileKind,
     ReconcileOutput,
 )
-from icelake.ports.llm import ChatLLM, Embedder, LlmMessage
+from icelake.ports.llm import ChatLLM, Embedder, LlmMessage, MessageRole
 from icelake.ports.store import MemoryStore
 from icelake.ports.vectors import VectorIndex, cosine
 from icelake.prompts import extraction as prompts
@@ -197,7 +198,7 @@ class Reconciler:
                 hit.score >= threshold
                 or (
                     hit.score >= SAME_CATEGORY_COLLISION_FLOOR
-                    and (state_change or active_by_id[hit.id].category.value == candidate.category)
+                    and (state_change or active_by_id[hit.id].category == candidate.category)
                 )
             )
         )
@@ -234,14 +235,14 @@ class Reconciler:
             self._llm,
             model=ReconcileOutput,
             messages=(
-                LlmMessage(role="system", content=prompts.RECONCILE_SYSTEM_PROMPT),
+                LlmMessage(role=MessageRole.SYSTEM, content=prompts.RECONCILE_SYSTEM_PROMPT),
                 LlmMessage(
-                    role="user",
+                    role=MessageRole.USER,
                     content=prompts.render_reconcile_prompt("\n\n".join(blocks)),
                 ),
             ),
             max_tokens=min(4000, 500 + 250 * len(active)),
-            purpose="reconcile",
+            purpose=MeterPurpose.RECONCILE,
             guild_id=guild_id,
         )
         if output is None:
@@ -258,7 +259,8 @@ class Reconciler:
             target = id_map.get(decision.target_id or "") or None
             if decision.kind is ReconcileKind.NOOP and target not in known_ids:
                 target = None  # caller falls back to the sole/strongest neighbor
-            if decision.kind.value in {"update", "invalidate"} and target not in known_ids:
+            terminal = {ReconcileKind.UPDATE, ReconcileKind.INVALIDATE}
+            if decision.kind in terminal and target not in known_ids:
                 logger.warning(
                     "Dropping %s decision with unknown target_id",
                     decision.kind.value,

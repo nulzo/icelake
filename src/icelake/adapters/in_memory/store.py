@@ -14,9 +14,11 @@ from icelake.lifecycle.prune import select_prune_victims_by_anchor
 from icelake.models.admin import GuildStats, PurgeReport
 from icelake.models.common import Page
 from icelake.models.facts import (
+    AttributionType,
     FactCategory,
     FactHistoryEntry,
     FactRecord,
+    FactScope,
     MemoryTier,
     ProfileSummary,
     SourceRef,
@@ -179,7 +181,7 @@ class InMemoryStore:
         strength: float,
         last_reinforced_at: datetime,
         expires_at: datetime | None,
-        tier: str,
+        tier: MemoryTier,
         confidence: float,
         extra_citations: tuple[SourceRef, ...] = (),
     ) -> FactRecord | None:
@@ -193,7 +195,7 @@ class InMemoryStore:
                 "strength": strength,
                 "last_reinforced_at": last_reinforced_at,
                 "expires_at": expires_at,
-                "tier": MemoryTier(tier),
+                "tier": tier,
                 "confidence": confidence,
                 "citations": merged_citations[:8],
                 "updated_at": last_reinforced_at,
@@ -238,7 +240,7 @@ class InMemoryStore:
         text_normalized: str | None = None,
         category: FactCategory | None = None,
         confidence: float | None = None,
-        tier: str | None = None,
+        tier: MemoryTier | None = None,
         expires_at: datetime | None = None,
         updated_at: datetime,
     ) -> FactRecord | None:
@@ -859,10 +861,10 @@ class InMemoryStore:
                 now=now,
                 strength=record.strength,
             )
-            manual = record.attribution.type.value == "manual"
+            manual = record.attribution.type is AttributionType.MANUAL
             if should_forget(
                 retention_value=value,
-                tier=record.tier.value,
+                tier=record.tier,
                 manual=manual,
                 forget_retention_floor=retention_floor,
             ):
@@ -905,12 +907,12 @@ class InMemoryStore:
 
     async def guild_stats(self, guild_id: str) -> GuildStats:
         facts = [r for r in self._facts.values() if r.guild_id == guild_id]
-        by_tier: dict[str, int] = {}
-        by_scope: dict[str, int] = {}
+        by_tier: dict[MemoryTier, int] = {}
+        by_scope: dict[FactScope, int] = {}
         users: set[str] = set()
         for record in facts:
-            by_tier[record.tier.value] = by_tier.get(record.tier.value, 0) + 1
-            scope = "server" if record.is_server_fact else "user"
+            by_tier[record.tier] = by_tier.get(record.tier, 0) + 1
+            scope = FactScope.SERVER if record.is_server_fact else FactScope.USER
             by_scope[scope] = by_scope.get(scope, 0) + 1
             if record.subject_id:
                 users.add(record.subject_id)

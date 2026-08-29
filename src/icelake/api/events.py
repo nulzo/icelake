@@ -10,7 +10,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Any
 
 from icelake.models.events import (
     BatchCompleted,
@@ -22,8 +22,9 @@ from icelake.models.events import (
 
 logger = logging.getLogger(__name__)
 
-E = TypeVar("E")
-Handler = Callable[[object], None]
+# Handlers are stored heterogeneously behind Any; subscribe()/on() are the
+# typed entry points that pair each handler with its event type.
+Handler = Callable[[Any], None]
 
 HookEvent = (
     BatchCompleted | FactCommitted | FactSupersededEvent | ExtractionFailed | ComponentDegraded
@@ -36,13 +37,14 @@ class EventBus:
     def __init__(self) -> None:
         self._handlers: dict[type, list[Handler]] = defaultdict(list)
 
-    def subscribe(self, event_type: type[E], handler: Handler) -> None:
+    def subscribe[E](self, event_type: type[E], handler: Callable[[E], None]) -> None:
+        """Register ``handler`` for ``event_type``; the handler's argument is typed."""
         self._handlers[event_type].append(handler)
 
-    def on(self, event_type: type[E]) -> Callable[[Handler], Handler]:
+    def on[E](self, event_type: type[E]) -> Callable[[Callable[[E], None]], Callable[[E], None]]:
         """Decorator form of :meth:`subscribe`."""
 
-        def decorator(handler: Handler) -> Handler:
+        def decorator(handler: Callable[[E], None]) -> Callable[[E], None]:
             self.subscribe(event_type, handler)
             return handler
 

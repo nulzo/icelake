@@ -17,7 +17,7 @@ from icelake.models.facts import (
     MemoryTier,
     ProfileSummary,
 )
-from icelake.models.graph import EdgeKind, LinkRow, NodeType
+from icelake.models.graph import EdgeKind, EntityKind, LinkRow, NodeType
 from icelake.models.identity import AliasSource
 
 
@@ -165,7 +165,7 @@ class TestFacts:
             strength=2.0,
             last_reinforced_at=now + timedelta(hours=1),
             expires_at=None,
-            tier="long_term",
+            tier=MemoryTier.LONG_TERM,
             confidence=0.95,
         )
         assert updated is not None
@@ -349,7 +349,9 @@ class TestLinksAndRelations:
         assert remaining == ()
 
     async def test_entities_and_alias_merge(self, store) -> None:
-        record = await store.upsert_entity("g1", "movies", "Movies", "concept", aliases=("movie",))
+        record = await store.upsert_entity(
+            "g1", "movies", "Movies", EntityKind.CONCEPT, aliases=("movie",)
+        )
         assert record.slug == "movies"
         await store.bump_entity_facts("g1", "movies", delta=2)
         entity = await store.get_entity("g1", "movies")

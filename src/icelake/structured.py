@@ -16,7 +16,8 @@ import logging
 from pydantic import BaseModel, ValidationError
 
 from icelake._json import parse_json_object
-from icelake.ports.llm import ChatLLM, ChatRequest, LlmMessage
+from icelake.models.admin import MeterPurpose
+from icelake.ports.llm import ChatLLM, ChatRequest, LlmMessage, MessageRole
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ async def complete_structured[T: BaseModel](
     model: type[T],
     messages: tuple[LlmMessage, ...],
     max_tokens: int,
-    purpose: str,
+    purpose: MeterPurpose | str,
     guild_id: str | None = None,
 ) -> T | None:
     """Complete against a Pydantic model; ``None`` if invalid after one repair."""
@@ -51,9 +52,9 @@ async def complete_structured[T: BaseModel](
     except (ValueError, ValidationError) as error:
         feedback = (
             *messages,
-            LlmMessage(role="assistant", content=first),
+            LlmMessage(role=MessageRole.ASSISTANT, content=first),
             LlmMessage(
-                role="user",
+                role=MessageRole.USER,
                 # The schema must ride along: on endpoints without constrained
                 # decoding the model never saw it, and the bare validation error
                 # only says what's wrong — not what shape is expected.

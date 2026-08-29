@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
 
 from pydantic import Field
 
@@ -63,6 +62,28 @@ class SourceRole(StrEnum):
     SUPPORTING = "supporting"
 
 
+class FactScope(StrEnum):
+    """Anchor of a fact: one member, or the whole guild.
+
+    Distinct from retrieval :class:`~icelake.models.retrieval.Scope`
+    (``subjects``/``guild``/``server``), which restricts a recall query's
+    candidate space — do not use one where the other is expected.
+    """
+
+    USER = "user"
+    SERVER = "server"
+
+
+class FactHistoryKind(StrEnum):
+    """Lineage event kinds in a fact's audit trail."""
+
+    CREATED = "created"
+    REINFORCED = "reinforced"
+    SUPERSEDED = "superseded"
+    INVALIDATED = "invalidated"
+    REINSTATED = "reinstated"
+
+
 class Attribution(FrozenModel):
     """Who a fact is about and, when applicable, who stated it."""
 
@@ -106,7 +127,7 @@ class FactRecord(FrozenModel):
     category: FactCategory = FactCategory.GENERAL
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     tier: MemoryTier = MemoryTier.SHORT_TERM
-    scope: Literal["user", "server"] = "user"
+    scope: FactScope = FactScope.USER
     attribution: Attribution = Field(default_factory=Attribution)
 
     occurrences: int = Field(default=1, ge=1)
@@ -147,7 +168,7 @@ class FactHistoryEntry(FrozenModel):
     """One lineage event in a fact's audit trail."""
 
     at: datetime
-    kind: Literal["created", "reinforced", "superseded", "invalidated", "reinstated"]
+    kind: FactHistoryKind
     detail: str = ""
     fact_version: int = 1
 

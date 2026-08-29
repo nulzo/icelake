@@ -24,8 +24,10 @@ import discord
 from discord.ext import commands
 
 from icelake import (
+    CommandAction,
     DiscordMemory,
     MemoryConfig,
+    MessageEvent,
     UserMemoryCommand,
 )
 
@@ -147,7 +149,7 @@ class PingReplyBot(commands.Bot):
         if self.user in message.mentions:
             return  # ping turns are answered above; avoid double-handling
         command = await self.memory.classify_command(message.content)
-        if command.action == "none":
+        if command.action is CommandAction.NONE:
             return
         await self._execute_memory_command(message, command)
 
@@ -159,7 +161,7 @@ class PingReplyBot(commands.Bot):
         guild_id = str(message.guild.id) if message.guild else "0"
         user_id = str(message.author.id)
 
-        if command.action.value == "remember" and command.target_text:
+        if command.action is CommandAction.REMEMBER and command.target_text:
             fact = await self.memory.facts.remember(
                 guild_id=guild_id,
                 subject_id=user_id,
@@ -167,7 +169,7 @@ class PingReplyBot(commands.Bot):
                 actor_id=user_id,
             )
             confirm = f"Got it — noted: “{fact.text}”"
-        elif command.action.value == "forget":
+        elif command.action is CommandAction.FORGET:
             page = await self.memory.facts.list_for_subject(
                 guild_id,
                 user_id,
@@ -201,10 +203,8 @@ class PingReplyBot(commands.Bot):
 # ---------------------------------------------------------------------- #
 
 
-def _to_event(message: discord.Message, *, bot_id: int):
+def _to_event(message: discord.Message, *, bot_id: int) -> MessageEvent:
     from datetime import UTC
-
-    from icelake.models.events import MessageEvent
 
     created = message.created_at
     if created.tzinfo is None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from icelake.models.facts import SourceRole
 from icelake.models.retrieval import Citation, ScoredFact, render_citation_tag
 
 CHARS_PER_TOKEN = 4
@@ -150,7 +151,7 @@ class InjectionBuilder:
 def _primary_citation(scored: ScoredFact, guild_id: str, ref_number: int) -> Citation | None:
     record = scored.fact
     source_ref = next(
-        (c for c in record.citations if c.role.value == "primary"),
+        (c for c in record.citations if c.role is SourceRole.PRIMARY),
         record.citations[0] if record.citations else None,
     )
     url = ""

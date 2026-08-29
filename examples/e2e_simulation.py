@@ -65,14 +65,15 @@ from icelake import (
     DiscordMemory,
     ExtractionFailed,
     FactCommitted,
+    FactScope,
     FactSupersededEvent,
     LlmConfig,
     MemoryConfig,
     MessageEvent,
+    MeterSnapshot,
     RecallQuery,
     Scope,
 )
-from icelake.models.admin import MeterSnapshot
 
 GUILD = "900000000000000001"
 GUILD2 = "900000000000000099"  # isolation probe; only the multitenancy phase uses it
@@ -1188,7 +1189,7 @@ async def phase_community(suite: Suite, db_path: Path, llm_url: str) -> MeterSna
         stats = await memory.stats(GUILD)
         suite.expect(
             "stats track the server scope",
-            stats.by_scope.get("server", 0) >= 1,
+            stats.by_scope.get(FactScope.SERVER, 0) >= 1,
             str(stats.by_scope),
         )
 

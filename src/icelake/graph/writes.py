@@ -14,7 +14,7 @@ from typing import Protocol
 from icelake.graph.relations import compute_edge_weight, polarity_for_verb
 from icelake.identity.aliases import alias_slug, normalize_alias
 from icelake.models.facts import FactRecord
-from icelake.models.graph import EdgeKind, LinkRow, NodeType, RelationEdge
+from icelake.models.graph import EdgeKind, EntityKind, LinkRow, NodeType, RelationEdge
 from icelake.models.operations import ProposedEntity, ProposedRelation
 from icelake.ports.store import MemoryStore
 
@@ -56,7 +56,7 @@ async def resolve_entity_slug(
     store: MemoryStore,
     guild_id: str,
     name: str,
-    kind: str = "concept",
+    kind: EntityKind = EntityKind.CONCEPT,
 ) -> str:
     """Canonicalize a surface name into an existing-or-new entity slug."""
     alias_norm = normalize_alias(name)
@@ -64,7 +64,7 @@ async def resolve_entity_slug(
     if existing:
         return existing
     slug = alias_slug(name)
-    await store.upsert_entity(guild_id, slug, name, kind, aliases=(alias_norm,))  # type: ignore[arg-type]
+    await store.upsert_entity(guild_id, slug, name, kind, aliases=(alias_norm,))
     return slug
 
 

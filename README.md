@@ -119,9 +119,11 @@ Names go through mention ID, username, display name, then saved real name.
 If more than one member matches, you get `ambiguous` instead of a guess.
 
 ```python
+from icelake import CommandAction
+
 command = await memory.classify_command("hey bot remember that I hate pineapple")
-# UserMemoryCommand(action="remember", target_text="that I hate pineapple", ...)
-if command.action == "remember":
+# UserMemoryCommand(action=CommandAction.REMEMBER, target_text="that I hate pineapple", ...)
+if command.action is CommandAction.REMEMBER:
     await memory.facts.remember(
         guild_id=guild_id, subject_id=user_id,
         text=command.target_text, actor_id=user_id,
@@ -131,14 +133,14 @@ if command.action == "remember":
 Third-party facts can carry a relation:
 
 ```python
-from icelake.models.operations import ProposedRelation
+from icelake import ProposedRelation, RelationVerb
 
 await memory.facts.remember(
     guild_id=guild_id, subject_id=bob_id,
     text="carol called bob a sore loser during game night",
     actor_id=carol_id, speaker_id=carol_id,
     relations=(ProposedRelation(
-        verb="called_out", from_token=carol_id, to_token=bob_id),),
+        verb=RelationVerb.CALLED_OUT, from_token=carol_id, to_token=bob_id),),
 )
 ```
 
@@ -150,6 +152,41 @@ await memory.admin.purge_user(guild_id, user_id, dry_run=False)
 ```
 
 Opt-out applies to both `observe` and recall.
+
+## Typed vocabulary
+
+Every closed set of values is a `StrEnum` exported from the package root —
+no magic strings, no guessing. Enum members are plain strings, so they
+compare equal to and serialize as their values:
+
+```python
+from icelake import (
+    AliasSource,       # identity.register_alias(source=...)
+    AttributionType,   # facts.remember(attribution=...)
+    ChannelName,       # RecallQuery.channels / channels(...)
+    CommandAction,     # classify_command results
+    EntityKind,        # ProposedEntity(kind=...)
+    FactCategory,      # facts.remember(category=...)
+    FactHistoryKind,   # facts.history() entries
+    FactScope,         # FactRecord.scope: USER vs SERVER facts
+    HealthStatus,      # ops.health() component states
+    IgnoreReason, RejectReason, ObserveStatus,  # observe receipts
+    MemoryTier,        # FactRecord.tier, GuildStats.by_tier keys
+    MeterPurpose,      # the library's own LLM call purposes
+    MessageRole,       # LlmMessage.role
+    NodeType, Polarity, RelationVerb,           # graph edges
+    RecallWarning,     # recall / prompt_context warnings
+    Scope,             # RecallQuery.scope (retrieval-side only)
+    SourceRole,        # citation roles
+    StorageBackend,    # config.storage.backend
+)
+```
+
+Two vocabularies are intentionally open and accept plain strings alongside
+the enum: `RelationVerb` (extraction may produce verbs outside the known
+set; unknown verbs are polarity-neutral) and meter purposes (charge your own
+LLM calls under your own names). Note `Scope` (retrieval) and `FactScope`
+(storage) are different sets — don't use one where the other is expected.
 
 ## How extraction works
 
@@ -214,14 +251,12 @@ config = MemoryConfig(
 
 class MyBot(commands.Bot):
     async def setup_hook(self) -> None:
-        memory, helpers = await setup_discord_memory(self, config)
-        self.memory = memory
+        self.memory = await setup_discord_memory(self, config)
 ```
 
-This wires `on_message` to `observe`, refreshes aliases on `on_member_update`,
-and registers the bot's user id on ready. `helpers` has `me`, `remember`, and
-`forget_me` methods you can bind to slash commands. It is not a Cog. For a
-full `/memory` group see [`examples/omni_style_bot.py`](examples/omni_style_bot.py).
+This wires `on_message` to `observe`, refreshes aliases on
+`on_member_update`, and registers the bot's user id on ready. For a full
+`/memory` group see [`examples/omni_style_bot.py`](examples/omni_style_bot.py).
 
 ## Configuration
 
@@ -278,6 +313,8 @@ database.
 ## Custom backends
 
 ```python
+from icelake import ChatLLM, DiscordMemory, Embedder, MemoryStore
+
 memory = DiscordMemory(
     config,
     store=MyPostgresStore(),   # MemoryStore (+ optional .queue / .vectors)
@@ -286,6 +323,12 @@ memory = DiscordMemory(
     clock=FakeClock(...),
 )
 ```
+
+The override kwargs are typed (`MemoryOverrides`): your editor will
+autocomplete `store`, `queue`, `vectors`, `embedder`, `meter`, `llm`,
+`small_llm`, `clock`, and `id_gen`, all checked against the port protocols
+exported from the package root. Passing `llm=None` or `embedder=None`
+explicitly disables that capability (degraded mode).
 
 A new store has to pass `tests/integration/test_store_conformance.py`.
 

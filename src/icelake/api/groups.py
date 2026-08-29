@@ -13,7 +13,9 @@ from icelake.models.common import Page
 from icelake.models.graph import (
     NeighborInfo,
     NodeType,
+    Polarity,
     RelationEdge,
+    SimilarUser,
     StanceSummary,
 )
 from icelake.models.identity import AliasRecord, AliasSource, Resolution
@@ -155,9 +157,9 @@ class GraphApi:
         return StanceSummary(
             entity_slug=slug,
             entity_name=entity.name if entity else entity_name_or_slug,
-            positive=tuple(e for e in edges if e.polarity.value == "positive"),
-            negative=tuple(e for e in edges if e.polarity.value == "negative"),
-            other=tuple(e for e in edges if e.polarity.value == "neutral"),
+            positive=tuple(e for e in edges if e.polarity is Polarity.POSITIVE),
+            negative=tuple(e for e in edges if e.polarity is Polarity.NEGATIVE),
+            other=tuple(e for e in edges if e.polarity is Polarity.NEUTRAL),
             total_evidence=sum(e.occurrences for e in edges),
         )
 
@@ -167,7 +169,7 @@ class GraphApi:
         user_id: str,
         *,
         limit: int = 10,
-    ) -> tuple[tuple[str, float], ...]:
+    ) -> tuple[SimilarUser, ...]:
         """Members sharing entity traits with this user, Jaccard-ranked (capped).
 
         Three round-trips total regardless of graph size: seed adjacency,
@@ -207,11 +209,11 @@ class GraphApi:
                 entities_by_user.setdefault(edge.src_id, set()).add(edge.dst_id)
 
         scored = [
-            (candidate, round(score, 4))
+            SimilarUser(user_id=candidate, score=round(score, 4))
             for candidate, entity_set in entities_by_user.items()
             if (score := jaccard_similarity(frozenset(seed_entities), frozenset(entity_set))) > 0
         ]
-        scored.sort(key=lambda pair: -pair[1])
+        scored.sort(key=lambda hit: -hit.score)
         return tuple(scored[:limit])
 
     async def neighbors(

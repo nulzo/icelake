@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from icelake.ingest.roster import Roster
 from icelake.models.facts import FactCategory, FactRecord
-from icelake.models.graph import EdgeKind, LinkRow, NodeType
+from icelake.models.graph import EdgeKind, EntityKind, LinkRow, NodeType
 from icelake.models.retrieval import ScoredFact
 from icelake.retrieval.injection import (
     InjectionBuilder,
@@ -205,7 +205,9 @@ class TestChannels:
     async def test_entity_channel_resolves_slugs(self, make_client):
         client, _ = make_client(llm=False)
         await client.start()
-        await client._store.upsert_entity("g1", "chess", "Chess", "concept", aliases=("chess",))
+        await client._store.upsert_entity(
+            "g1", "chess", "Chess", EntityKind.CONCEPT, aliases=("chess",)
+        )
         record = await client.facts.remember(
             guild_id="g1", subject_id="u1", text="plays chess every single weekend"
         )

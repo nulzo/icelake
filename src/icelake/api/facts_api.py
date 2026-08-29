@@ -25,7 +25,9 @@ from icelake.models.facts import (
     AttributionType,
     FactCategory,
     FactHistoryEntry,
+    FactHistoryKind,
     FactRecord,
+    FactScope,
     MemoryTier,
 )
 from icelake.models.identity import AliasSource
@@ -94,7 +96,7 @@ class FactsApi:
         names, e.g.::
 
             relations=(ProposedRelation(
-                verb="owes", from_token=bob_id, to_entity="pizza"),
+                verb=RelationVerb.LIKES, from_token=bob_id, to_entity="pizza"),
             )
         """
         await self._startup_gate()
@@ -115,7 +117,7 @@ class FactsApi:
                 strength=duplicate.strength + 1.0,
                 last_reinforced_at=now,
                 expires_at=duplicate.expires_at,
-                tier=duplicate.tier.value,
+                tier=duplicate.tier,
                 confidence=max(duplicate.confidence, confidence),
             )
             assert updated is not None
@@ -132,7 +134,7 @@ class FactsApi:
             category=category,
             confidence=confidence,
             tier=MemoryTier.CORE,
-            scope="server" if subject_id is None else "user",
+            scope=FactScope.SERVER if subject_id is None else FactScope.USER,
             attribution=Attribution(
                 type=(AttributionType.THIRD_PARTY if third_party else attribution),
                 actor_id=actor_id,
@@ -220,7 +222,7 @@ class FactsApi:
         await self._store.append_history(
             guild_id,
             fact_id,
-            FactHistoryEntry(at=now, kind="superseded", detail=detail),
+            FactHistoryEntry(at=now, kind=FactHistoryKind.SUPERSEDED, detail=detail),
         )
         await self._index(updated_fields)  # stale vector would misdirect recall
         self._publish_superseded(guild_id, fact_id, fact_id, reason)
@@ -239,7 +241,7 @@ class FactsApi:
             fact_id,
             FactHistoryEntry(
                 at=now,
-                kind="invalidated",
+                kind=FactHistoryKind.INVALIDATED,
                 detail=reason or f"by {actor_id or 'admin'}",
             ),
         )
@@ -255,7 +257,7 @@ class FactsApi:
             strength=record.strength + 1.0,
             last_reinforced_at=now,
             expires_at=record.expires_at,
-            tier=record.tier.value,
+            tier=record.tier,
             confidence=record.confidence,
         )
         assert updated is not None

@@ -12,7 +12,7 @@ from __future__ import annotations
 import threading
 
 from icelake.config import BudgetsConfig
-from icelake.models.admin import BudgetStep, MeterSnapshot
+from icelake.models.admin import BudgetStep, MeterPurpose, MeterSnapshot
 from icelake.ports.clock import Clock
 from icelake.ports.llm import ChatLLM, ChatRequest, ChatResponse, Meter
 from icelake.ports.store import MemoryStore
@@ -84,7 +84,7 @@ class UsageMeter:
 
     def record_llm(
         self,
-        purpose: str,
+        purpose: MeterPurpose | str,
         *,
         prompt_tokens: int,
         completion_tokens: int,

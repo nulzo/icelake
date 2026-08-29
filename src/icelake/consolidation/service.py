@@ -3,9 +3,10 @@ from __future__ import annotations
 import logging
 
 from icelake.config import MemoryConfig
+from icelake.models.admin import MeterPurpose
 from icelake.models.facts import FactRecord, ProfileSummary
 from icelake.ports.clock import Clock
-from icelake.ports.llm import ChatLLM, ChatRequest, Embedder, LlmMessage
+from icelake.ports.llm import ChatLLM, ChatRequest, Embedder, LlmMessage, MessageRole
 from icelake.ports.store import MemoryStore
 
 logger = logging.getLogger(__name__)
@@ -107,9 +108,11 @@ class ConsolidationService:
         response = await self._llm.complete(
             ChatRequest(
                 messages=(
-                    LlmMessage(role="system", content="You are a precise memory summarizer."),
                     LlmMessage(
-                        role="user",
+                        role=MessageRole.SYSTEM, content="You are a precise memory summarizer."
+                    ),
+                    LlmMessage(
+                        role=MessageRole.USER,
                         content=SUMMARY_PROMPT.format(
                             subject=label,
                             facts=fact_block,
@@ -117,7 +120,7 @@ class ConsolidationService:
                     ),
                 ),
                 max_tokens=1000,
-                purpose="summarize",
+                purpose=MeterPurpose.SUMMARIZE,
                 guild_id=guild_id,
             )
         )

@@ -487,7 +487,7 @@ class IdentityGraphMixin:
             """INSERT INTO dm_entities (guild_id, slug, name, kind, aliases_json)
                VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(guild_id, slug) DO UPDATE SET name=excluded.name""",
-            (guild_id, slug, name, kind, dumps(list(aliases))),
+            (guild_id, slug, name, kind.value, dumps(list(aliases))),
         )
         for alias in dict.fromkeys(aliases):
             await self._db.execute(
