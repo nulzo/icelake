@@ -1,5 +1,3 @@
-"""Relation edge derivation and weighting."""
-
 from __future__ import annotations
 
 import math
@@ -19,6 +17,7 @@ _NEGATIVE_VERBS = frozenset(
         "avoids",
     }
 )
+
 _POSITIVE_VERBS = frozenset(
     {
         "likes",
