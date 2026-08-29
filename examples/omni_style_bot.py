@@ -52,14 +52,12 @@ EMBEDDINGS_URL = (
 )
 
 
-# --------------------------------------------------------------------------- #
-# Composition root — the only place anything is wired together.               #
-# --------------------------------------------------------------------------- #
+# =-------------------------------------------------------------------------= #
+# Composition root — the only place anything is wired together                #
+# =-------------------------------------------------------------------------= #
 
 
 def build_memory() -> DiscordMemory:
-    # Hosted embeddings for reconcile + recall. If this DB was created with the
-    # default hashing embedder, delete dm_vectors or start a fresh sqlite file.
     return DiscordMemory(
         MemoryConfig(
             storage="sqlite:///omni-style.db",
@@ -74,7 +72,7 @@ def build_memory() -> DiscordMemory:
 
 
 class OmniStyleBot(commands.Bot):
-    """Memory-native bot: passive learning for everyone, answers when addressed."""
+    """simple mem-native bot with passive learning for everyone, answers when addressed."""
 
     def __init__(self, memory: DiscordMemory) -> None:
         intents = discord.Intents.default()
@@ -84,7 +82,7 @@ class OmniStyleBot(commands.Bot):
         self.memory = memory
 
     async def setup_hook(self) -> None:
-        # Start memory BEFORE the gateway connects so early messages are safe.
+        # Start memory before the gateway connects so early messages are safe
         await self.memory.start()
         if self.user:
             self.memory.register_bot_id(self.user.id)  # never remember ourselves
@@ -94,23 +92,20 @@ class OmniStyleBot(commands.Bot):
         await self.memory.close(drain=True)
         await super().close()
 
-    # ------------------------------------------------------------------ #
-    # on_message: learn from everyone; answer whoever addresses us.       #
-    # ------------------------------------------------------------------ #
+    # =----------------------------------------------------------------= #
+    # on_message: learn from everyone and answer whoever addresses us    #
+    # =----------------------------------------------------------------= #
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        if message.guild is None:
-            return
+        if message.guild is None: return
 
         event = to_event(message)
-        # Register our own id once; the bot is structurally never a subject.
+        # register our own id once. the bot should never be a subject.
         await self.memory.observe(event)
-        if message.author.bot:
-            return
+        if message.author.bot: return
 
-        if await self._is_addressed(message):
-            await self._handle_turn(message)
+        if await self._is_addressed(message): await self._handle_turn(message)
 
     # ------------------------------------------------------------------ #
     # Addressing: direct mention, <@id> token, or reply-to-our-message.   #

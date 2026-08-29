@@ -1,10 +1,3 @@
-"""Opaque, sortable, prefix-namespaced identifiers.
-
-Facts use ``fct_<ulid>``, jobs ``job_<ulid>``, batches ``bat_<ulid>``. ULID-style ids
-are time-ordered so store keys cluster chronologically (hot inserts append to indexes)
-and log lines sort naturally.
-"""
-
 from __future__ import annotations
 
 import os
