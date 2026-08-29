@@ -1,10 +1,3 @@
-"""Profile/guild digest summarization — derived representations.
-
-Background-only: runs under the pipeline lease after batches, never on read paths.
-LLM output is validated against source facts via embedding-similarity sanity check;
-failures keep the previous summary (never drift).
-"""
-
 from __future__ import annotations
 
 import logging
