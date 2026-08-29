@@ -172,14 +172,17 @@ class IngestPipeline:
         *,
         reason: str,
         messages: tuple[StoredMessage, ...] = (),
+        detail: str = "",
     ) -> BatchReport:
         """Log a skip, optionally emit BatchCompleted, and return the report."""
+        extra = f" {detail}" if detail else ""
         logger.debug(
-            "batch skipped guild=%s subject=%s reason=%s messages=%d snippet=%r",
+            "batch skipped guild=%s subject=%s reason=%s messages=%d%s snippet=%r",
             key.guild_id,
             key.subject_key,
             reason,
             len(messages),
+            extra,
             _snippet(" ".join(m.content for m in messages)),
         )
         if self.event_bus is not None:
@@ -308,7 +311,16 @@ class IngestPipeline:
             if len(window) < self._config.batching.batch_size_messages:
                 # Community roll-up waits for batch-sized volume; per-message
                 # culture extraction doubles cost and races the user batches.
-                return self._skip_batch(key, reason="below_min_volume", messages=window)
+                need = self._config.batching.batch_size_messages
+                return self._skip_batch(
+                    key,
+                    reason="below_min_volume",
+                    messages=window,
+                    detail=(
+                        f"have={len(window)} need={need} before community "
+                        "extraction; no LLM call"
+                    ),
+                )
 
             summary = CommitSummary()
             try:
