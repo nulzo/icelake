@@ -107,7 +107,7 @@ await message.reply(ctx.apply_citations(reply), mention_author=False)
 ```python
 resolution = await memory.identity.resolve(guild_id, "klim")
 if resolution.ambiguous:
-    ...  # ask which member; do not guess
+    ...  # ask which member. do not guess
 
 edges = await memory.graph.between(guild_id, x_id, y_id)
 stances = await memory.graph.entity_stances(guild_id, "movies")
@@ -160,12 +160,12 @@ mints roster tokens (`p0`, `p1`, `server`), asks the model for JSON, runs
 quality gates, and stores what survives.
 
 The model never sees Discord snowflakes. Identity fields may only use tokens
-minted for that batch; anything else is dropped. Stored text uses display
+minted for that batch, anything else is dropped. Stored text uses display
 names. The owner of a fact is the snowflake on `subject_id`, so a rename
 adds an alias instead of moving the row.
 
 Invalid JSON is repaired once, then dead-lettered. Contradictions invalidate
-or supersede the old fact; nothing is deleted. Profile digests regenerate
+or supersede the old fact. Nothing is deleted. Profile digests regenerate
 after `extraction.auto_consolidate_after_adds` new facts (default 5).
 
 Recall does not call the LLM. Typical queries:
@@ -220,7 +220,7 @@ class MyBot(commands.Bot):
 
 This wires `on_message` to `observe`, refreshes aliases on `on_member_update`,
 and registers the bot's user id on ready. `helpers` has `me`, `remember`, and
-`forget_me` methods you can bind to slash commands; it is not a Cog. For a
+`forget_me` methods you can bind to slash commands. It is not a Cog. For a
 full `/memory` group see [`examples/omni_style_bot.py`](examples/omni_style_bot.py).
 
 ## Configuration
@@ -229,7 +229,7 @@ full `/memory` group see [`examples/omni_style_bot.py`](examples/omni_style_bot.
 MemoryConfig(
     storage="sqlite:///memory.db",          # or mongodb://... with [mongo]
     llm="openai://$KEY@openrouter.ai/api/v1?model=...",
-    embeddings="hashing",                   # default; see below
+    embeddings="hashing",                   # default. see below
     # embeddings="local",
     # embeddings="openai://$KEY@openrouter.ai/api/v1?model=openai/text-embedding-3-small",
     batching={"batch_size_messages": 10, "max_age_seconds": 300},
@@ -270,10 +270,10 @@ database.
 
 | Setup | Config |
 |---|---|
-| One process | defaults; workers run as background tasks |
-| Bot and worker split | bot: `workers={"enabled": False}`; worker: same DB, loop on `await memory.ops.run_pending()` |
-| Cron | workers off; call `ops.run_pending` from your scheduler |
-| Several processes | share one database; keyed leases keep workers from overlapping |
+| One process | defaults, workers run as background tasks |
+| Bot and worker split | bot: `workers={"enabled": False}`, worker: same DB, loop on `await memory.ops.run_pending()` |
+| Cron | workers off, call `ops.run_pending` from your scheduler |
+| Several processes | share one database, keyed leases keep workers from overlapping |
 
 ## Custom backends
 
@@ -300,16 +300,16 @@ uv run mypy
 
 Coverage floor is 90%. mypy is strict.
 
-## Status (v0.1)
+## Status (v0.1.x)
 
 - Storage: SQLite (default), MongoDB (`[mongo]`), in-memory (tests). Postgres
-  is not implemented; `postgresql://` fails with a clear error.
+  is not implemented, `postgresql://` fails with a clear error.
 - Default hashing embeddings are not good enough for production recall. See
   [Embeddings](#embeddings).
 - Bad extraction JSON is repaired once, then dead-lettered. Retry with
   `ops.retry_dead_letters`.
 - Caps and TTL drop weakest facts first (manual/CORE last). Budgets are
-  per-process; cross-process accounting needs store-backed counters.
+  per-process. Cross-process accounting needs store-backed counters.
 - `similar_users` is capped Jaccard over entity adjacency.
 
 ## License
