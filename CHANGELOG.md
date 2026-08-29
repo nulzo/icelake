@@ -11,6 +11,11 @@ of `security`, `removed`, `deprecated`, `added`, `changed`, `fixed`.
 
 <!-- towncrier release notes start -->
 
+## [0.3.0](https://github.com/nulzo/icelake/tree/v0.3.0) - 2026-08-29
+
+No significant changes.
+
+
 ## [0.2.0](https://github.com/nulzo/icelake/tree/v0.2.0) - 2026-08-29
 
 No significant changes.

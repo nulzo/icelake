@@ -1,6 +1,6 @@
 [project]
 name = "icelake"
-version = "0.2.0"
+version = "0.3.0"
 description = "Accurate, scalable, cost-effective agentic memory layer for Discord bots."
 readme = "README.md"
 requires-python = ">=3.12"
