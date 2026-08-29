@@ -241,7 +241,10 @@ class MongoStore:
                 "_id": {"$in": list(fact_ids)},
             }
         )
-        return tuple([fact_from_doc(d) async for d in cursor])
+        # $in does not preserve request order; callers pair these with scored
+        # hits by id, so return them in the order they were asked for.
+        by_id = {doc["_id"]: fact_from_doc(doc) async for doc in cursor}
+        return tuple(by_id[fact_id] for fact_id in fact_ids if fact_id in by_id)
 
     async def find_duplicate(
         self,

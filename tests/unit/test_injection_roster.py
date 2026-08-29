@@ -70,6 +70,31 @@ class TestInjectionBuilder:
         assert "- likes building keyboards" in block
         assert len(citations) == 0  # no real source refs → plain bullets, no citations
 
+    def test_display_name_overrides_speaker_name(self) -> None:
+        """A third-party fact (alice speaking about bob) must render under bob's
+        name, never under alice's. The caller resolves the subject's name from
+        the alias ladder and passes it in."""
+        builder = InjectionBuilder()
+        fact = _fact("was called a hacker by alice", subject_id="u-bob")
+        # Simulate the fact carrying the SPEAKER's name (alice) — the bug.
+        fact = fact.model_copy(
+            update={
+                "attribution": fact.attribution.model_copy(
+                    update={"speaker_name": "alice"}
+                )
+            }
+        )
+        block, _citations, _trimmed = builder.build(
+            asker_id="u-asker",
+            facts_by_section={"user:u-bob": (self._scored(fact),)},
+            summaries={},
+            token_budget=10_000,
+            guild_id="g1",
+            display_names={"user:u-bob": "bob"},
+        )
+        assert "REFERENCED USER: bob" in block
+        assert "REFERENCED USER: alice" not in block
+
     def test_budget_forces_trim(self) -> None:
         builder = InjectionBuilder()
         facts = tuple(

@@ -246,6 +246,37 @@ class TestStoreRawMessagesPrivacy:
             assert secret[:10] not in str(row["content"])
         del row, secret, receipt, memory
 
+    async def test_hash_only_mode_never_calls_llm(self) -> None:
+        """The stored hash is not message text. Extraction must skip it, not
+        send it to the LLM."""
+        from icelake.api.client import DiscordMemory
+        from tests.conftest import make_config
+
+        llm = ScriptedLLM({"extraction": extraction_response([])})
+        memory = DiscordMemory(
+            make_config(
+                workers={"enabled": False},
+                privacy={"store_raw_messages": False},
+            ),
+            llm=llm,
+        )
+        await memory.start()
+        await memory.observe(
+            MessageEvent(
+                message_id="sec-2",
+                guild_id=GUILD,
+                channel_id="c",
+                author_id=ALICE,
+                content="i really love hiking in the mountains on weekends",
+                created_at=datetime.now(UTC),
+                author_display_name="alice",
+            )
+        )
+        await memory.flush()
+        extraction_calls = [c for c in llm.calls if c.purpose == "extraction"]
+        assert extraction_calls == []
+        await memory.close()
+
 
 class TestAttributionOnRemember:
     async def test_agent_attribution_kwarg(self) -> None:

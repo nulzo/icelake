@@ -533,6 +533,7 @@ class DiscordMemory:
         sections: dict[str, tuple[ScoredFact, ...]] = {}
         summaries: dict[str, str | None] = {}
         alias_notes: dict[str, str] = {}
+        display_names: dict[str, str] = {}
 
         asker_summary_doc = await self._store.get_summary(guild_id, asker_id)
         summaries["asker"] = asker_summary_doc.text if asker_summary_doc else None
@@ -554,6 +555,10 @@ class DiscordMemory:
                 alias_notes[key] = (
                     f"Coreference: these names all refer to ONE person: {', '.join(names)}."
                 )
+            # Header names the SUBJECT. Prefer the strongest alias; fall back to
+            # the id. Never use the speaker name stored on the fact.
+            if names:
+                display_names[key] = names[0]
 
         sections["server"] = tuple(server_result.facts)
         server_doc = await self._store.get_summary(guild_id, None)
@@ -566,6 +571,7 @@ class DiscordMemory:
             token_budget=budget,
             guild_id=guild_id,
             alias_notes=alias_notes,
+            display_names=display_names,
         )
         if trimmed:
             warnings.append(RecallWarning.BUDGET_TRIMMED)

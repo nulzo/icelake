@@ -84,29 +84,28 @@ class SqliteVectorIndex:
     ) -> tuple[VectorHit, ...]:
         if not embedding:
             return ()
+        # Scope filter goes in the WHERE clause, before the cap. Capping first
+        # and filtering after starves quiet members on busy servers.
+        where = ["guild_id = ?"]
+        params: list[object] = [guild_id]
+        if server_only:
+            where.append("subject_id IS NULL")
+        elif subject_ids is not None:
+            placeholders = ",".join("?" for _ in subject_ids)
+            where.append(f"(subject_id IN ({placeholders}) OR subject_id IS NULL)")
+            params.extend(subject_ids)
         # Recency-biased slice: an arbitrary unordered LIMIT slice silently
         # degraded recall quality once a guild exceeded the candidate cap.
         rows = await self._db.query(
-            "SELECT fact_id, subject_id, dim, embedding FROM dm_vectors "
-            "WHERE guild_id=? ORDER BY fact_id DESC LIMIT ?",
-            (guild_id, candidate_cap),
+            "SELECT fact_id, embedding FROM dm_vectors "
+            f"WHERE {' AND '.join(where)} ORDER BY fact_id DESC LIMIT ?",
+            (*params, candidate_cap),
         )
-        allowed = set(subject_ids) if subject_ids is not None else None
-        scored: list[VectorHit] = []
-        for row in rows:
-            candidate_subject = row["subject_id"]
-            if server_only and candidate_subject is not None:
-                continue
-            if (
-                not server_only
-                and allowed is not None
-                and (candidate_subject is not None and candidate_subject not in allowed)
-            ):
-                continue
-            vector = _unpack(row["embedding"])
-            score = cosine(embedding, vector)
-            if score > 0.0:
-                scored.append(VectorHit(id=row["fact_id"], score=score))
+        scored = [
+            VectorHit(id=row["fact_id"], score=cosine(embedding, _unpack(row["embedding"])))
+            for row in rows
+        ]
+        scored = [hit for hit in scored if hit.score > 0.0]
         scored.sort(key=lambda hit: -hit.score)
         return tuple(scored[:limit])
 

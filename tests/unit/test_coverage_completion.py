@@ -377,6 +377,52 @@ class TestPipelineBranches:
         assert report.skipped_reason == "budget"
         await budget_client.close()
 
+    async def test_budget_skip_reconcile_still_commits(self, make_client, event_factory) -> None:
+        """Near budget: extraction runs, the reconcile LLM is skipped, and
+        candidates still commit as direct adds."""
+        from icelake.adapters.meter import InMemoryMeter
+        from icelake.config import BudgetsConfig, MemoryConfig
+
+        meter = InMemoryMeter(
+            BudgetsConfig(guild_daily_prompt_tokens=100),
+            _FastClock(),
+        )
+        # 90% of the daily budget → SKIP_RECONCILE, not SKIP_EXTRACTION.
+        meter.charge_guild(GUILD, prompt_tokens=90)
+        llm = ScriptedLLM(
+            {
+                "extraction": extraction_response(
+                    [
+                        {
+                            "subject_token": "p0",
+                            "text": "enjoys weekend rock climbing trips",
+                            "category": "interests",
+                            "confidence": 0.9,
+                            "source_message_indexes": [1],
+                        }
+                    ]
+                )
+            }
+        )
+        config = MemoryConfig(
+            storage="sqlite://:memory:",
+            workers={"enabled": False},
+            batching={"batch_size_messages": 3},
+        )
+        client = DiscordMemory(config, clock=_FastClock(), llm=llm, meter=meter)
+        await client.start()
+        await client.observe(
+            event_factory(content="i love going rock climbing every weekend")
+        )
+        await client.flush()
+        page = await client.facts.list_for_subject(
+            guild_id=GUILD, subject_id=event_factory().author_id
+        )
+        assert any("climbing" in f.text for f in page.items)
+        reconcile_calls = [c for c in llm.calls if c.purpose == "reconcile"]
+        assert reconcile_calls == []
+        await client.close()
+
     async def test_server_window_via_recent_messages(self, make_client, event_factory) -> None:
         llm = ScriptedLLM(
             {

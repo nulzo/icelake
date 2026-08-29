@@ -55,8 +55,11 @@ class InjectionBuilder:
         token_budget: int,
         guild_id: str,
         alias_notes: dict[str, str] | None = None,
+        display_names: dict[str, str] | None = None,
     ) -> tuple[str, tuple[Citation, ...], bool]:
         """``alias_notes`` maps section-key -> coreference line ("Also known as…").
+        ``display_names`` maps section-key -> the subject's resolved name for
+        referenced-user headers (never the speaker name stored on the fact).
 
         Returns ``(block, citations, trimmed)``.
 
@@ -91,7 +94,12 @@ class InjectionBuilder:
                 header = header_map["server"]
                 label = "Community-wide traits:"
             else:
-                display = facts[0].fact.attribution.speaker_name or subject_id or section_key
+                display = (
+                    (display_names or {}).get(section_key)
+                    or facts[0].fact.attribution.speaker_name
+                    or subject_id
+                    or section_key
+                )
                 header = f"REFERENCED USER: {display}"
                 label = f"Facts about {display} ONLY. Do NOT attribute these to the asker."
             summary_text = summaries.get(section_key)

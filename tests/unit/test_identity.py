@@ -52,6 +52,19 @@ async def test_exact_resolution_prefers_strong_source(populated_store: InMemoryS
     assert resolution.resolved.user_id == "u-alice"
 
 
+async def test_rank_beats_weight_when_sources_conflict() -> None:
+    """A higher-weight low-rank alias must not steal resolution from a lower-weight
+    high-rank alias. Store order is weight DESC; resolution must follow source rank."""
+    store = InMemoryStore()
+    # display_name has the higher weight but the lower rank.
+    await store.upsert_alias("g", "klim", "u-display", AliasSource.DISPLAY_NAME, 0.9)
+    await store.upsert_alias("g", "klim", "u-username", AliasSource.DISCORD_USERNAME, 0.7)
+    resolution = await IdentityResolver(store).resolve("g", "klim")
+    assert not resolution.ambiguous
+    assert resolution.resolved is not None
+    assert resolution.resolved.user_id == "u-username"
+
+
 async def test_equal_weight_candidates_are_ambiguous() -> None:
     store = InMemoryStore()
     await store.upsert_alias("g", "alex", "u-alex-1", AliasSource.DISPLAY_NAME, 0.9)

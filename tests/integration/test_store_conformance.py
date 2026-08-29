@@ -115,6 +115,15 @@ class TestFacts:
         assert loaded.category is FactCategory.INTERESTS
         assert loaded.attribution.type is AttributionType.SELF
 
+    async def test_get_facts_preserves_request_order(self, store) -> None:
+        """Callers pair these with scored hits by position-safe id lookup; the
+        store must return them in the order requested, dropping missing ids."""
+        await store.insert_fact(make_fact(id="fct_a", text="first"))
+        await store.insert_fact(make_fact(id="fct_b", text="second"))
+        await store.insert_fact(make_fact(id="fct_c", text="third"))
+        records = await store.get_facts("g1", ("fct_c", "fct_missing", "fct_a"))
+        assert tuple(r.id for r in records) == ("fct_c", "fct_a")
+
     async def test_find_duplicate_respects_subject(self, store) -> None:
         await store.insert_fact(make_fact(id="fct_a", text_normalized="likes movies"))
         assert await store.find_duplicate("g1", "u1", "likes movies") is not None
