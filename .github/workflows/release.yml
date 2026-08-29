@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: "Base version bump"
+        description: "Base bump. 'none' releases the version already in pyproject.toml (e.g. a manual major)."
         required: true
         type: choice
-        options: [patch, minor, major]
+        options: [minor, patch, none]
       prerelease:
-        description: "Pre-release stage (PEP 440)"
-        required: false
+        description: "Pre-release stage (PEP 440). Pre-releases may run on any branch and push only a tag."
+        required: true
         type: choice
         options: [none, alpha, beta, rc]
 
@@ -30,15 +30,42 @@ jobs:
           python-version: "3.12"
       - run: uv sync --group dev
 
-      - name: Bump version
+      - name: Guard stable releases to main
+        if: inputs.prerelease == 'none'
+        run: |
+          if [ "${{ github.ref_name }}" != "main" ]; then
+            echo "Stable releases must run on main. Use a prerelease stage from a feature branch." >&2
+            exit 1
+          fi
+
+      - name: Compute version
         id: bump
         run: |
-          if [ "${{ inputs.prerelease }}" = "none" ]; then
-            uv version --bump "${{ inputs.bump }}" --frozen --no-sync
+          set -euo pipefail
+          if [ "${{ inputs.bump }}" = "none" ]; then
+            BASE="$(uv version --short)"
           else
-            uv version --bump "${{ inputs.bump }}" --bump "${{ inputs.prerelease }}" --frozen --no-sync
+            BASE="$(uv version --bump "${{ inputs.bump }}" --dry-run | awk '{print $NF}')"
           fi
-          echo "version=$(uv version --short)" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.prerelease }}" = "none" ]; then
+            VERSION="$BASE"
+          else
+            case "${{ inputs.prerelease }}" in
+              alpha) SHORT=a ;; beta) SHORT=b ;; rc) SHORT=rc ;;
+            esac
+            LAST=0
+            for TAG in $(git tag -l "v${BASE}${SHORT}[0-9]*"); do
+              N="${TAG#v${BASE}${SHORT}}"
+              [ "$N" -gt "$LAST" ] && LAST="$N"
+            done
+            VERSION="${BASE}${SHORT}$((LAST + 1))"
+          fi
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "Tag v${VERSION} already exists." >&2
+            exit 1
+          fi
+          uv version "$VERSION" --frozen --no-sync
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Build changelog
         run: uv run towncrier build --yes --version "${{ steps.bump.outputs.version }}"
@@ -51,5 +78,10 @@ jobs:
           git commit -m "release: v${{ steps.bump.outputs.version }}"
           git tag "v${{ steps.bump.outputs.version }}"
 
-      - name: Push
+      - name: Push stable release to main
+        if: inputs.prerelease == 'none'
         run: git push origin HEAD:main --follow-tags
+
+      - name: Push pre-release tag only
+        if: inputs.prerelease != 'none'
+        run: git push origin "v${{ steps.bump.outputs.version }}"
