@@ -9,7 +9,7 @@ lives in pure modules above).
 from __future__ import annotations
 
 import asyncio
-import json
+import re
 import typing
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime
@@ -440,7 +440,7 @@ class MongoStore:
                     "guild_id": guild_id,
                     **self._ACTIVE,
                     "text": {
-                        "$regex": "|".join(json.dumps(t)[1:-1] for t in terms),
+                        "$regex": "|".join(re.escape(t) for t in terms),
                         "$options": "i",
                     },
                 }

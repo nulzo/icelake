@@ -219,6 +219,17 @@ class TestFacts:
         results = await store.search_facts_text("g1", "rust programming", subject_ids=("u1",))
         assert any(record.id == "fct_q" for record, _ in results)
 
+    async def test_search_facts_text_regex_metachars(self, store) -> None:
+        await store.insert_fact(
+            make_fact(
+                id="fct_meta",
+                text="what do you know about c++ ?",
+                text_normalized="what do you know about c++ ?",
+            )
+        )
+        results = await store.search_facts_text("g1", "what about c++ ?")
+        assert any(record.id == "fct_meta" for record, _ in results)
+
     async def test_history_roundtrip(self, store) -> None:
         now = datetime.now(UTC)
         await store.insert_fact(make_fact(id="fct_h"))
