@@ -552,7 +552,9 @@ async def phase_pollution(suite: Suite, memory: DiscordMemory, sim: Simulator) -
         str(carol_facts),
     )
 
-    pair = await memory.recall(RecallQuery(guild_id=GUILD, text="keyboards", pair_ids=(ALICE, BOB)))
+    pair = await memory.recall(
+        RecallQuery(guild_id=GUILD, text="keyboards", pair_ids=((ALICE, BOB),))
+    )
     suite.expect(
         "pair recall surfaces a fact linking alice and bob",
         bool(pair.facts),

@@ -206,16 +206,27 @@ class OmniStyleBot(commands.Bot):
     @group_memory.command(name="related")  # type: ignore[arg-type]
     async def memory_related(self, interaction: discord.Interaction, user: discord.Member) -> None:
         """Typed relationship edges touching a member."""
-        edges = await self.memory.graph.relations_of(
-            str(interaction.guild_id),
-            str(user.id),
-            limit=15,
-        )
+        guild_id = str(interaction.guild_id)
+        edges = await self.memory.graph.relations_of(guild_id, str(user.id), limit=15)
         if not edges:
             await interaction.response.send_message("No relations yet.", ephemeral=True)
             return
+
+        async def label(node_type: str, node_id: str) -> str:
+            if node_type != "user":
+                return node_id  # entity slugs are already human-readable
+            member = interaction.guild.get_member(int(node_id)) if interaction.guild else None
+            if member is not None:
+                return member.display_name
+            # Off-server or left the guild: fall back to the alias ladder,
+            # never a raw snowflake.
+            return await self.memory.identity.display_name(guild_id, node_id) or "a former member"
+
         lines = [
-            f"• {edge.src_id} —{edge.verb}→ {edge.dst_id} ({edge.polarity.value})" for edge in edges
+            f"• {await label(edge.src_type.value, edge.src_id)} "
+            f"—{edge.verb}→ {await label(edge.dst_type.value, edge.dst_id)} "
+            f"({edge.polarity.value})"
+            for edge in edges
         ]
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 

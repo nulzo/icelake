@@ -199,7 +199,7 @@ async def what_x_thinks_of_y(memory: DiscordMemory, x_name: str, y_name: str) ->
     result = await memory.recall(
         RecallQuery(
             guild_id=GUILD,
-            pair_ids=(x_id, y_id),
+            pair_ids=((x_id, y_id),),
             # Default channels are guild-wide; LINKS-only lets pair_ids be the
             # sole candidate source (facts incident on both people).
             channels=channels(ChannelName.LINKS),
