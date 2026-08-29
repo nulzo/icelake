@@ -122,14 +122,6 @@ class ExtractionFailed(FrozenModel):
     error_kind: str
 
 
-class BudgetWarning(FrozenModel):
-    """Guild spend crossed a warning fraction of budget (hook payload)."""
-
-    guild_id: str
-    fraction_used: float
-    next_step: str = ""
-
-
 class ComponentDegraded(FrozenModel):
     """A subsystem failed over to degraded mode (hook payload)."""
 

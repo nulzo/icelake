@@ -78,14 +78,13 @@ class RecallQuery(FrozenModel):
     guild_id: str
     text: str | None = None
     subject_ids: tuple[str, ...] = ()
-    pair_ids: tuple[str, str] | None = None
+    pair_ids: tuple[tuple[str, str], ...] = ()
     entity_hint: str | None = None
     scope: Scope = Scope.SUBJECTS
     exclude_ids: tuple[str, ...] = ()
     top_k: int = 8
     max_per_subject: int = 4
     min_score: float = 0.0
-    token_budget: int = 600
     channels: ChannelSet | None = None
     as_of: datetime | None = None  # time-travel: what was known at this instant?
 
