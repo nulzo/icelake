@@ -64,7 +64,7 @@ jobs:
             echo "Tag v${VERSION} already exists." >&2
             exit 1
           fi
-          uv version "$VERSION" --frozen --no-sync
+          uv version "$VERSION" --no-sync
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Build changelog
@@ -74,7 +74,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml CHANGELOG.md changelog.d
+          git add pyproject.toml uv.lock CHANGELOG.md changelog.d
           git commit -m "release: v${{ steps.bump.outputs.version }}"
           git tag "v${{ steps.bump.outputs.version }}"
 
