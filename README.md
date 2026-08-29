@@ -40,7 +40,7 @@ async def main() -> None:
     memory = DiscordMemory(MemoryConfig(
         storage="sqlite:///memory.db",
         llm="openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1"
-            "?model=google/gemini-2.5-flash",
+            "?model=google/gemini-3.7-flash",
     ))
     async with memory:
         # 1. Feed it messages (fire-and-forget; extraction happens in background)
@@ -72,8 +72,11 @@ Runnable, complete examples live in [`examples/`](examples/):
 
 | File | What it demonstrates |
 |---|---|
-| [`examples/ping_reply_bot.py`](examples/ping_reply_bot.py) | **The classic chat bot** (like CringeDiscordBot): passive learning on every message, replies only when pinged, resolves asker + referenced-user memories per turn, applies citations to the reply, chat-native "remember/forget" commands, nickname-change tracking |
-| [`examples/relationship_queries.py`](examples/relationship_queries.py) | Cross-user memory: "what does X think of Y", typed relation edges, entity stance aggregation ("who likes movies?"), shared-trait discovery. Runnable without Discord |
+| [`examples/omni_style_bot.py`](examples/omni_style_bot.py) | **Production-shaped bot**: passive learning, ping/reply turns, `/memory` slash group, OpenRouter chat + embeddings |
+| [`examples/ping_reply_bot.py`](examples/ping_reply_bot.py) | Classic chat bot: observe every message, reply when pinged, citations, remember/forget, nickname tracking |
+| [`examples/relationship_queries.py`](examples/relationship_queries.py) | Cross-user memory: "what does X think of Y", typed edges, entity stances, shared traits. No Discord required |
+| [`examples/e2e_simulation.py`](examples/e2e_simulation.py) | Public-API eval: 81 hard invariants + model expectations against a scripted guild |
+| [`examples/bench_models.py`](examples/bench_models.py) | Parallel model matrix; writes JSON + Markdown reports |
 
 ### The ping-reply turn, step by step
 
@@ -144,6 +147,8 @@ if command.action == "remember":
 Manual facts accept graph participation too:
 
 ```python
+from discord_memory.models.operations import ProposedRelation
+
 await memory.facts.remember(
     guild_id=guild_id, subject_id=bob_id,
     text="carol called bob a sore loser during game night",
@@ -167,7 +172,8 @@ await memory.admin.set_opt_out(guild_id, user_id, True)
 ```
 
 Full usage documentation: [`docs/USAGE.md`](docs/USAGE.md) · Complete API contract:
-[`docs/API.md`](docs/API.md) · Design rationale: [`docs/PLAN.md`](docs/PLAN.md).
+[`docs/API.md`](docs/API.md) · Design: [`docs/PLAN.md`](docs/PLAN.md) · What ships next:
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
@@ -246,39 +252,54 @@ can see the source. Do not invent tags for facts that were not listed.
 
 ## How it works
 
+```mermaid
+flowchart TB
+  observe["observe(event)"] --> queue["Pending message queue"]
+  queue --> worker["Lease worker<br/>one claim per guild + author"]
+  worker --> noise{"Noise gate"}
+  noise -->|chatter| skip["Ack — no LLM"]
+  noise -->|worth extracting| roster["Mint roster tokens<br/>p0, p1, server"]
+  roster --> extract["LLM extraction"]
+  extract --> schema{"Valid JSON schema?"}
+  schema -->|no, after one repair| dead["Dead-letter the batch"]
+  schema -->|yes| gates["Quality gates"]
+  gates --> hit{"Near-duplicate collision?"}
+  hit -->|no| add["ADD fact"]
+  hit -->|yes| recon["Reconcile LLM"]
+  recon --> add
+  recon --> history["SUPERSEDE or INVALIDATE<br/>history kept"]
+  add --> store["Fact store<br/>bitemporal, one subject anchor"]
+  add --> vectors["Vector index"]
+  add --> graph["Knowledge graph<br/>incidence + typed edges"]
+  add --> digest["Profile digest<br/>every N new facts"]
 ```
-observe(event) ──► pending message queue ──► lease worker (per guild+author)
-                                               │  noise gate (skip ~30–60% free)
-                                               │  roster tokens (<p0>, <p1>, server)
-                                               ▼
-                                          LLM extraction ──► quality gates
-                                               │
-                     collision? ◄── yes ──► reconcile LLM (ADD/UPDATE/INVALIDATE/NOOP)
-                          │ no                                   │
-                          ▼                                      ▼
-                      ADD fact ◄──────────────── SUPERSEDE / INVALIDATE (history kept)
-                          │
-     ┌────────────────────┼─────────────────────┐
-     ▼                    ▼                     ▼
- fact store        vector index           knowledge graph
- (bitemporal,      (ANN/brute force,      incidence links + typed relation edges
-  supersede chain)  scope-prefiltered)    (X—likes→movies · X—called_out→Y)
-```
+
+`observe` is fire-and-forget: persist + enqueue, then return. Workers claim with keyed
+leases so multiple processes cannot double-extract the same author. Invalid extraction
+JSON is repaired once, then dead-lettered rather than silently acked empty.
 
 ### Accuracy model
 
-- **Roster-token protocol** — the extraction LLM references participants only by opaque
-  tokens we mint (`p0`, `p1`, `server`). It never sees or emits snowflakes; unknown tokens
-  are dropped before storage. Hallucinated attribution becomes structurally impossible.
-- **Anchoring invariant** — every fact has exactly one owner anchor (subject user or the
-  guild). Linking between users/entities is additive, never required.
+- **Roster-token protocol** — identity fields (`subject_token`, `speaker_token`, relation
+  endpoints) may only use tokens we minted for this batch (`p0`, `p1`, `server`). The
+  model never sees Discord snowflakes; unknown tokens are dropped. Stored *prose* uses
+  display names (with a detokenize pass if the model leaks `p0` into `text`). Attribution
+  is the snowflake on `subject_id`, not the name in the sentence — renames add aliases;
+  they do not move rows.
+- **Anchoring invariant** — every fact has exactly one owner (a user or the guild).
+  Links between people/entities are additive.
 - **Truth maintenance** — contradictions *invalidate* (bitemporal `valid_until`) or
-  *supersede* (refinement chains); nothing auto-deletes. Full audit history per fact.
+  *supersede* (refinement chain); nothing auto-deletes. Citations and related-user
+  links survive supersede. Full audit history per fact.
 - **Quality gates** — refusals, LLM meta-talk, raw quotes (≥0.88 similarity), questions,
-  snowflakes in text, ephemeral media shares, and low-confidence claims are all rejected
-  by pure, exhaustively tested gates.
-- **Identity ladder** — display names/usernames/saved names resolve through an alias index
-  (source-ranked weights); ambiguity never guesses.
+  snowflakes in text, ephemeral media shares, and low-confidence claims are rejected by
+  pure, unit-tested gates. Registered bots are never subjects and are stripped from
+  mention links.
+- **Identity ladder** — usernames, display names, and saved real names resolve through
+  a source-ranked alias index. Ambiguity never guesses.
+- **Profile digests** — a paragraph summary regenerates after
+  `extraction.auto_consolidate_after_adds` new facts (default 5; not on a timer),
+  stamped with the library clock.
 
 ### Query shapes (all zero-LLM by default)
 
@@ -296,17 +317,19 @@ observe(event) ──► pending message queue ──► lease worker (per guild
 memory.observe(event)                  # → ObserveReceipt (never raises operational errors)
 memory.observe_many(events)            # bulk backfill
 memory.flush(guild_id=...)             # force-extract pending batches now
+memory.register_bot_id(bot_user_id)    # never a memory subject; stripped from mention links
 
 memory.prompt_context(...)             # → PromptContext (injection block + citations)
 memory.recall(RecallQuery(...))        # explicit query model
 
 memory.facts.remember/update/forget/reinforce/history/list_for_subject/search
 memory.identity.resolve/register_alias/handle_member_rename/aliases_of
-memory.graph.between/entity_stances/neighbors/relations_of/similar_users*
+memory.graph.between/entity_stances/neighbors/relations_of/similar_users
 memory.admin.set_opt_out/purge_user/export_guild/get_opt_out
 memory.ops.run_pending/retry_dead_letters/meter_snapshot/health
 memory.events.subscribe(BatchCompleted, handler)   # typed hook events
 memory.classify_command(text)          # "remember that…" / "forget…" intent detection
+memory.regenerate_summaries(guild_id)  # force profile digests (else every N new facts)
 memory.stats(guild_id)                 # GuildStats snapshot
 ```
 
@@ -318,14 +341,13 @@ Design rationale and architecture: [`docs/PLAN.md`](docs/PLAN.md).
 
 ```python
 # pip install discord-memory[discord]
-import discord
-from commands.bot import bot
+from discord.ext import commands
 from discord_memory import MemoryConfig
-from discord_memory.integrations import setup_discord_memory, MemoryCog
+from discord_memory.integrations import setup_discord_memory
 
 config = MemoryConfig(
     storage="sqlite:///bot-memory.db",
-    llm="openai://$KEY@openrouter.ai/api/v1?model=google/gemini-2.5-flash",
+    llm="openai://$KEY@openrouter.ai/api/v1?model=google/gemini-3.7-flash",
 )
 
 class MyBot(commands.Bot):
@@ -351,11 +373,20 @@ MemoryConfig(
     # embeddings="openai://$KEY@openrouter.ai/api/v1?model=openai/text-embedding-3-small",
     # embeddings="openai://$KEY@api.openai.com/v1?model=text-embedding-3-small",
     batching={"batch_size_messages": 10, "max_age_seconds": 300},
+    extraction={"auto_consolidate_after_adds": 5},       # 0 disables profile digests
     budgets={"guild_daily_prompt_tokens": 200_000},      # graceful degradation ladder
     privacy={"store_raw_messages": True},
     workers={"enabled": True, "count": 2},
 )
 ```
+
+LLM URL query knobs that matter in production: `model`, `temperature=none` (omit sampling
+on reasoning endpoints), `reasoning=low`, `max_tokens`, `max_tokens_key=max_completion_tokens`
+(Azure), `structured_outputs=json_object` if the endpoint cannot enforce `json_schema`.
+Capability mismatches raise `LlmCapabilityError` instead of silently degrading.
+
+`postgresql://` is recognized and rejected with a clear error — there is no Postgres adapter
+yet (and no `[postgres]` extra).
 
 Unknown keys raise immediately — typo protection by construction.
 
@@ -427,15 +458,19 @@ uv run mypy                                    # strict mode
 ## Status & limitations (v0.1)
 
 - Storage backends shipped: **SQLite** (default), **MongoDB** (`[mongo]` extra), and in-memory
-  (tests). Postgres/pgvector adapter planned (M3) — the port is ready.
+  (tests). A Postgres/pgvector adapter is planned — `postgresql://` fails loudly today.
 - Default **hashing** embeddings are not suitable for production dedup/recall — see
   [Embeddings](#embeddings-embeddings) above.
-- Budgets meter per-process; cross-process budget accounting needs store-backed counters.
+- Invalid extraction JSON is repaired once, then **dead-lettered** (not silently stored as
+  empty). Re-drive with `ops.retry_dead_letters`.
+- Caps and TTL prune weakest-first (manual/CORE last). Budgets meter per-process; cross-process
+  budget accounting needs store-backed counters.
 - Server-scope ("community") batches read the recent-message window; watermarking across
   restarts is best-effort.
 - `similar_users` uses capped Jaccard over entity adjacency (no Louvain/PPR by design).
 
-See [`docs/PLAN.md`](docs/PLAN.md) Part 11 for the phased roadmap and exit criteria.
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for sequenced next work and
+[`docs/PLAN.md`](docs/PLAN.md) for design rationale.
 
 ## License
 
