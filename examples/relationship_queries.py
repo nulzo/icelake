@@ -1,12 +1,17 @@
 """Cross-user memory patterns: relationships, stances, discovery.
 
-Runnable WITHOUT Discord — `python examples/relationship_queries.py` seeds a small
-community into SQLite and walks through every cross-user query shape:
+Runnable WITHOUT Discord or an LLM — ``python examples/relationship_queries.py``
+seeds a small community into SQLite via ``facts.remember`` (the curation API) and
+walks query shapes that are zero-LLM by design:
 
 1. "What does X think about Y?"      -> relationship recall (pair mode)
 2. "Did X ever call out Y?"          -> typed relation edges with evidence
 3. "What does the server think of movies?" -> entity stance aggregation
-4. "Who shares X's taste?"           -> shared-trait discovery
+4. "Who shares X's entities?"        -> Jaccard over the knowledge graph
+
+Extraction, reconcile, and profile digests are not exercised here. Pass
+``llm=`` / ``embeddings=`` on ``MemoryConfig`` only if you change the seed to
+``observe`` + ``flush`` real chat; this file will not call a provider as written.
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ from discord_memory.models.operations import ProposedRelation
 
 
 async def seed_community(memory: DiscordMemory) -> dict[str, str]:
-    """Simulate a week of chat; extraction is scripted via the LLM override."""
+    """Seed aliases + curated facts. No extraction LLM is involved."""
     members = {
         "alice": "100000000000000001",
         "bob": "200000000000000002",
