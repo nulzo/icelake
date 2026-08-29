@@ -45,6 +45,12 @@ class DirectRoster:
     def user_id_for(self, token: str) -> str | None:
         return token if token in self._ids else None
 
+    def bind_names(self, text: str) -> str:
+        return text
+
+    def display_name(self, user_id: str) -> str | None:
+        return None
+
 
 async def resolve_entity_slug(
     store: MemoryStore,

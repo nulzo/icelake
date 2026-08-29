@@ -257,6 +257,7 @@ class DiscordMemory:
         self.started = False
         self.closing = False
         self._shutdown_done = False
+        self._start_lock = asyncio.Lock()
         self.worker_tasks: list[asyncio.Task[None]] = []
         self.active_guilds: set[str] = set()
 
@@ -274,17 +275,18 @@ class DiscordMemory:
 
     async def start(self) -> None:
         """Open storage and launch workers (idempotent)."""
-        if self.started or self._shutdown_done:
-            return
-        await self._store.setup()
-        self.started = True
-        if self.config.workers.enabled:
-            for index in range(self.config.workers.count):
-                task = asyncio.create_task(
-                    self._worker_loop(),
-                    name=f"discord-memory-worker-{index}",
-                )
-                self.worker_tasks.append(task)
+        async with self._start_lock:
+            if self.started or self._shutdown_done:
+                return
+            await self._store.setup()
+            self.started = True
+            if self.config.workers.enabled:
+                for index in range(self.config.workers.count):
+                    task = asyncio.create_task(
+                        self._worker_loop(),
+                        name=f"discord-memory-worker-{index}",
+                    )
+                    self.worker_tasks.append(task)
 
     async def close(self, *, drain: bool = True, timeout_seconds: float = 30.0) -> None:
         """Stop accepting work; drain in-flight batches when ``drain=True``."""
@@ -793,6 +795,10 @@ def _build_store(config: MemoryConfig) -> MemoryStore:
         if database in {"mongodb", "mongodb+srv"} or not database:
             database = "discord_memory"
         return MongoStore(url, database=database)
+    if backend == "postgres":
+        raise ConfigError(
+            "postgresql storage is not implemented yet; use sqlite:///... or mongodb://..."
+        )
     raise ConfigError(
         f"storage backend {backend!r} requires an adapter package "
         "(e.g. pip install discord-memory[mongo]) or a store override",

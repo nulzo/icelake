@@ -10,6 +10,7 @@ import asyncio
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 
+from discord_memory.lifecycle.prune import select_prune_victims_by_anchor
 from discord_memory.models.admin import GuildStats, PurgeReport
 from discord_memory.models.common import Page
 from discord_memory.models.facts import (
@@ -331,11 +332,21 @@ class InMemoryStore:
         subject_ids: tuple[str, ...] | None = None,
         server_only: bool = False,
         limit: int = 20,
+        as_of: datetime | None = None,
     ) -> tuple[tuple[FactRecord, float], ...]:
         terms = [t for t in query.lower().split() if t]
         scored: list[tuple[FactRecord, float]] = []
         for record in self._facts.values():
-            if record.guild_id != guild_id or not self._active(record):
+            if record.guild_id != guild_id:
+                continue
+            if as_of is not None:
+                start = record.valid_from
+                end = record.valid_until
+                if start is not None and start > as_of:
+                    continue
+                if end is not None and end <= as_of:
+                    continue
+            elif not self._active(record):
                 continue
             if server_only and not record.is_server_fact:
                 continue
@@ -709,28 +720,14 @@ class InMemoryStore:
         max_server: int,
         now: datetime,
     ) -> int:
-        pruned = 0
-        anchors: dict[str | None, list[FactRecord]] = {}
-        for record in self._facts.values():
-            if record.guild_id != guild_id or not record.is_active:
-                continue
-            if record.attribution.type.value == "manual":
-                continue
-            anchor = None if record.is_server_fact else record.subject_id
-            anchors.setdefault(anchor, []).append(record)
-        for anchor, records in anchors.items():
-            cap = max_server if anchor is None else max_per_user
-            if len(records) <= cap:
-                continue
-            records.sort(
-                key=lambda r: (r.tier.prune_priority, r.strength, r.confidence),
-            )
-            for victim in records[: len(records) - cap]:
-                self._facts[(guild_id, victim.id)] = victim.model_copy(
-                    update={"valid_until": now},
-                )
-                pruned += 1
-        return pruned
+        victims = select_prune_victims_by_anchor(
+            tuple(record for record in self._facts.values() if record.guild_id == guild_id),
+            max_per_user=max_per_user,
+            max_server=max_server,
+        )
+        for victim in victims:
+            self._facts[(guild_id, victim.id)] = victim.model_copy(update={"valid_until": now})
+        return len(victims)
 
     async def apply_forgetting(
         self,

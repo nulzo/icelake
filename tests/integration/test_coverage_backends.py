@@ -34,6 +34,20 @@ async def store(request):
 
         backend = MongoStore("mongodb://127.0.0.1:27017/discord_memory_maint_test")
     await backend.setup()
+    if request.param == "mongo":
+        for collection in (
+            "dm_facts",
+            "dm_aliases",
+            "dm_links",
+            "dm_relations",
+            "dm_entities",
+            "dm_entity_aliases",
+            "dm_summaries",
+            "dm_optouts",
+            "dm_history",
+            "dm_messages",
+        ):
+            await backend.db[collection].delete_many({})
     yield backend
     await backend.close()
 
@@ -122,9 +136,10 @@ class TestMaintenanceAcrossBackends:
             max_server=10,
             now=fixed_clock.now(),
         )
-        assert pruned >= 1
+        assert pruned == 2
         page = await store.list_facts("g1", subject_id="u1", active_only=True, limit=50)
-        assert len(page.items) <= 3  # manual-exempt facts would add; seeds are SELF
+        ids = {item.id for item in page.items}
+        assert ids == {"cap2", "cap3"}
 
     async def test_update_fact_fields_roundtrip(self, store, fixed_clock) -> None:
 

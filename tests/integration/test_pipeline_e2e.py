@@ -87,6 +87,80 @@ class TestExtractionEndToEnd:
         assert "mechanical keyboards" in result.facts[0].fact.text
         await client.close()
 
+    async def test_roster_tokens_in_extracted_text_are_bound(
+        self,
+        make_client,
+        event_factory,
+    ) -> None:
+        llm = ScriptedLLM(
+            {
+                "extraction": extraction_response(
+                    [
+                        {
+                            "subject_token": "p0",
+                            "text": "p0 prefers mechanical keyboards",
+                            "category": "preferences",
+                            "confidence": 0.9,
+                            "source_message_indexes": [1],
+                        }
+                    ]
+                ),
+            }
+        )
+        client, _ = make_client(llm=llm)
+        await client.start()
+        await observe_and_flush(client, event_factory)
+        result = await client.recall(
+            __import__("discord_memory", fromlist=["RecallQuery"]).RecallQuery(
+                guild_id="500000000000000001",
+                text="keyboards",
+                subject_ids=("100000000000000001",),
+            )
+        )
+        assert len(result.facts) == 1
+        assert result.facts[0].fact.text == "alice prefers mechanical keyboards"
+        assert result.facts[0].fact.attribution.speaker_name == "alice"
+        await client.close()
+
+    async def test_bot_mentions_are_not_linked_to_facts(
+        self,
+        make_client,
+        event_factory,
+    ) -> None:
+        bot_id = "1441414738687955015"
+        llm = ScriptedLLM(
+            {
+                "extraction": extraction_response(
+                    [
+                        {
+                            "subject_token": "p0",
+                            "text": "alice prefers mechanical keyboards",
+                            "category": "preferences",
+                            "confidence": 0.9,
+                            "source_message_indexes": [1],
+                        }
+                    ]
+                ),
+            }
+        )
+        client, _ = make_client(llm=llm)
+        await client.start()
+        client.register_bot_id(bot_id)
+        await observe_and_flush(
+            client,
+            event_factory,
+            content="hey bot i prefer mechanical keyboards for coding",
+            mentions=(bot_id,),
+        )
+        page = await client.facts.list_for_subject(
+            "500000000000000001",
+            "100000000000000001",
+        )
+        assert page.items
+        for record in page.items:
+            assert bot_id not in record.related_user_ids
+        await client.close()
+
     async def test_third_party_fact_anchored_on_target(
         self,
         make_client,
@@ -427,6 +501,29 @@ class TestReliability:
         assert health.dead_letters == 1
         requeued = await client.ops.retry_dead_letters()
         assert requeued == 1
+        await client.close()
+
+    async def test_invalid_structured_output_dead_letters(
+        self,
+        make_client,
+        event_factory,
+    ) -> None:
+        from discord_memory.models.events import ExtractionFailed
+
+        llm = ScriptedLLM({"extraction": "not json at all"})
+        client, _ = make_client(llm=llm)
+        failures: list[ExtractionFailed] = []
+        client.events.subscribe(ExtractionFailed, failures.append)
+        await client.start()
+        await observe_and_flush(
+            client,
+            event_factory,
+            content="remember everyone: my favorite hobby is collecting antique pocket watches",
+        )
+        await asyncio.sleep(0)
+        health = await client.ops.health()
+        assert health.dead_letters == 1
+        assert failures and failures[0].error_kind == "StructuredOutputError"
         await client.close()
 
     async def test_events_published(self, make_client, event_factory) -> None:

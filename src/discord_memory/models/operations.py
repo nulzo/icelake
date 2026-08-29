@@ -3,7 +3,7 @@
 The LLM never sees or emits Discord snowflakes (PLAN.md §3.1). It references batch
 participants by opaque tokens we mint (``p0``, ``p1``, ...) and unknown people by name
 strings that become entity references. Every payload crossing the LLM boundary is a
-strict Pydantic schema — parse failures fall back, they never store garbage.
+strict Pydantic schema — invalid output is never stored.
 """
 
 from __future__ import annotations

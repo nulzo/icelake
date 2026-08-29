@@ -13,11 +13,13 @@ EXTRACTION_INSTRUCTIONS = """\
 TASK: From NEW MESSAGES, extract durable facts worth remembering weeks from now.
 
 RULES:
-- Reference people ONLY by their roster tokens (p0, p1, ...) shown in PARTICIPANTS.
+- Bind people with roster tokens ONLY in subject_token, speaker_token, and
+  relation from_token/to_token (p0, p1, ... from PARTICIPANTS).
 - Use subject_token="server" only for community-wide facts (culture, norms, shared traits).
 - Set speaker_token when a participant states a fact about someone else.
-- NEVER include Discord IDs, <@mentions>, raw quotes, or questions in text.
-- Rewrite as third-person durable facts. Example: "p1 prefers mechanical keyboards".
+- In `text`, write the PARTICIPANTS display names. Never write p0/p1 tokens,
+  Discord IDs, <@mentions>, raw quotes, or questions.
+- Rewrite as third-person durable facts. Example: "alice prefers mechanical keyboards".
 - Ignore small talk, transient states ("I'm hungry"), and bare link shares.
 - If new info contradicts or refines nothing you can see, just add it; reconciliation
   against existing memories happens automatically afterwards.
@@ -39,8 +41,8 @@ CRITICAL OUTPUT CONTRACT:
 
 OUTPUT JSON FORMAT:
 {"operations": [
-  {"subject_token": "p0", "speaker_token": null, "text": "...", "category": "interests",
-   "confidence": 0.85, "source_message_indexes": [1],
+  {"subject_token": "p0", "speaker_token": null, "text": "alice likes Rust",
+   "category": "interests", "confidence": 0.85, "source_message_indexes": [1],
    "entities": [{"name": "Rust", "kind": "concept"}],
    "relations": [{"verb": "likes", "from_token": "p0", "to_entity": "Rust"}]}
 ]}"""

@@ -153,7 +153,9 @@ class OpenAICompatLLM:
         )
         if temperature is not None:
             body["temperature"] = temperature
-        body["max_tokens"] = request.max_tokens
+        body.pop("max_tokens", None)
+        body.pop("max_completion_tokens", None)
+        body[self._config.max_tokens_key] = request.max_tokens
         if request.response_schema is not None:
             if self._config.structured_outputs == "strict":
                 body["response_format"] = {

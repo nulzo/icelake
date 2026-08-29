@@ -6,6 +6,8 @@ recalled. ``user_id=None`` (server scope) is always allowed.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from discord_memory.ports.store import MemoryStore
 
 
@@ -27,6 +29,10 @@ class BotGuard:
 
     def is_bot(self, user_id: str | None) -> bool:
         return user_id is not None and str(user_id) in self._bot_ids
+
+    def exclude(self, user_ids: Iterable[str]) -> tuple[str, ...]:
+        """Drop registered bots, preserving order and uniqueness."""
+        return tuple(user_id for user_id in dict.fromkeys(user_ids) if not self.is_bot(user_id))
 
 
 class ConsentPolicy:
@@ -52,3 +58,6 @@ class SubjectGate:
         if self._guard.is_bot(user_id):
             return False
         return not await self._consent.is_blocked(guild_id, user_id)
+
+    def exclude_bots(self, user_ids: Iterable[str]) -> tuple[str, ...]:
+        return self._guard.exclude(user_ids)

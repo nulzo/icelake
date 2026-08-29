@@ -28,13 +28,13 @@ _CORE_CONFIDENCE = 0.95
 _CORE_OCCURRENCES = 3
 
 
-def _mentions_horizon(text: str) -> int | None:
+def _mentions_horizon(text: str, short_term_days: int) -> int | None:
     """Return a TTL horizon in days for explicit short-horizon phrasing."""
     lowered = text.lower()
     if re.search(r"\b(today|tonight)\b", lowered):
-        return 3
+        return min(3, short_term_days)
     if re.search(r"\b(tomorrow|this weekend|next week|this week)\b", lowered):
-        return 7
+        return short_term_days
     if re.search(r"\b(this month|upcoming)\b", lowered):
         return 21
     return None
@@ -69,7 +69,7 @@ def assign_tier(
             return MemoryTier.CORE, None
         return MemoryTier.LONG_TERM, timedelta(days=lifecycle.long_term_days)
 
-    horizon = _mentions_horizon(text)
+    horizon = _mentions_horizon(text, lifecycle.short_term_days)
     if horizon is not None:
         return MemoryTier.SHORT_TERM, timedelta(days=horizon)
 

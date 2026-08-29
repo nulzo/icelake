@@ -38,8 +38,6 @@ class StorageConfig(FrozenModel):
     """Persistence backend selection."""
 
     url: str = "sqlite:///discord_memory.db"
-    pool_size: int = Field(default=8, ge=1)
-    schema_auto_migrate: bool = True
 
     @model_validator(mode="after")
     def _validate_scheme(self) -> StorageConfig:
@@ -83,8 +81,10 @@ class LlmConfig(FrozenModel):
       repair turn.
     - ``params``: expert passthrough merged into every request body (``seed``,
       ``top_p``, OpenRouter ``provider`` preferences, ...). Library-managed
-      keys (``model``, ``messages``, ``response_format``, ``max_tokens``)
-      take precedence over colliding entries.
+      keys (``model``, ``messages``, ``response_format``, ``max_tokens`` /
+      ``max_completion_tokens``) take precedence over colliding entries.
+    - ``max_tokens_key``: ``"max_tokens"`` (default) or ``"max_completion_tokens"``
+      for Azure OpenAI-style endpoints that reject ``max_tokens``.
     """
 
     base_url: str | None = None
@@ -95,7 +95,8 @@ class LlmConfig(FrozenModel):
     temperature: float | None = Field(default=0.0, ge=0.0, le=2.0)
     structured_outputs: Literal["strict", "json_object"] = "strict"
     params: dict[str, object] = Field(default_factory=dict)
-    max_tokens: int = Field(default=1200, ge=16)
+    max_tokens: int = Field(default=1800, ge=16)
+    max_tokens_key: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
     timeout_seconds: float = Field(default=30.0, gt=0)
     max_retries: int = Field(default=2, ge=0)
     cache_responses: bool = False
@@ -122,6 +123,7 @@ class LlmConfig(FrozenModel):
 
         model = q("model")
         temperature = q("temperature")
+        max_tokens_raw = q("max_tokens")
         config = cls(
             base_url=base_url,
             api_key=api_key,
@@ -129,7 +131,10 @@ class LlmConfig(FrozenModel):
             small_model=q("small_model"),
             reasoning_effort=q("reasoning"),  # type: ignore[arg-type]  # pydantic validates the Literal
             structured_outputs=q("structured_outputs") or "strict",  # type: ignore[arg-type]
+            max_tokens_key=q("max_tokens_key") or "max_tokens",  # type: ignore[arg-type]
         )
+        if max_tokens_raw is not None:
+            object.__setattr__(config, "max_tokens", int(max_tokens_raw))
         if temperature is not None:
             # "none" omits the parameter entirely (endpoints that reject it).
             value = None if temperature.strip().lower() == "none" else float(temperature)
@@ -206,7 +211,15 @@ class ExtractionConfig(FrozenModel):
     # were swallowed into "works as a nurse" without the update ever applying.
     near_duplicate_threshold: float = Field(default=0.96, ge=0.5, le=1.0)
     noise_gate: bool = True
-    auto_consolidate_after_adds: int = Field(default=5, ge=0)
+    auto_consolidate_after_adds: int = Field(
+        default=5,
+        ge=0,
+        description=(
+            "Regenerate the profile digest once this many active facts exist, "
+            "and again each time that many new facts land since the last digest. "
+            "0 disables. Counted across the subject's lifetime, not per batch."
+        ),
+    )
     summary_sanity_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
 
 

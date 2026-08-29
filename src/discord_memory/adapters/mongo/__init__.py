@@ -30,6 +30,7 @@ from discord_memory.adapters.mongo.mapping import (
     summary_to_doc,
 )
 from discord_memory.adapters.mongo.queue import CLAIMED
+from discord_memory.lifecycle.prune import select_prune_victims_by_anchor
 from discord_memory.models.admin import GuildStats, PurgeReport
 from discord_memory.models.common import Page
 from discord_memory.models.facts import (
@@ -976,46 +977,24 @@ class MongoStore:
         max_server: int,
         now: datetime,
     ) -> int:
-        pruned = 0
-        pipeline: list[dict[str, Any]] = [
-            {"$match": {"guild_id": guild_id, **self._ACTIVE}},
-            {"$group": {"_id": "$subject_id", "count": {"$sum": 1}}},
+        docs = [
+            doc async for doc in self.db["dm_facts"].find({"guild_id": guild_id, **self._ACTIVE})
         ]
-        agg_cursor = await self.db["dm_facts"].aggregate(pipeline)
-        groups = await agg_cursor.to_list(200)
-        for group in groups:
-            anchor = group["_id"]
-            count = int(group["count"])
-            cap = max_server if anchor is None else max_per_user
-            if count <= cap:
-                continue
-            scope: dict[str, Any] = (
-                {"subject_id": anchor} if anchor is not None else {"scope": "server"}
-            )
-            victims = await (
-                self.db["dm_facts"]
-                .find(
-                    {
-                        "guild_id": guild_id,
-                        **scope,
-                        **self._ACTIVE,
-                        "attribution.type": {"$ne": "manual"},
-                    }
-                )
-                .sort([("tier", 1), ("strength", 1), ("confidence", 1)])
-                .limit(count - cap)
-                .to_list(count - cap)
-            )
-            victim_ids = [v["_id"] for v in victims]
-            await self.db["dm_facts"].update_many(
-                {"_id": {"$in": victim_ids}},
-                {
-                    "$set": {"valid_until": _iso(now), "updated_at": _iso(now)},
-                    "$inc": {"version": 1},
-                },
-            )
-            pruned += len(victim_ids)
-        return pruned
+        victims = select_prune_victims_by_anchor(
+            tuple(fact_from_doc(doc) for doc in docs),
+            max_per_user=max_per_user,
+            max_server=max_server,
+        )
+        if not victims:
+            return 0
+        await self.db["dm_facts"].update_many(
+            {"_id": {"$in": [victim.id for victim in victims]}},
+            {
+                "$set": {"valid_until": _iso(now), "updated_at": _iso(now)},
+                "$inc": {"version": 1},
+            },
+        )
+        return len(victims)
 
     async def apply_forgetting(
         self,

@@ -76,8 +76,11 @@ class FactCommitter:
         skip_embedding: bool = False,
     ) -> FactRecord:
         now = self._clock.now()
+        text = roster.bind_names(proposal.text.strip())
+        third_party = bool(speaker_id and subject_id and speaker_id != subject_id)
+        named_id = speaker_id if third_party else subject_id
         tier, expires_after = assign_tier(
-            text=proposal.text,
+            text=text,
             category=category_of(proposal),
             confidence=proposal.confidence,
             occurrences=1,
@@ -85,13 +88,12 @@ class FactCommitter:
             is_server_fact=subject_id is None,
             lifecycle=self._config.lifecycle,
         )
-        third_party = bool(speaker_id and subject_id and speaker_id != subject_id)
         record = FactRecord(
             id=self._id_gen.new_id("fct"),
             guild_id=guild_id,
             subject_id=subject_id,
-            text=proposal.text.strip(),
-            text_normalized=normalize_text(proposal.text),
+            text=text,
+            text_normalized=normalize_text(text),
             category=category_of(proposal),
             confidence=proposal.confidence,
             tier=tier,
@@ -99,6 +101,7 @@ class FactCommitter:
             attribution=Attribution(
                 type=AttributionType.THIRD_PARTY if third_party else AttributionType.SELF,
                 speaker_id=speaker_id if third_party else None,
+                speaker_name=roster.display_name(named_id) if named_id else None,
             ),
             strength=1.0,
             last_reinforced_at=now,
@@ -177,6 +180,8 @@ class FactCommitter:
         reason: str,
         guild_id: str,
         roster: RosterLike,
+        mentioned_ids: tuple[str, ...] = (),
+        source_refs: tuple[SourceRef, ...] = (),
     ) -> tuple[FactRecord, FactRecord]:
         """Insert refined fact linked to the old one; old stays queryable history."""
         fresh = await self.commit_add(
@@ -186,6 +191,8 @@ class FactCommitter:
             guild_id=guild_id,
             roster=roster,
             supersedes_id=old_record.id,
+            mentioned_ids=mentioned_ids,
+            source_refs=source_refs,
         )
         now = self._clock.now()
         await self._store.transition_fact(
@@ -276,6 +283,10 @@ class RosterLike(Protocol):
     def knows(self, token: str) -> bool: ...
 
     def user_id_for(self, token: str) -> str | None: ...
+
+    def bind_names(self, text: str) -> str: ...
+
+    def display_name(self, user_id: str) -> str | None: ...
 
 
 __all__ = ["CommitSummary", "FactCommitter", "RosterLike"]

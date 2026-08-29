@@ -41,6 +41,7 @@ from discord_memory.ports.vectors import VectorIndex, VectorItem
 
 if TYPE_CHECKING:
     from discord_memory.api.events import EventBus
+    from discord_memory.consolidation.service import ConsolidationService
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ class IngestPipeline:
         self._llm = llm
         self._meter = meter
         self._subject_gate = subject_gate
-        self._extractor = FactExtractor(llm, config.extraction)
+        self._extractor = FactExtractor(llm, config.extraction, max_tokens=config.llm.max_tokens)
         self._reconciler = Reconciler(
             store, vectors, reconcile_llm or llm, embedder, config.extraction
         )
@@ -132,13 +133,13 @@ class IngestPipeline:
         )
         self.owner = f"pipeline-{id(self):x}"
         self.event_bus: EventBus | None = None
-        self.consolidation: object | None = None
+        self.consolidation: ConsolidationService | None = None
 
     def attach_event_bus(self, bus: EventBus) -> None:
         """Wire an event bus for hook dispatch (called by the facade)."""
         self.event_bus = bus
 
-    def attach_consolidation(self, consolidation: object) -> None:
+    def attach_consolidation(self, consolidation: ConsolidationService) -> None:
         """Wire profile-summary regeneration (called by the facade)."""
         self.consolidation = consolidation
 
@@ -337,17 +338,22 @@ class IngestPipeline:
         seen_norms: set[tuple[str | None, str]] = set()
         candidates = []
         for vetted in result.vetted:
-            key_tuple = (vetted.subject_id, normalize_text(vetted.proposal.text))
+            bound = vetted.proposal.model_copy(
+                update={"text": roster.bind_names(vetted.proposal.text)},
+            )
+            key_tuple = (vetted.subject_id, normalize_text(bound.text))
             if key_tuple in seen_norms:
                 continue
             seen_norms.add(key_tuple)
-            candidates.append((vetted.proposal, vetted.subject_id, vetted.speaker_id))
+            candidates.append((bound, vetted.subject_id, vetted.speaker_id))
         if is_server_scope:
             # The community pass owns guild-scope facts only. User-anchored
             # facts belong to per-user batches — otherwise both passes extract
             # the same messages concurrently and race duplicates into the store.
             candidates = [c for c in candidates if c[1] is None]
-        mentioned_ids = {mention_id for message in messages for mention_id in message.mention_ids}
+        mentioned_ids = self._subject_gate.exclude_bots(
+            mention_id for message in messages for mention_id in message.mention_ids
+        )
         source_refs = _build_source_refs(messages)
         if candidates:
             await self._mine_fact_aliases(guild_id, candidates)
@@ -359,7 +365,7 @@ class IngestPipeline:
                 embeddings_by_text={},
                 batch_embedding=batch_embedding,
                 summary=summary,
-                mentioned_ids=tuple(mentioned_ids),
+                mentioned_ids=mentioned_ids,
                 source_refs=source_refs,
             )
 
@@ -381,19 +387,14 @@ class IngestPipeline:
         key: BatchKey,
         adds: int,
     ) -> None:
-        """Regenerate the profile digest after enough new facts (PLAN.md Part 7)."""
-        threshold = self._config.extraction.auto_consolidate_after_adds
-        if (
-            adds < threshold
-            or threshold <= 0
-            or key.subject_key == SERVER_SUBJECT_KEY
-            or self.consolidation is None
-        ):
+        """Regenerate the profile digest after enough lifetime facts (PLAN.md Part 7)."""
+        if key.subject_key == SERVER_SUBJECT_KEY or self.consolidation is None:
             return
         try:
-            await self.consolidation.regenerate_profile(  # type: ignore[attr-defined]
+            await self.consolidation.maybe_refresh_profile(
                 guild_id=key.guild_id,
                 subject_id=key.subject_key,
+                adds=adds,
             )
         except Exception:
             logger.exception("summary refresh failed for %s", key.as_tuple)
@@ -497,6 +498,11 @@ class IngestPipeline:
                         reason=decision.reason,
                         guild_id=guild_id,
                         roster=roster,
+                        mentioned_ids=mentioned_ids,
+                        source_refs=_pick_citations(
+                            collision.candidate.source_message_indexes,
+                            source_refs,
+                        ),
                     )
                     summary.supersessions += 1
                     self._publish_superseded(guild_id, target.id, fresh.id, decision.reason)
@@ -673,6 +679,6 @@ class IngestPipeline:
             await add(author_id, first.author_display_name or first.author_username or author_id)
         for message in messages:
             await add(message.author_id, message.author_display_name or message.author_username)
-            for mention_id in message.mention_ids:
+            for mention_id in self._subject_gate.exclude_bots(message.mention_ids):
                 await add(mention_id, mention_id)
         return roster

@@ -75,6 +75,7 @@ class TestCommitAdd:
         kinds = {link.kind for link in links}
         assert EdgeKind.SUBJECT_OF in kinds
         assert EdgeKind.ABOUT_ENTITY in kinds
+        assert record.attribution.speaker_name == "alice"
         entity = await store.get_entity("g1", "violin")
         assert entity is not None
         edges = await store.edges_between(
@@ -103,6 +104,7 @@ class TestCommitAdd:
         )
         assert record.attribution.type.value == "third_party"
         assert record.attribution.speaker_id == "u-speaker"
+        assert record.attribution.speaker_name == "speaker"
         links = await store.nodes_for_fact("g1", record.id)
         kinds = {(link.node_type, link.kind) for link in links}
         assert (NodeType.USER, EdgeKind.SPEAKER_OF) in kinds
@@ -164,6 +166,22 @@ class TestCommitAdd:
         stats = await store.guild_stats("g1")
         assert stats.relation_count == 0
 
+    async def test_commit_add_binds_roster_tokens_in_text(self, committer) -> None:
+        from discord_memory.ingest.roster import Roster
+
+        roster = Roster()
+        roster.add("u-alice", "alice")
+        commit, _store = committer
+        record = await commit.commit_add(
+            proposal=_proposal(text="p0 loves Red Bull and Go"),
+            subject_id="u-alice",
+            speaker_id=None,
+            guild_id="g1",
+            roster=roster,
+        )
+        assert record.text == "alice loves Red Bull and Go"
+        assert "p0" not in record.text_normalized
+
 
 class TestReinforceAndTransitions:
     async def test_commit_reinforce_bumps_strength(self, committer):
@@ -206,6 +224,43 @@ class TestReinforceAndTransitions:
         assert new.supersedes_id == old.id
         reloaded_old = await store.get_fact("g1", old.id)
         assert reloaded_old.superseded_by_id == new.id
+
+    async def test_commit_supersede_keeps_citations(self, committer) -> None:
+        from discord_memory.ingest.roster import Roster
+        from discord_memory.models.facts import SourceRef
+
+        roster = Roster()
+        roster.add("u-alice", "alice")
+        commit, _store = committer
+        old = await commit.commit_add(
+            proposal=_proposal(),
+            subject_id="u-alice",
+            speaker_id=None,
+            guild_id="g1",
+            roster=roster,
+        )
+        refs = (
+            SourceRef(
+                message_id="m1",
+                channel_id="c1",
+                guild_id="g1",
+                author_id="u-alice",
+                content_snippet="alice plays first violin now",
+            ),
+        )
+        new, _old = await commit.commit_supersede(
+            old_record=old,
+            proposal=_proposal(text="alice performs first violin in the city orchestra"),
+            subject_id="u-alice",
+            speaker_id=None,
+            reason="refined",
+            guild_id="g1",
+            roster=roster,
+            source_refs=refs,
+            mentioned_ids=("u-bob",),
+        )
+        assert new.citations == refs
+        assert "u-bob" in new.related_user_ids
 
     async def test_commit_invalidate_detaches_evidence(self, committer):
         from discord_memory.ingest.roster import Roster

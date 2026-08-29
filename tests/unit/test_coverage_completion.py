@@ -11,7 +11,7 @@ from discord_memory.api.classify import CommandAction, CommandClassifier
 from discord_memory.api.client import DiscordMemory
 from discord_memory.api.events import EventBus
 from discord_memory.config import MemoryConfig
-from discord_memory.consolidation.service import ConsolidationService
+from discord_memory.consolidation.service import ConsolidationService, profile_summary_due
 from discord_memory.models.events import BatchCompleted, FactCommitted
 from discord_memory.models.facts import ProfileSummary
 from discord_memory.ports.queue import BatchKey
@@ -107,6 +107,55 @@ class TestCommandClassifier:
 
 
 class TestConsolidation:
+    def test_profile_summary_due_is_lifetime_not_per_batch(self) -> None:
+        assert not profile_summary_due(
+            adds=1, threshold=5, fact_count=4, last_source_fact_count=None
+        )
+        assert profile_summary_due(adds=1, threshold=5, fact_count=5, last_source_fact_count=None)
+        assert not profile_summary_due(adds=1, threshold=5, fact_count=9, last_source_fact_count=9)
+        assert profile_summary_due(adds=1, threshold=5, fact_count=14, last_source_fact_count=9)
+        assert not profile_summary_due(
+            adds=0, threshold=5, fact_count=14, last_source_fact_count=None
+        )
+        assert not profile_summary_due(
+            adds=1, threshold=0, fact_count=14, last_source_fact_count=None
+        )
+
+    async def test_maybe_refresh_waits_for_lifetime_threshold(self, make_client) -> None:
+        summary_text = "alice enjoys chess and long walks"
+        llm = ScriptedLLM({"summarize": summary_text})
+        from tests.conftest import make_config
+
+        client, _ = make_client(
+            llm=llm,
+            config=make_config(
+                extraction={
+                    "auto_consolidate_after_adds": 3,
+                    "summary_sanity_threshold": 0.0,
+                }
+            ),
+        )
+        await client.start()
+        await client.facts.remember(guild_id=GUILD, subject_id=ALICE, text="alice enjoys chess")
+        await client.facts.remember(guild_id=GUILD, subject_id=ALICE, text="alice takes long walks")
+        skipped = await client._consolidation.maybe_refresh_profile(
+            guild_id=GUILD, subject_id=ALICE, adds=1
+        )
+        assert skipped is None
+        await client.facts.remember(guild_id=GUILD, subject_id=ALICE, text="alice drinks tea")
+        doc = await client._consolidation.maybe_refresh_profile(
+            guild_id=GUILD, subject_id=ALICE, adds=1
+        )
+        assert doc is not None and "chess" in doc.text
+        summarize_calls = [call for call in llm.calls if call.purpose == "summarize"]
+        assert len(summarize_calls) == 1
+        skipped_again = await client._consolidation.maybe_refresh_profile(
+            guild_id=GUILD, subject_id=ALICE, adds=1
+        )
+        assert skipped_again is not None and skipped_again.text == doc.text
+        assert len([call for call in llm.calls if call.purpose == "summarize"]) == 1
+        await client.close()
+
     async def test_regenerate_profile_with_llm(self, make_client) -> None:
         summary_text = (
             "alice builds synthesizer modules, loves retro consoles, "

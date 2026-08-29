@@ -7,6 +7,7 @@ import sqlite3
 from datetime import datetime
 
 from discord_memory.adapters.sqlite.connection import SqliteConnection, dumps, iso
+from discord_memory.lifecycle.prune import select_prune_victims_by_anchor
 from discord_memory.models.admin import GuildStats, PurgeReport
 from discord_memory.models.common import Page
 from discord_memory.models.facts import (
@@ -687,11 +688,6 @@ class FactsMixin:
         )
         return int(row["n"]) if row else 0
 
-    _PRUNE_ORDER = (
-        "CASE tier WHEN 'core' THEN 3 WHEN 'long_term' THEN 2"
-        " WHEN 'mid_term' THEN 1 ELSE 0 END, strength ASC, confidence ASC"
-    )
-
     async def prune_to_caps(
         self,
         guild_id: str,
@@ -700,46 +696,23 @@ class FactsMixin:
         max_server: int,
         now: datetime,
     ) -> int:
-        pruned = 0
         rows = await self._db.query(
-            """SELECT subject_id, COUNT(*) AS n FROM dm_facts
-               WHERE guild_id=? AND valid_until IS NULL
-                 AND superseded_by_id IS NULL
-               GROUP BY subject_id""",
+            """SELECT * FROM dm_facts WHERE guild_id=?
+                 AND valid_until IS NULL AND superseded_by_id IS NULL""",
             (guild_id,),
         )
-        caps: list[tuple[str | None, int]] = []
-        for row in rows:
-            subject_id = row["subject_id"]
-            count = int(row["n"])
-            if subject_id is None:
-                if count > max_server:
-                    caps.append((None, max_server))
-            elif count > max_per_user:
-                caps.append((subject_id, max_per_user))
-        for anchor, cap in caps:
-            if anchor is None:
-                scope_sql = "subject_id IS NULL"
-                params: list[object] = [guild_id]
-            else:
-                scope_sql = "subject_id=?"
-                params = [guild_id, anchor]
-            excess_rows = await self._db.query(
-                f"""SELECT id FROM dm_facts
-                    WHERE guild_id=? AND {scope_sql}
-                      AND valid_until IS NULL AND superseded_by_id IS NULL
-                      AND attribution NOT LIKE '%\"type\": \"manual\"%'
-                    ORDER BY {self._PRUNE_ORDER} LIMIT -1 OFFSET ?""",
-                (*params, cap),
+        victims = select_prune_victims_by_anchor(
+            tuple(record_from_row(row) for row in rows),
+            max_per_user=max_per_user,
+            max_server=max_server,
+        )
+        for victim in victims:
+            await self._db.execute(
+                """UPDATE dm_facts SET valid_until=?, updated_at=?,
+                     version=version+1 WHERE id=?""",
+                (iso(now), iso(now), victim.id),
             )
-            for excess in excess_rows:
-                await self._db.execute(
-                    """UPDATE dm_facts SET valid_until=?, updated_at=?,
-                         version=version+1 WHERE id=?""",
-                    (iso(now), iso(now), excess["id"]),
-                )
-                pruned += 1
-        return pruned
+        return len(victims)
 
     async def apply_forgetting(
         self,

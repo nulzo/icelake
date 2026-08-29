@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from discord_memory.config import ExtractionConfig
+from discord_memory.errors import StructuredOutputError
 from discord_memory.ingest.gates import (
     GateDecision,
     confidence_gate,
@@ -44,9 +45,16 @@ class ExtractionResult:
 class FactExtractor:
     """Runs the extraction LLM call and hardens its output into vetted candidates."""
 
-    def __init__(self, llm: ChatLLM | None, config: ExtractionConfig) -> None:
+    def __init__(
+        self,
+        llm: ChatLLM | None,
+        config: ExtractionConfig,
+        *,
+        max_tokens: int = 1800,
+    ) -> None:
         self._llm = llm
         self._config = config
+        self._max_tokens = max_tokens
 
     async def extract(
         self,
@@ -68,15 +76,20 @@ class FactExtractor:
             self._llm,
             model=ExtractionOutput,
             messages=(
-                LlmMessage(role="system", content=prompts.EXTRACTION_SYSTEM_PROMPT),
+                LlmMessage(
+                    role="system",
+                    content=(
+                        f"{prompts.EXTRACTION_SYSTEM_PROMPT}\n\n{prompts.EXTRACTION_INSTRUCTIONS}"
+                    ),
+                ),
                 LlmMessage(role="user", content=user_prompt),
             ),
-            max_tokens=1800,
+            max_tokens=self._max_tokens,
             purpose="extraction",
             guild_id=guild_id,
         )
         if output is None:
-            return result
+            raise StructuredOutputError("extraction output invalid after one repair")
 
         for operation in output.operations[: self._config.max_candidates_per_batch]:
             decision = self._vet(operation, roster, messages)

@@ -55,6 +55,19 @@ class TestTierAssignment:
         assert tier.value == "short_term"
         assert expiry is not None and expiry.days == 7
 
+    def test_short_term_days_knob_applies_to_week_scale_horizon(self) -> None:
+        tier, expiry = assign_tier(
+            text="party at my place tomorrow",
+            category=FactCategory.EXPERIENCES,
+            confidence=0.9,
+            occurrences=1,
+            manual=False,
+            is_server_fact=False,
+            lifecycle=LifecycleConfig(short_term_days=14),
+        )
+        assert tier.value == "short_term"
+        assert expiry is not None and expiry.days == 14
+
     def test_tonight_horizon_three_days(self) -> None:
         tier, expiry = assign_tier(
             text="movie night tonight",
@@ -151,3 +164,48 @@ class TestStrengthDecay:
     def test_strength_signal_bounded(self) -> None:
         signal = strength_signal(strength=100.0, retention_value=1.0)
         assert 0.0 <= signal <= 1.0
+
+
+class TestPruneVictimSelection:
+    def test_weakest_and_short_term_go_first(self) -> None:
+        from datetime import UTC, datetime
+
+        from discord_memory.lifecycle.prune import select_prune_victims
+        from discord_memory.models.facts import (
+            Attribution,
+            AttributionType,
+            FactCategory,
+            FactRecord,
+            MemoryTier,
+        )
+
+        now = datetime(2026, 8, 28, tzinfo=UTC)
+
+        def fact(
+            fact_id: str, *, tier: MemoryTier, strength: float, manual: bool = False
+        ) -> FactRecord:
+            return FactRecord(
+                id=fact_id,
+                guild_id="g1",
+                subject_id="u1",
+                text=f"fact {fact_id} with enough words to be real",
+                category=FactCategory.INTERESTS,
+                tier=tier,
+                strength=strength,
+                confidence=0.8,
+                created_at=now,
+                attribution=Attribution(
+                    type=AttributionType.MANUAL if manual else AttributionType.SELF
+                ),
+            )
+
+        victims = select_prune_victims(
+            (
+                fact("weak", tier=MemoryTier.SHORT_TERM, strength=1.0),
+                fact("mid", tier=MemoryTier.MID_TERM, strength=2.0),
+                fact("core", tier=MemoryTier.CORE, strength=2.0),
+                fact("pinned", tier=MemoryTier.SHORT_TERM, strength=1.0, manual=True),
+            ),
+            cap=2,
+        )
+        assert tuple(v.id for v in victims) == ("weak",)

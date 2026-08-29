@@ -155,7 +155,7 @@ class RecallService:
         text: str,
         subject_ids: tuple[str, ...] | None,
         server_only: bool,
-        as_of: object | None = None,
+        as_of: datetime | None = None,
     ) -> tuple[list[ch.ChannelOutput], list[str]]:
         tasks: dict[ChannelName, object] = {}
 

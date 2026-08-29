@@ -20,6 +20,7 @@ from discord_memory.models.facts import (
     FactCategory,
     FactHistoryEntry,
     FactRecord,
+    MemoryTier,
     ProfileSummary,
 )
 from discord_memory.models.graph import EdgeKind, LinkRow, NodeType
@@ -387,3 +388,48 @@ class TestSummariesConsentGovernance:
         assert stats.guild_id == "g1"
         assert stats.total_facts >= 1
         del entities, relations
+
+    async def test_prune_invalidates_weakest_keeps_core_and_manual(self, store) -> None:
+        now = datetime.now(UTC)
+        await store.insert_fact(
+            make_fact(
+                id="weak",
+                text="short lived hobby collecting stickers this week",
+                tier=MemoryTier.SHORT_TERM,
+                strength=1.0,
+                confidence=0.5,
+            )
+        )
+        await store.insert_fact(
+            make_fact(
+                id="strong",
+                text="works as a charge nurse on the night shift",
+                tier=MemoryTier.LONG_TERM,
+                strength=8.0,
+                confidence=0.9,
+            )
+        )
+        await store.insert_fact(
+            make_fact(
+                id="core",
+                text="legal name is recorded as alice example",
+                tier=MemoryTier.CORE,
+                strength=2.0,
+                confidence=0.99,
+            )
+        )
+        await store.insert_fact(
+            make_fact(
+                id="manual",
+                text="pinned note from a moderator about this user",
+                attribution=Attribution(type=AttributionType.MANUAL),
+                tier=MemoryTier.CORE,
+                strength=1.0,
+            )
+        )
+        pruned = await store.prune_to_caps("g1", max_per_user=2, max_server=10, now=now)
+        assert pruned == 1
+        page = await store.list_facts("g1", subject_id="u1", active_only=True, limit=20)
+        ids = {record.id for record in page.items}
+        assert "weak" not in ids
+        assert {"strong", "core", "manual"} <= ids

@@ -56,6 +56,14 @@ class LlmCapabilityError(DiscordMemoryError):
     """
 
 
+class StructuredOutputError(DiscordMemoryError):
+    """LLM JSON did not validate against the declared schema after one repair.
+
+    Extraction treats this as a batch failure (dead-letter + ``ExtractionFailed``).
+    Classify and reconcile may apply a documented domain default instead.
+    """
+
+
 class BudgetExceededError(DiscordMemoryError):
     """A hard-stop budget was exhausted for the requested operation."""
 

@@ -18,6 +18,26 @@ logger = logging.getLogger(__name__)
 
 MAX_SUMMARY_FACTS = 40
 
+
+def profile_summary_due(
+    *,
+    adds: int,
+    threshold: int,
+    fact_count: int,
+    last_source_fact_count: int | None,
+) -> bool:
+    """Whether the profile digest should regenerate after this batch.
+
+    Threshold is lifetime, not per-batch: first fire once ``fact_count`` reaches
+    it, then again each time that many new facts land since the last digest.
+    """
+    if adds <= 0 or threshold <= 0 or fact_count < threshold:
+        return False
+    if last_source_fact_count is None:
+        return True
+    return fact_count - last_source_fact_count >= threshold
+
+
 SUMMARY_PROMPT = """\
 Synthesize the following durable facts about {subject} into one concise paragraph \
 (<=120 words). Preserve only information present in the facts. Do not invent details. \
@@ -42,6 +62,33 @@ class ConsolidationService:
         self._embedder = embedder
         self._config = config
 
+    async def maybe_refresh_profile(
+        self,
+        *,
+        guild_id: str,
+        subject_id: str,
+        adds: int,
+    ) -> ProfileSummary | None:
+        """Regenerate when lifetime fact count crosses the configured cadence."""
+        threshold = self._config.extraction.auto_consolidate_after_adds
+        if adds <= 0 or threshold <= 0:
+            return None
+        records = await self._store.top_strength_facts(
+            guild_id,
+            subject_ids=(subject_id,),
+            limit=self._config.lifecycle.max_facts_per_user,
+        )
+        existing = await self._store.get_summary(guild_id, subject_id)
+        last = existing.source_fact_count if existing is not None else None
+        if not profile_summary_due(
+            adds=adds,
+            threshold=threshold,
+            fact_count=len(records),
+            last_source_fact_count=last,
+        ):
+            return existing
+        return await self.regenerate_profile(guild_id=guild_id, subject_id=subject_id)
+
     async def regenerate_profile(
         self,
         *,
@@ -54,13 +101,13 @@ class ConsolidationService:
             guild_id,
             subject_ids=(subject_id,) if subject_id else None,
             server_only=subject_id is None,
-            limit=MAX_SUMMARY_FACTS,
+            limit=self._config.lifecycle.max_facts_per_user,
         )
         if len(records) < 2 or self._llm is None:
             return await self._store.get_summary(guild_id, subject_id)
 
         label = subject_name or (subject_id or "this server community")
-        fact_block = "\n".join(f"- {record.text}" for record in records)
+        fact_block = "\n".join(f"- {record.text}" for record in records[:MAX_SUMMARY_FACTS])
         response = await self._llm.complete(
             ChatRequest(
                 messages=(
@@ -79,7 +126,7 @@ class ConsolidationService:
             )
         )
         text = response.text.strip()
-        if not text or not await self._sane(text, records):
+        if not text or not await self._sane(text, records[:MAX_SUMMARY_FACTS]):
             logger.warning("Summary sanity check failed; keeping previous summary")
             return await self._store.get_summary(guild_id, subject_id)
 
@@ -109,4 +156,4 @@ class ConsolidationService:
         return dot >= threshold
 
 
-__all__ = ["ConsolidationService"]
+__all__ = ["ConsolidationService", "profile_summary_due"]

@@ -7,6 +7,7 @@ import json
 import pytest
 
 from discord_memory.config import ExtractionConfig
+from discord_memory.errors import StructuredOutputError
 from discord_memory.ingest.extraction import (
     FactExtractor,
     category_of,
@@ -112,26 +113,72 @@ class TestExtractVetting:
         )
         assert result.vetted[0].subject_id is None
 
-    @pytest.mark.parametrize(
-        "bad_payload",
-        [
-            "not json at all",
-            '{"operations": "not-a-list"}',
-            '[{"subject_token": "p0"}]',
-        ],
-    )
-    async def test_malformed_responses_yield_no_candidates(
+    @pytest.mark.parametrize("bad_payload", ["not json at all", '[{"subject_token": "p0"}]'])
+    async def test_unparseable_responses_raise(
         self,
         roster: Roster,
         bad_payload: str,
     ) -> None:
         extractor, _ = _extractor({"extraction": bad_payload})
+        with pytest.raises(StructuredOutputError):
+            await extractor.extract(
+                roster=roster,
+                messages=(("alice", "some substantive message content here"),),
+                existing_memories_block="",
+            )
+
+    async def test_non_list_operations_is_empty_not_failure(self, roster: Roster) -> None:
+        extractor, _ = _extractor({"extraction": '{"operations": "not-a-list"}'})
         result = await extractor.extract(
             roster=roster,
             messages=(("alice", "some substantive message content here"),),
             existing_memories_block="",
         )
         assert not result.has_candidates
+
+    async def test_system_prompt_includes_extraction_instructions(self, roster: Roster) -> None:
+        payload = {
+            "operations": [
+                {
+                    "subject_token": "p0",
+                    "text": "alice enjoys weekend trail runs",
+                    "confidence": 0.9,
+                    "source_message_indexes": [1],
+                }
+            ]
+        }
+        extractor, llm = _extractor({"extraction": json.dumps(payload)})
+        await extractor.extract(
+            roster=roster,
+            messages=(("alice", "i ran ten miles on the trail this weekend"),),
+            existing_memories_block="",
+        )
+        from discord_memory.prompts.extraction import EXTRACTION_INSTRUCTIONS
+
+        system = llm.calls[0].messages[0]
+        assert system.role == "system"
+        assert "ALWAYS emit a fact when NEW MESSAGES restate" in system.content
+        assert EXTRACTION_INSTRUCTIONS in system.content
+
+    async def test_max_tokens_comes_from_constructor(self, roster: Roster) -> None:
+        payload = {
+            "operations": [
+                {
+                    "subject_token": "p0",
+                    "text": "alice enjoys weekend trail runs",
+                    "confidence": 0.9,
+                    "source_message_indexes": [1],
+                }
+            ]
+        }
+        llm = ScriptedLLM({"extraction": json.dumps(payload)})
+        extractor = FactExtractor(llm, ExtractionConfig(), max_tokens=424)
+        await extractor.extract(
+            roster=roster,
+            messages=(("alice", "i ran ten miles on the trail this weekend"),),
+            existing_memories_block="",
+        )
+        assert llm.calls[0].max_tokens == 424
 
     async def test_gate_rejections_reported(self, roster: Roster) -> None:
         payload = {

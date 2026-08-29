@@ -114,6 +114,11 @@ class TestBotGuard:
         assert not guard.is_bot("human")
         assert not guard.is_bot(None)
 
+    def test_exclude_drops_bots_preserving_order(self) -> None:
+        guard = BotGuard()
+        guard.register("bot-1")
+        assert guard.exclude(("alice", "bot-1", "bob", "alice")) == ("alice", "bob")
+
 
 async def test_subject_gate_blocks_opted_out() -> None:
     store = InMemoryStore()

@@ -223,6 +223,33 @@ class TestOpenAICompatLLM:
         assert response.prompt_tokens == 12
         await client.aclose()
 
+    async def test_max_completion_tokens_key_replaces_max_tokens(self) -> None:
+        captured: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "ok"}}], "usage": {}},
+            )
+
+        config = LlmConfig(
+            base_url="https://llm.test/v1",
+            api_key="k",
+            model="m-1",
+            max_retries=0,
+            max_tokens_key="max_completion_tokens",
+            params={"max_tokens": 999},
+        )
+        client = OpenAICompatLLM(config)
+        client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        await client.complete(
+            ChatRequest(messages=(LlmMessage(role="user", content="hi"),), max_tokens=256)
+        )
+        assert captured.get("max_completion_tokens") == 256
+        assert "max_tokens" not in captured
+        await client.aclose()
+
     async def test_retries_then_succeeds_on_500(self) -> None:
         state = {"calls": 0}
 

@@ -102,6 +102,15 @@ class TestRoster:
         assert roster.user_id_for("p0") == "u2"
         assert roster.name_for("p0") == "bob"
 
+    def test_bind_names_rewrites_minted_tokens_only(self) -> None:
+        roster = Roster()
+        roster.add("u1", "alice")
+        assert roster.bind_names("p0 loves Go") == "alice loves Go"
+        assert roster.bind_names("p0's wife") == "alice's wife"
+        assert roster.bind_names("p9 left town") == "p9 left town"
+        assert roster.bind_names("the server loves Go") == "the server loves Go"
+        assert roster.display_name("u1") == "alice"
+
     def test_render_lists_participants_and_server(self) -> None:
         roster = Roster()
         roster.add("u3", "carol")

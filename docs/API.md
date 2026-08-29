@@ -58,6 +58,7 @@ from discord_memory import (
     ExtractionFailed, BudgetWarning, ComponentDegraded,
     # errors
     DiscordMemoryError, ConfigError, StorageUnavailableError,
+    LlmCapabilityError, StructuredOutputError,
     BudgetExceededError, IdentityAmbiguousError, FactNotFoundError,
     SubjectNotAllowedError,
 )
@@ -126,8 +127,8 @@ parentheses; every duration suffixed `_seconds/_minutes/_days`, every budget
 
 | Group | Key knobs |
 |---|---|
-| `storage` | backend parsed from URL; `pool_size (10)`; `schema_auto_migrate (True)` |
-| `llm` | endpoint URL(s); `model`; `small_model (None→same as model; routes reconcile/classify/summaries)`; `reasoning_effort (None; low/medium/high forwarded as OpenRouter reasoning.effort)`; `temperature (0.0; none omits the parameter)`; `structured_outputs (strict|json_object)`; `params ({})`; `request_timeout_seconds (30)`; `max_retries (2)` |
+| `storage` | backend parsed from URL (`sqlite`, `mongodb`, `postgresql` recognized; postgres adapter not yet shipped) |
+| `llm` | endpoint URL(s); `model`; `small_model (None→same as model; routes reconcile/classify/summaries)`; `reasoning_effort (None; low/medium/high forwarded as OpenRouter reasoning.effort — many providers ignore it)`; `temperature (0.0; none omits the parameter)`; `structured_outputs (strict|json_object)`; `params ({})`; `max_tokens (1800; extraction default)`; `max_tokens_key (max_tokens; set max_completion_tokens for Azure)`; `timeout_seconds (30)`; `max_retries (2)` |
 | `embeddings` | provider; `dimensions`; `batch_size (32)`; `cache_enabled (True)` |
 | `batching` | `batch_size_messages (10)`; `max_age_seconds (300)`; `lease_seconds (120)`; `server_scope_window (100)` |
 | `extraction` | `min_confidence (0.55)`; `max_candidates_per_batch (12)`; `reconcile_collision_threshold (0.85)`; `noise_gate (True)` |
@@ -467,8 +468,10 @@ DiscordMemoryError                     # base; never raised for normal operation
 ├── IdentityAmbiguousError             # raised ONLY by explicit resolve()-style calls
 │   └── candidates: ResolvedCandidate  #   prompt_context degrades gracefully instead
 ├── StorageUnavailableError            # start()-time or ops calls; hot paths degrade
+├── LlmCapabilityError                 # endpoint rejected declared params (400/404/422)
+├── StructuredOutputError              # JSON failed schema after one repair (batch dead-letters)
 ├── BudgetExceededError                # ops/admin writes when hard-stop configured
-└── WorkerNotRunningError              # flush/run_pending without started workers
+└── WorkerNotRunningError              # exported; not currently raised (lazy start covers flush)
 ```
 
 Rules: `observe` → `SchemaValidationError` only; `recall`/`prompt_context` → never
@@ -533,8 +536,9 @@ lines total, no core dependencies on discord.py (core tests never import it).
 
 - SemVer; the import map (Part 2) is the compatibility surface, plus wire-stable
   `MemoryExport` and cursor opacity guarantees.
-- Stored-schema migrations are automatic and backward-safe within a major version;
-  `storage.schema_auto_migrate=False` opts into explicit migration scripts.
+- Stored-schema migrations are additive `CREATE IF NOT EXISTS` on first open
+  (SQLite schema stamp `SCHEMA_VERSION=1`). A versioned migrate path is not yet
+  shipped; do not set a migrate-opt-out knob that does nothing.
 - Deprecations: exported alias + warning event for one minor cycle minimum, removal
   noted in changelog.
 - Public entry points carry product-quality docstrings with doctest-style examples

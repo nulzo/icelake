@@ -2,15 +2,34 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
+
 from discord_memory.models.common import FrozenModel
 
 SERVER_TOKEN = "server"
+_ROSTER_TOKEN = re.compile(r"\bp\d+\b")
 
 
 class RosterParticipant(FrozenModel):
     token: str
     user_id: str
     display_name: str
+
+
+def bind_roster_names(text: str, names_by_token: Mapping[str, str]) -> str:
+    """Replace minted ``pN`` tokens in prose with display names.
+
+    Tokens stay on ``subject_token`` / ``speaker_token``; stored fact text is
+    human-readable. Unknown tokens are left unchanged. Possessives (``p0's``)
+    bind correctly because ``'`` is a word boundary.
+    """
+    if not names_by_token:
+        return text
+    return _ROSTER_TOKEN.sub(
+        lambda match: names_by_token.get(match.group(0), match.group(0)),
+        text,
+    )
 
 
 class Roster:
@@ -55,6 +74,17 @@ class Roster:
     def name_for(self, token: str) -> str | None:
         participant = self._by_token.get(token.strip())
         return participant.display_name if participant else None
+
+    def display_name(self, user_id: str) -> str | None:
+        participant = self._by_user.get(user_id)
+        return participant.display_name if participant else None
+
+    def bind_names(self, text: str) -> str:
+        """Rewrite ``pN`` tokens in ``text`` to this roster's display names."""
+        return bind_roster_names(
+            text,
+            {participant.token: participant.display_name for participant in self._participants},
+        )
 
     def knows(self, token: str) -> bool:
         return token.strip() in {SERVER_TOKEN, *self._by_token}

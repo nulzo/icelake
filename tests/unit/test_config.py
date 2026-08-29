@@ -65,6 +65,23 @@ def test_llm_url_parses_capability_knobs() -> None:
     assert defaulted.llm.structured_outputs == "strict"
 
 
+def test_llm_url_parses_max_tokens_and_key() -> None:
+    config = MemoryConfig(
+        llm="openai://k@host/v1?model=big&max_tokens=512&max_tokens_key=max_completion_tokens"
+    )
+    assert config.llm.max_tokens == 512
+    assert config.llm.max_tokens_key == "max_completion_tokens"
+
+
+def test_postgres_url_is_recognized_but_unimplemented() -> None:
+    from discord_memory import DiscordMemory
+
+    config = MemoryConfig(storage="postgresql://localhost/memory")
+    assert config.storage.backend == "postgres"
+    with pytest.raises(ConfigError, match="not implemented"):
+        DiscordMemory(config)
+
+
 def test_small_model_routes_reconcile_classify_consolidation() -> None:
     from discord_memory import DiscordMemory
 
@@ -138,6 +155,14 @@ def test_embeddings_spec_hashing_and_local() -> None:
 def test_openai_embeddings_requires_full_spec() -> None:
     with pytest.raises(ConfigError, match="openai embeddings require"):
         EmbeddingsConfig(provider=EmbeddingsProvider.OPENAI)
+
+
+def test_public_capability_types_are_exported() -> None:
+    from discord_memory import LlmCapabilityError, ObserveConfig, StructuredOutputError
+
+    assert issubclass(LlmCapabilityError, Exception)
+    assert issubclass(StructuredOutputError, Exception)
+    assert ObserveConfig is not None
 
 
 def test_unknown_top_level_key_rejected() -> None:
