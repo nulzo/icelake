@@ -1,13 +1,14 @@
 """Cross-user memory patterns: relationships, stances, discovery.
 
 Runnable WITHOUT Discord or an LLM — ``python examples/relationship_queries.py``
-seeds a small community into SQLite via ``facts.remember`` (the curation API) and
-walks query shapes that are zero-LLM by design:
+seeds a guild into SQLite via ``facts.remember`` (the curation API) and walks
+query shapes that are zero-LLM by design:
 
-1. "What does X think about Y?"      -> relationship recall (pair mode)
-2. "Did X ever call out Y?"          -> typed relation edges with evidence
-3. "What does the server think of movies?" -> entity stance aggregation
-4. "Who shares X's entities?"        -> Jaccard over the knowledge graph
+1. Name resolution (display names + nicknames; ambiguity never guesses)
+2. "What does X think about Y?" — directed edges + pair-intersect recall
+3. Typed relation edges and 2-hop neighborhood
+4. Entity stance aggregation (who likes / dislikes movies, coffee, …)
+5. Shared-entity discovery (Jaccard — overlap, not "same taste")
 
 Extraction, reconcile, and profile digests are not exercised here. Pass
 ``llm=`` / ``embeddings=`` on ``MemoryConfig`` only if you change the seed to
@@ -20,134 +21,245 @@ import asyncio
 from datetime import UTC, datetime
 
 from discord_memory import (
+    ChannelName,
     DiscordMemory,
     MemoryConfig,
     MessageEvent,
     RecallQuery,
+    channels,
 )
-from discord_memory.models.operations import ProposedRelation
+from discord_memory.models.graph import NodeType
+from discord_memory.models.operations import ProposedEntity, ProposedRelation
+
+GUILD = "555"
+MEMBERS = {
+    "alice": "100000000000000001",
+    "bob": "200000000000000002",
+    "carol": "300000000000000003",
+    "dave": "400000000000000004",
+    "eve": "500000000000000005",
+    "frank": "600000000000000006",
+    "grace": "700000000000000007",
+    "henrik": "800000000000000008",
+}
+NAMES = {user_id: name for name, user_id in MEMBERS.items()}
 
 
-async def seed_community(memory: DiscordMemory) -> dict[str, str]:
-    """Seed aliases + curated facts. No extraction LLM is involved."""
-    members = {
-        "alice": "100000000000000001",
-        "bob": "200000000000000002",
-        "carol": "300000000000000003",
-    }
+def _who(user_id: str) -> str:
+    return NAMES.get(user_id, user_id)
 
-    async def say(author: str, content: str) -> None:
-        await memory.observe(
-            MessageEvent(
-                message_id=f"seed-{author}-{abs(hash(content)) % 10**9}",
-                guild_id="555",
-                channel_id="general",
-                author_id=members[author],
-                content=content,
-                created_at=datetime.now(UTC),
-                author_display_name=author,
-            )
+
+async def _hello(memory: DiscordMemory, author: str) -> None:
+    """Observe a greeting so the identity ladder learns the display name."""
+    await memory.observe(
+        MessageEvent(
+            message_id=f"seed-hello-{author}",
+            guild_id=GUILD,
+            channel_id="general",
+            author_id=MEMBERS[author],
+            content=f"hey, {author} checking in",
+            created_at=datetime.now(UTC),
+            author_display_name=author,
         )
+    )
 
-    # In production the configured LLM extracts facts. Here we write them
-    # directly so the example runs deterministically without any provider.
-    from discord_memory.models.operations import ProposedEntity
 
-    await memory.facts.remember(
-        guild_id="555",
-        subject_id=members["alice"],
-        text="alice loves watching movies on weekends",
-        actor_id="seed",
-        entities=(ProposedEntity(name="Movies"),),
-        relations=(
-            ProposedRelation(verb="likes", from_token=members["alice"], to_entity="Movies"),
+async def _teach(
+    memory: DiscordMemory,
+    *,
+    subject: str,
+    text: str,
+    speaker: str | None = None,
+    likes: tuple[str, ...] = (),
+    dislikes: tuple[str, ...] = (),
+    edges: tuple[tuple[str, str, str], ...] = (),
+) -> None:
+    """Curate one fact + graph participation. ``edges`` are (verb, from, to) member names."""
+    subject_id = MEMBERS[subject]
+    speaker_id = MEMBERS[speaker] if speaker else None
+    entities = tuple(ProposedEntity(name=name) for name in (*likes, *dislikes))
+    relations = [
+        *(ProposedRelation(verb="likes", from_token=subject_id, to_entity=name) for name in likes),
+        *(
+            ProposedRelation(verb="dislikes", from_token=subject_id, to_entity=name)
+            for name in dislikes
         ),
+        *(
+            ProposedRelation(verb=verb, from_token=MEMBERS[src], to_token=MEMBERS[dst])
+            for verb, src, dst in edges
+        ),
+    ]
+    other_ids = tuple(
+        uid for _, src, dst in edges for uid in (MEMBERS[src], MEMBERS[dst]) if uid != subject_id
     )
     await memory.facts.remember(
-        guild_id="555",
-        subject_id=members["bob"],
-        text="bob dislikes movies and prefers board games",
-        actor_id="seed",
-        entities=(ProposedEntity(name="Movies"),),
-        relations=(
-            ProposedRelation(verb="dislikes", from_token=members["bob"], to_entity="Movies"),
-        ),
+        guild_id=GUILD,
+        subject_id=subject_id,
+        text=text,
+        # remember() only puts subject/actor/speaker on the relation roster —
+        # the other endpoint of a person-to-person edge must be actor or speaker.
+        actor_id=speaker_id or (other_ids[0] if other_ids else "seed"),
+        speaker_id=speaker_id,
+        entities=entities,
+        relations=tuple(relations),
     )
-    # Greetings register display-name aliases (identity ladder needs them).
-    await say("alice", "hey everyone, quick hello from me to start the week")
-    await say("bob", "hello all, bob here ready for some games later")
-    await say("carol", "hi folks! carol checking in before game night")
 
-    await memory.facts.remember(
-        guild_id="555",
-        subject_id=members["bob"],
+
+async def seed_community(memory: DiscordMemory) -> None:
+    """Eight members, overlapping tastes, and a handful of person-to-person edges."""
+    for name in MEMBERS:
+        await _hello(memory, name)
+    await memory.identity.register_alias(GUILD, MEMBERS["bob"], "bobby")
+    await memory.identity.register_alias(GUILD, MEMBERS["alice"], "ali")
+
+    await _teach(
+        memory,
+        subject="alice",
+        text="alice loves weekend movies and writes Rust at work",
+        likes=("Movies", "Rust", "Coffee"),
+    )
+    await _teach(
+        memory,
+        subject="bob",
+        text="bob dislikes movies and prefers board games with coffee",
+        likes=("Board Games", "Coffee"),
+        dislikes=("Movies",),
+    )
+    await _teach(
+        memory,
+        subject="carol",
+        text="carol hosts movie night every friday",
+        likes=("Movies",),
+    )
+    await _teach(
+        memory,
+        subject="dave",
+        text="dave ships Rust with alice and plays chess on lunch",
+        likes=("Rust", "Chess"),
+        edges=(("teammate_of", "dave", "alice"),),
+    )
+    await _teach(
+        memory,
+        subject="eve",
+        text="eve plays chess but cannot stand coffee",
+        likes=("Chess",),
+        dislikes=("Coffee",),
+        edges=(("friend_of", "eve", "carol"),),
+    )
+    await _teach(
+        memory,
+        subject="frank",
+        text="frank is in bob's board-game group and dabbles in Rust",
+        likes=("Board Games", "Rust"),
+        edges=(("friend_of", "frank", "bob"),),
+    )
+    await _teach(
+        memory,
+        subject="grace",
+        text="grace mainlines coffee and never misses a movie",
+        likes=("Movies", "Coffee"),
+    )
+    await _teach(
+        memory,
+        subject="henrik",
+        text="henrik only shows up for ranked chess",
+        likes=("Chess",),
+    )
+    await _teach(
+        memory,
+        subject="bob",
+        speaker="carol",
         text="carol called bob a sore loser during game night",
-        actor_id=members["carol"],
-        speaker_id=members["carol"],
-        relations=(
-            ProposedRelation(
-                verb="called_out",
-                from_token=members["carol"],
-                to_token=members["bob"],
-            ),
-        ),
+        edges=(("called_out", "carol", "bob"),),
     )
-    return members
 
 
-async def what_does_x_think_of_y(
-    memory: DiscordMemory, guild_id: str, x_name: str, y_name: str
-) -> str:
-    """Resolve flexible names, then combine relation edges + bidirectional facts."""
-    x = await memory.identity.resolve(guild_id, x_name)
-    y = await memory.identity.resolve(guild_id, y_name)
+async def _resolve(memory: DiscordMemory, identifier: str) -> str:
+    resolution = await memory.identity.resolve(GUILD, identifier)
+    if resolution.ambiguous:
+        ids = ", ".join(_who(c.user_id) for c in resolution.candidates)
+        return f"{identifier!r} is ambiguous ({ids}); refusing to guess"
+    if resolution.resolved is None:
+        return f"{identifier!r} matched nobody"
+    return f"{identifier!r} -> {_who(resolution.resolved.user_id)} ({resolution.resolved.user_id})"
+
+
+async def what_x_thinks_of_y(memory: DiscordMemory, x_name: str, y_name: str) -> str:
+    """Directed edges X→Y plus facts linked to *both* people (not each profile dumped)."""
+    x = await memory.identity.resolve(GUILD, x_name)
+    y = await memory.identity.resolve(GUILD, y_name)
     if x.resolved is None or y.resolved is None or x.ambiguous or y.ambiguous:
-        return f"I can't uniquely tell who {x_name!r}/{y_name!r} is."
-
+        return f"cannot uniquely resolve {x_name!r} / {y_name!r}"
     x_id, y_id = x.resolved.user_id, y.resolved.user_id
-
-    edges = await memory.graph.between(guild_id, x_id, y_id)
-    lines = [f"- {edge.verb} (weight {edge.weight:.2f})" for edge in edges]
-
+    lines = [f"What {_who(x_id)} thinks about {_who(y_id)}:"]
+    for edge in await memory.graph.between(GUILD, x_id, y_id):
+        lines.append(
+            f"  edge  {_who(x_id)} -{edge.verb}-> {_who(y_id)}  (weight {edge.weight:.2f})"
+        )
     result = await memory.recall(
         RecallQuery(
-            guild_id=guild_id,
-            text=f"{x_name} about {y_name}",
-            subject_ids=(x_id, y_id),
+            guild_id=GUILD,
+            pair_ids=(x_id, y_id),
+            # Default channels are guild-wide; LINKS-only lets pair_ids be the
+            # sole candidate source (facts incident on both people).
+            channels=channels(ChannelName.LINKS),
         )
     )
-    lines += [f"- {sf.fact.text}" for sf in result.facts]
-    header = f"What {x.resolved.matched_alias} thinks about {y.resolved.matched_alias}:"
-    return "\n".join([header, *lines]) if len(lines) > 1 else header + " nothing notable."
+    if result.facts:
+        lines.extend(f"  fact  {scored.fact.text}" for scored in result.facts)
+    elif len(lines) == 1:
+        lines.append("  (no shared facts or directed edges)")
+    return "\n".join(lines)
+
+
+def _print_stances(label: str, stances) -> None:
+    pos = ", ".join(_who(e.src_id) for e in stances.positive if e.src_type is NodeType.USER)
+    neg = ", ".join(_who(e.src_id) for e in stances.negative if e.src_type is NodeType.USER)
+    print(f"  {label}: +[{pos or '-'}]  -[{neg or '-'}]  ({stances.total_evidence} evidence)")
 
 
 async def main() -> None:
     memory = DiscordMemory(MemoryConfig(storage="sqlite://:memory:", llm=None))
     async with memory:
-        members = await seed_community(memory)
+        await seed_community(memory)
 
-        # 1. Relationship recall — names resolved through the alias ladder.
-        print(await what_does_x_think_of_y(memory, "555", "carol", "bob"))
+        print("=== 1. Identity ladder (nicknames, misses) ===")
+        for ident in ("carol", "bobby", "ali", "nobody-here"):
+            print(f"  {await _resolve(memory, ident)}")
         print()
 
-        # 2. Typed relation edges between two members.
-        carol, bob = members["carol"], members["bob"]
-        edges = await memory.graph.between("555", carol, bob)
-        print(f"edges carol<->bob: {[e.verb for e in edges]}")
+        print("=== 2. What does X think about Y? (pair-intersect, not both profiles) ===")
+        print(await what_x_thinks_of_y(memory, "carol", "bob"))
+        print(await what_x_thinks_of_y(memory, "dave", "alice"))
+        print(await what_x_thinks_of_y(memory, "eve", "carol"))
+        print()
 
-        # 3. Entity stances — opposing views aggregate on one node.
-        stances = await memory.graph.entity_stances("555", "movies")
-        print(
-            f"movies: {len(stances.positive)} positive / {len(stances.negative)} negative stances"
-        )
+        print("=== 3. Graph around dave (incident edges + 2-hop neighbors) ===")
+        dave = MEMBERS["dave"]
+        for edge in await memory.graph.relations_of(GUILD, dave):
+            src = _who(edge.src_id) if edge.src_type is NodeType.USER else edge.src_id
+            dst = _who(edge.dst_id) if edge.dst_type is NodeType.USER else edge.dst_id
+            print(f"  {src} -{edge.verb}-> {dst}")
+        print("  hops:")
+        for hop in await memory.graph.neighbors(GUILD, dave, depth=2):
+            node = _who(hop.node_id) if hop.node_type is NodeType.USER else hop.node_id
+            path = " / ".join(hop.relation_path) or "(seed)"
+            print(f"    {node}  via {path}")
+        print()
 
-        # 4. Shared-trait discovery.
-        alice_id = members["alice"]
-        similar = await memory.graph.similar_users("555", alice_id, limit=3)
-        print(f"members similar to alice: {similar}")
+        print("=== 4. Entity stances ===")
+        for entity in ("movies", "coffee", "chess", "rust"):
+            _print_stances(entity, await memory.graph.entity_stances(GUILD, entity))
+        print()
 
-        stats = await memory.stats("555")
-        print(f"server holds {stats.active_facts} active memories")
+        print("=== 5. Similar members (shared entities; polarity is ignored) ===")
+        for seed in ("alice", "bob", "henrik"):
+            similar = await memory.graph.similar_users(GUILD, MEMBERS[seed], limit=4)
+            shown = ", ".join(f"{_who(uid)} {score:.2f}" for uid, score in similar) or "(none)"
+            print(f"  like {seed}: {shown}")
+
+        stats = await memory.stats(GUILD)
+        print(f"\nserver holds {stats.active_facts} active memories")
 
 
 if __name__ == "__main__":

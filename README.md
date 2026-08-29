@@ -74,7 +74,7 @@ Runnable, complete examples live in [`examples/`](examples/):
 |---|---|
 | [`examples/omni_style_bot.py`](examples/omni_style_bot.py) | **Production-shaped bot**: passive learning, ping/reply turns, `/memory` slash group, OpenRouter chat + embeddings |
 | [`examples/ping_reply_bot.py`](examples/ping_reply_bot.py) | Classic chat bot: observe every message, reply when pinged, citations, remember/forget, nickname tracking |
-| [`examples/relationship_queries.py`](examples/relationship_queries.py) | Cross-user memory: "what does X think of Y", typed edges, entity stances, shared traits. No Discord required |
+| [`examples/relationship_queries.py`](examples/relationship_queries.py) | Zero-LLM graph demo: 8 members, pair recall, stances, 2-hop neighbors. No Discord required |
 | [`examples/e2e_simulation.py`](examples/e2e_simulation.py) | Public-API eval: 81 hard invariants + model expectations against a scripted guild |
 | [`examples/bench_models.py`](examples/bench_models.py) | Parallel model matrix; writes JSON + Markdown reports |
 
