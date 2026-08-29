@@ -257,11 +257,11 @@ flowchart TB
   observe["observe(event)"] --> queue["Pending message queue"]
   queue --> worker["Lease worker<br/>one claim per guild + author"]
   worker --> noise{"Noise gate"}
-  noise -->|chatter| skip["Ack — no LLM"]
+  noise -->|chatter| skip["Ack - no LLM"]
   noise -->|worth extracting| roster["Mint roster tokens<br/>p0, p1, server"]
   roster --> extract["LLM extraction"]
   extract --> schema{"Valid JSON schema?"}
-  schema -->|no, after one repair| dead["Dead-letter the batch"]
+  schema -->|no after one repair| dead["Dead-letter the batch"]
   schema -->|yes| gates["Quality gates"]
   gates --> hit{"Near-duplicate collision?"}
   hit -->|no| add["ADD fact"]
@@ -335,7 +335,7 @@ memory.stats(guild_id)                 # GuildStats snapshot
 
 
 Full contract with signatures and semantics: [`docs/API.md`](docs/API.md).
-Design rationale and architecture: [`docs/PLAN.md`](docs/PLAN.md).
+Design: [`docs/PLAN.md`](docs/PLAN.md) · Roadmap: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## discord.py integration
 
@@ -352,13 +352,16 @@ config = MemoryConfig(
 
 class MyBot(commands.Bot):
     async def setup_hook(self) -> None:
-        memory, cog = await setup_discord_memory(self, config)
-        await self.add_cog(cog)          # /memory me · /memory remember · /memory forget_me
+        memory, helpers = await setup_discord_memory(self, config)
         self.memory = memory
+        # helpers.me / helpers.remember / helpers.forget_me — bind to your own slash commands
 ```
 
 The integration wires `on_message → observe`, `on_member_update → alias refresh`, and
-`on_ready → start`. Everything else stays in your control.
+`on_ready → start` + `register_bot_id`. The returned `MemoryCog` is a helper with
+`me` / `remember` / `forget_me` methods you bind to slash commands in your bot — it is
+not a `commands.Cog` subclass. For a full `/memory` slash group, see
+[`examples/omni_style_bot.py`](examples/omni_style_bot.py).
 
 ## Configuration
 
