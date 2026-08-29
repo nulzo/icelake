@@ -60,11 +60,11 @@ class IdentityResolver:
 
         exact = await self._store.resolve_alias_candidates(guild_id, normalized)
         if exact:
-            return self._decide(identifier, normalized, exact)
+            return self._decide(identifier, normalized, exact, fuzzy=False)
         if len(normalized) >= MIN_PREFIX_LENGTH:
             fuzzy = await self._store.prefix_alias_candidates(guild_id, normalized)
             if fuzzy:
-                return self._decide(identifier, normalized, fuzzy)
+                return self._decide(identifier, normalized, fuzzy, fuzzy=True)
         return Resolution(identifier=identifier)
 
     def _decide(
@@ -72,6 +72,8 @@ class IdentityResolver:
         identifier: str,
         normalized: str,
         records: tuple[AliasRecord, ...],
+        *,
+        fuzzy: bool,
     ) -> Resolution:
         best = max(records, key=lambda r: (r.source.rank, r.weight))
         top_weight = max(r.weight for r in records)
@@ -86,8 +88,19 @@ class IdentityResolver:
             for record in records[:5]
         )
         rivals = [c for c in candidates if c.user_id != best.user_id]
-        ambiguous = any(c.weight >= AMBIGUITY_RATIO * best.weight for c in rivals)
-        resolved = None if ambiguous else candidates[0]
+        # Exact match: rank is the authority; only same-rank weight proximity is
+        # ambiguous (prototype min_weight_gap rule). Prefix match is fuzzy, so any
+        # rival within the ratio stays ambiguous — never guess on a partial name.
+        ambiguous = any(
+            (fuzzy or c.source.rank == best.source.rank)
+            and c.weight >= AMBIGUITY_RATIO * best.weight
+            for c in rivals
+        )
+        # ``best`` is the (source.rank, weight) winner; candidates are in store
+        # order (weight DESC), so candidates[0] is not necessarily best.
+        resolved = None
+        if not ambiguous:
+            resolved = next((c for c in candidates if c.user_id == best.user_id), None)
         return Resolution(
             identifier=identifier,
             resolved=resolved,
