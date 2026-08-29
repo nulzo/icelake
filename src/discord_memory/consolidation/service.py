@@ -11,6 +11,7 @@ import logging
 
 from discord_memory.config import MemoryConfig
 from discord_memory.models.facts import FactRecord, ProfileSummary
+from discord_memory.ports.clock import Clock
 from discord_memory.ports.llm import ChatLLM, ChatRequest, Embedder, LlmMessage
 from discord_memory.ports.store import MemoryStore
 
@@ -56,11 +57,13 @@ class ConsolidationService:
         llm: ChatLLM | None,
         embedder: Embedder | None,
         config: MemoryConfig,
+        clock: Clock,
     ) -> None:
         self._store = store
         self._llm = llm
         self._embedder = embedder
         self._config = config
+        self._clock = clock
 
     async def maybe_refresh_profile(
         self,
@@ -134,7 +137,7 @@ class ConsolidationService:
             guild_id=guild_id,
             subject_id=subject_id,
             text=text,
-            generated_at=None,
+            generated_at=self._clock.now(),
             source_fact_count=len(records),
         )
         await self._store.put_summary(summary)

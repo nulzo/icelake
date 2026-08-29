@@ -251,6 +251,7 @@ class DiscordMemory:
             llm=self._small_llm,
             embedder=self._embedder,
             config=config,
+            clock=self._clock,
         )
         self._pipeline.attach_consolidation(self._consolidation)
 

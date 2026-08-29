@@ -184,6 +184,7 @@ class TestConsolidation:
         assert count >= 1
         doc = await client._store.get_summary(GUILD, ALICE)
         assert doc is not None and "synthesizer" in doc.text
+        assert doc.generated_at == client._clock.now()
         await client.close()
 
     async def test_summary_sanity_failure_keeps_old(self, make_client) -> None:
@@ -217,6 +218,7 @@ class TestConsolidation:
             llm=None,
             embedder=None,
             config=client.config,
+            clock=client._clock,
         )
         result = await service.regenerate_profile(guild_id=GUILD, subject_id=ALICE)
         assert result is not None and result.text == "kept"
