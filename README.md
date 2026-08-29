@@ -1,10 +1,8 @@
 # icelake
 
-Memory for Discord bots. You feed it messages; it extracts facts about users and
-hands you a labeled block to put in your system prompt when you need to reply.
+Persistant memory layer specifically for discord bots. Passively consumes messages, extracts facts about users, and hands you a labeled block to put in your system prompt when you need to reply.
 
-Facts are stored against Discord user IDs, not names, so a rename does not move
-someone else's memories onto a new person. Third-party claims ("alice called bob
+Facts are stored against Discord user IDs (as opposed to names), so a rename does not move someone else's memories onto a new person. Third-party claims ("alice called bob
 a hacker") attach to the person they are about.
 
 Requires Python 3.12+.
@@ -13,7 +11,7 @@ Requires Python 3.12+.
 
 ```bash
 pip install icelake
-pip install "icelake[discord]"           # discord.py helpers
+pip install "icelake[discord]"           # discord.py helpers/hooks
 pip install "icelake[mongo]"             # MongoDB backend
 pip install "icelake[local-embeddings]"  # sentence-transformers
 ```
