@@ -51,10 +51,13 @@ async def build_extraction_context(
             candidate_cap=100,
         )
         records = await store.get_facts(guild_id, tuple(h.id for h in hits))
+        # get_facts does not guarantee order (Mongo $in) and may drop missing
+        # ids; pair scores to records by id, never by position.
+        by_id = {record.id: record for record in records}
         relevant = tuple(
-            record
-            for hit, record in zip(hits, records, strict=False)
-            if record.is_active and hit.score >= 0.5
+            by_id[hit.id]
+            for hit in hits
+            if hit.id in by_id and by_id[hit.id].is_active and hit.score >= 0.5
         )
     combined = list(anchors) + list(relevant)
     return render_memory_lines(tuple(combined))

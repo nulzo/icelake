@@ -32,7 +32,7 @@ from icelake.models.admin import BudgetStep
 from icelake.models.events import BatchCompleted, ExtractionFailed
 from icelake.models.facts import FactRecord, SourceRef, SourceRole
 from icelake.models.identity import AliasSource
-from icelake.models.operations import ProposedFact, ReconcileKind
+from icelake.models.operations import ProposedFact, ReconcileDecision, ReconcileKind
 from icelake.ports.clock import Clock, IdGen
 from icelake.ports.llm import ChatLLM, Embedder, Meter
 from icelake.ports.queue import BatchKey, IngestQueue, StoredMessage
@@ -357,6 +357,12 @@ class IngestPipeline:
 
         await self._mine_message_aliases(guild_id, messages)
 
+        # store_raw_messages=False stores a content hash for audit/dedup. The
+        # hash is not message text — sending it to the LLM would be a privacy
+        # violation and garbage extraction, so skip the batch entirely.
+        if not self._config.privacy.store_raw_messages:
+            return self._skip_batch(key, reason="privacy_no_raw", messages=messages)
+
         texts = tuple((m.author_username or m.author_id, m.content) for m in messages)
         joined_text = " ".join(content for _, content in texts)
 
@@ -446,6 +452,7 @@ class IngestPipeline:
                 summary=summary,
                 mentioned_ids=mentioned_ids,
                 source_refs=source_refs,
+                skip_reconcile=step is BudgetStep.SKIP_RECONCILE,
             )
 
         skip_reason = _extract_skip_reason(result, candidates, summary)
@@ -506,6 +513,7 @@ class IngestPipeline:
         summary: CommitSummary,
         mentioned_ids: tuple[str, ...] = (),
         source_refs: tuple[SourceRef, ...] = (),
+        skip_reconcile: bool = False,
     ) -> None:
         batch_subject = None if key.subject_key == SERVER_SUBJECT_KEY else key.subject_key
         if candidates and self._embedder is not None:
@@ -526,9 +534,13 @@ class IngestPipeline:
             batch_subject_id=batch_subject,
             embeddings_by_text=embeddings_by_text,
         )
-        decisions_map = await self._reconciler.resolve_collisions(
-            plan.collisions, guild_id=guild_id
-        )
+        # SKIP_RECONCILE: near budget. Keep deterministic reinforces and direct
+        # adds; demote LLM collisions to adds rather than paying for judgment.
+        decisions_map: dict[int, tuple[ReconcileDecision, ...]] = {}
+        if not skip_reconcile:
+            decisions_map = await self._reconciler.resolve_collisions(
+                plan.collisions, guild_id=guild_id
+            )
 
         committed_records = []
         for record, proposal, _subject_id, _speaker_id in plan.reinforces:
