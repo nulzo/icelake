@@ -214,6 +214,42 @@ Recall does not call the LLM. Typical queries:
 | who likes movies | `graph.entity_stances("movies")` |
 | people connected to X | `graph.neighbors(x, depth=2)` |
 
+## What gets stored
+
+Everything hangs off facts. A fact is one sentence about a user or the
+server, stored in `dm_facts` against Discord IDs. The other tables exist to
+find facts and connect them.
+
+| Table | What it is | Why it exists |
+|---|---|---|
+| `dm_facts` | The memory itself, one row per fact | Read by everything |
+| `dm_vectors` | One embedding per fact | Semantic recall: "what has he been up to creatively" finds the SoundCloud fact |
+| `dm_entities` | Named things that are not Discord users (places, concepts, orgs, off-server people) | 30 facts about "the HOA" cluster on one node instead of scattered text |
+| `dm_entity_aliases` | Surface name to entity slug | "Koji Sushi" and "koji-sushi" resolve to the same node |
+| `dm_links` | One row per fact per node it touches | "Facts about the asker" is an index lookup, not a text scan |
+| `dm_relations` | Typed edges between nodes, like `x -friend_of-> y` | Powers `graph.between`, `entity_stances`, `neighbors` |
+
+Facts have a `subject_id` (the user the fact is about) or a null subject
+with `scope="server"` for guild-wide facts. Vectors, links, and relations
+all reference fact IDs, so purging a user cascades through every table.
+
+Links vs relations is the part people mix up. A link only says "this fact
+touches this user or entity". It carries no meaning by itself. A relation
+says "these two nodes have a typed relationship" and carries a verb,
+polarity, weight, and the fact IDs that support it. Links come from every
+stored fact. Relations only exist when extraction or a manual
+`facts.remember` call found an actual relationship.
+
+Entities vs aliases: the entity is the node, the alias is how you find it.
+`dm_entities` holds one row per thing (slug, display name, kind, and
+`linked_user_id` when the entity turns out to be a guild member).
+`dm_entity_aliases` maps names to that slug, so recall can go from a word in
+the message to every fact about the thing.
+
+Recall runs several channels over these tables (vector, keyword, links,
+baseline, entity, graph hop) and fuses the results. Facts are the payload.
+The rest are indexes over them.
+
 ## API
 
 ```python
