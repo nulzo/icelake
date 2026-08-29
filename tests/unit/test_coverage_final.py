@@ -7,11 +7,11 @@ from datetime import UTC, datetime
 
 import pytest
 
-from discord_memory.api.groups import AdminApi, GraphApi, IdentityApi
-from discord_memory.models.facts import SourceRef, SourceRole
-from discord_memory.models.identity import AliasSource
-from discord_memory.models.retrieval import ScoredFact
-from discord_memory.retrieval.injection import InjectionBuilder, snippet
+from icelake.api.groups import AdminApi, GraphApi, IdentityApi
+from icelake.models.facts import SourceRef, SourceRole
+from icelake.models.identity import AliasSource
+from icelake.models.retrieval import ScoredFact
+from icelake.retrieval.injection import InjectionBuilder, snippet
 from tests.conftest import ScriptedLLM, extraction_response
 
 GUILD = "500000000000000001"
@@ -21,7 +21,7 @@ BOB = "200000000000000002"
 
 def _fact_record(text: str, fact_id: str = "fct_c1", subject_id: str | None = ALICE, citations=()):
     now = datetime.now(UTC)
-    from discord_memory.models.facts import FactCategory, FactRecord
+    from icelake.models.facts import FactCategory, FactRecord
 
     return FactRecord(
         id=fact_id,
@@ -39,7 +39,7 @@ def _fact_record(text: str, fact_id: str = "fct_c1", subject_id: str | None = AL
 
 class TestGroupsSurface:
     async def test_identity_register_and_aliases(self) -> None:
-        from discord_memory.adapters.in_memory.store import InMemoryStore
+        from icelake.adapters.in_memory.store import InMemoryStore
 
         store = InMemoryStore()
         api = IdentityApi(store)
@@ -50,7 +50,7 @@ class TestGroupsSurface:
         assert any(record.alias_norm == "alice w" for record in aliases)
 
     async def test_register_alias_rejects_empty(self) -> None:
-        from discord_memory.adapters.in_memory.store import InMemoryStore
+        from icelake.adapters.in_memory.store import InMemoryStore
 
         api = IdentityApi(InMemoryStore())
         await api.register_alias(GUILD, ALICE, "   ")  # no-op, no crash
@@ -120,7 +120,7 @@ class TestGroupsSurface:
 
 def event_factory_for(client, *, content: str, author_id: str, mentions: tuple[str, ...] = ()):
 
-    from discord_memory.models.events import MessageEvent
+    from icelake.models.events import MessageEvent
 
     return MessageEvent(
         message_id=f"msg-{abs(hash(content)) % 10**12}",
@@ -219,7 +219,7 @@ class TestRetrievalDegradation:
         await client.facts.remember(
             guild_id=GUILD, subject_id=ALICE, text="plays table tennis every lunch break"
         )
-        from discord_memory.models.retrieval import RecallQuery
+        from icelake.models.retrieval import RecallQuery
 
         result = await client.recall(
             RecallQuery(guild_id=GUILD, text="table tennis", subject_ids=(ALICE,))
@@ -343,19 +343,19 @@ class TestClientWorkerPaths:
         await client.close()
 
     async def test_worker_loop_survives_queue_errors(self, event_factory) -> None:
-        from discord_memory.adapters.in_memory.queue import InMemoryIngestQueue
+        from icelake.adapters.in_memory.queue import InMemoryIngestQueue
 
         class FlakyQueue(InMemoryIngestQueue):
             async def due_batch_keys(self, **kwargs):  # type: ignore[no-untyped-def]
                 raise RuntimeError("queue hiccup")
 
-        from discord_memory.config import MemoryConfig
+        from icelake.config import MemoryConfig
 
         config = MemoryConfig(
             storage="sqlite://:memory:",
             workers={"enabled": True, "count": 1, "poll_interval_seconds": 0.01},
         )
-        from discord_memory.api.client import DiscordMemory
+        from icelake.api.client import DiscordMemory
 
         queue = FlakyQueue()
         client = DiscordMemory(config, clock=None, llm=None, queue=queue)
@@ -386,7 +386,7 @@ class TestDiscordPyRemainingLines:
         pytest.importorskip("discord")
         from types import SimpleNamespace
 
-        from discord_memory.integrations.discord_py import setup_discord_memory
+        from icelake.integrations.discord_py import setup_discord_memory
         from tests.conftest import make_config
 
         listeners: dict[str, list] = {}
@@ -412,7 +412,7 @@ class TestDiscordPyRemainingLines:
 
 class TestSqliteMergeEntitiesRealMove:
     async def test_merge_moves_counts_and_aliases(self) -> None:
-        from discord_memory.adapters.sqlite.store import SqliteStore
+        from icelake.adapters.sqlite.store import SqliteStore
 
         store = SqliteStore("sqlite://:memory:")
         await store.setup()
@@ -429,7 +429,7 @@ class TestSqliteMergeEntitiesRealMove:
 
 class TestExtractionResidualBranches:
     async def test_noop_decision_without_target_allowed(self) -> None:
-        from discord_memory.models.operations import ReconcileOutput
+        from icelake.models.operations import ReconcileOutput
 
         output = ReconcileOutput.model_validate({"decisions": [{"kind": "noop"}]})
         assert output.decisions[0].target_id is None

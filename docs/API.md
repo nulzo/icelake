@@ -1,4 +1,4 @@
-# discord-memory: Consumer API Contract
+# icelake: Consumer API Contract
 
 Normative specification of the public interface. Implementation plan lives in
 [`PLAN.md`](./PLAN.md); where the two differ, this document wins for anything
@@ -36,7 +36,7 @@ the surface itself: **simple things simple, hard things possible**.
 ## Part 2 — Import Map (the entire public surface)
 
 ```python
-from discord_memory import (
+from icelake import (
     # lifecycle + facade
     DiscordMemory,
     MemoryConfig,
@@ -63,8 +63,8 @@ from discord_memory import (
     SubjectNotAllowedError,
 )
 
-# integrations extra (`pip install discord-memory[discord]`)
-from discord_memory.integrations import setup_discord_memory
+# integrations extra (`pip install icelake[discord]`)
+from icelake.integrations import setup_discord_memory
 ```
 
 That is the complete root namespace. If it isn't importable from here, it isn't
@@ -498,8 +498,8 @@ explicitly avoided).
 ## Part 15 — Integration Extra (discord.py)
 
 ```python
-# pip install discord-memory[discord]
-from discord_memory.integrations import setup_discord_memory
+# pip install icelake[discord]
+from icelake.integrations import setup_discord_memory
 
 memory = await setup_discord_memory(
     bot,                                  # wires listeners: on_message→observe,
@@ -551,7 +551,7 @@ lines total, no core dependencies on discord.py (core tests never import it).
 ### 18.1 Ten-line quickstart
 
 ```python
-from discord_memory import DiscordMemory, MemoryConfig, MessageEvent
+from icelake import DiscordMemory, MemoryConfig, MessageEvent
 
 memory = DiscordMemory(MemoryConfig(storage="sqlite:///m.db", llm="openai://KEY"))
 async with memory:

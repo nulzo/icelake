@@ -1,4 +1,4 @@
-# discord-memory — Complete Usage Guide
+# icelake — Complete Usage Guide
 
 Everything a bot developer needs to run, query, and operate the memory layer.
 For design rationale see [`PLAN.md`](./PLAN.md); for the normative API contract
@@ -10,7 +10,7 @@ see [`API.md`](./API.md). Runnable code lives in [`/examples`](../examples/).
 
 ```
                     ┌──────────────────────────────────────────┐
-   your bot         │              discord-memory               │
+   your bot         │                 icelake                  │
 ──────────────────►│                                          │
  observe(event)    │  queue ──► lease worker ──► extraction    │──► facts (bitemporal)
                    │  (batching)  ▲ gates      ▲ reconcile     │    embeddings
@@ -41,14 +41,14 @@ capability groups: `memory.facts`, `memory.identity`, `memory.graph`,
 ## 2. Setup
 
 ```bash
-pip install discord-memory                # SQLite + hashing embeddings (zero services)
-pip install "discord-memory[mongo]"       # MongoDB backend
-pip install "discord-memory[discord]"     # discord.py helpers
-pip install "discord-memory[local-embeddings]"  # real local semantic embeddings
+pip install icelake                # SQLite + hashing embeddings (zero services)
+pip install "icelake[mongo]"       # MongoDB backend
+pip install "icelake[discord]"     # discord.py helpers
+pip install "icelake[local-embeddings]"  # real local semantic embeddings
 ```
 
 ```python
-from discord_memory import MemoryConfig
+from icelake import MemoryConfig
 
 config = MemoryConfig(
     # storage: sqlite file | mongodb://… ([mongo] extra)
@@ -372,7 +372,7 @@ free and never blocked.
 ## 11. Events
 
 ```python
-from discord_memory import BatchCompleted, FactCommitted
+from icelake import BatchCompleted, FactCommitted
 
 @memory.events.on(BatchCompleted)
 def metrics(evt: BatchCompleted) -> None:

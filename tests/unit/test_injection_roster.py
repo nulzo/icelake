@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from discord_memory.ingest.roster import Roster
-from discord_memory.models.facts import FactCategory, FactRecord
-from discord_memory.models.graph import EdgeKind, LinkRow, NodeType
-from discord_memory.models.retrieval import ScoredFact
-from discord_memory.retrieval.injection import (
+from icelake.ingest.roster import Roster
+from icelake.models.facts import FactCategory, FactRecord
+from icelake.models.graph import EdgeKind, LinkRow, NodeType
+from icelake.models.retrieval import ScoredFact
+from icelake.retrieval.injection import (
     InjectionBuilder,
     estimate_tokens,
     message_url,
@@ -155,7 +155,7 @@ class TestChannels:
         await client.observe(event)
         await client.flush()
 
-        from discord_memory.retrieval.channels import links_channel
+        from icelake.retrieval.channels import links_channel
 
         output = await links_channel(
             store=client._store,
@@ -167,7 +167,7 @@ class TestChannels:
         await client.close()
 
     async def test_vector_channel_empty_without_embedder(self):
-        from discord_memory.retrieval.channels import vector_channel
+        from icelake.retrieval.channels import vector_channel
 
         output = await vector_channel(
             vectors=None,
@@ -199,7 +199,7 @@ class TestChannels:
                 ),
             )
         )
-        from discord_memory.retrieval.channels import entity_channel
+        from icelake.retrieval.channels import entity_channel
 
         output = await entity_channel(
             store=client._store, guild_id="g1", query_text="who plays chess", limit=10

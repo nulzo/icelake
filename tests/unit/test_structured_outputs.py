@@ -13,14 +13,14 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
-from discord_memory.adapters.llm_openai_compat import (
+from icelake.adapters.llm_openai_compat import (
     OpenAICompatLLM,
     _strict_schema,
 )
-from discord_memory.adapters.llm_openrouter import OpenRouterLLM
-from discord_memory.config import LlmConfig
-from discord_memory.errors import LlmCapabilityError
-from discord_memory.ports.llm import ChatRequest, LlmMessage
+from icelake.adapters.llm_openrouter import OpenRouterLLM
+from icelake.config import LlmConfig
+from icelake.errors import LlmCapabilityError
+from icelake.ports.llm import ChatRequest, LlmMessage
 
 
 def _client(transport, *, base_url: str = "https://llm.test/v1") -> OpenAICompatLLM:

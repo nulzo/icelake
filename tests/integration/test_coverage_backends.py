@@ -19,20 +19,20 @@ def _mongo_available() -> bool:
 @pytest.fixture(params=["in_memory", "sqlite", "mongo"])
 async def store(request):
     if request.param == "in_memory":
-        from discord_memory.adapters.in_memory.store import InMemoryStore
+        from icelake.adapters.in_memory.store import InMemoryStore
 
         backend = InMemoryStore()
     elif request.param == "sqlite":
-        from discord_memory.adapters.sqlite.store import SqliteStore
+        from icelake.adapters.sqlite.store import SqliteStore
 
         backend = SqliteStore("sqlite://:memory:")
     else:
         pytest.importorskip("pymongo")
         if not _mongo_available():
             pytest.skip("no MongoDB at localhost:27017")
-        from discord_memory.adapters.mongo import MongoStore
+        from icelake.adapters.mongo import MongoStore
 
-        backend = MongoStore("mongodb://127.0.0.1:27017/discord_memory_maint_test")
+        backend = MongoStore("mongodb://127.0.0.1:27017/icelake_maint_test")
     await backend.setup()
     if request.param == "mongo":
         for collection in (
@@ -55,7 +55,7 @@ async def store(request):
 def _seed_fact(
     store, fact_id: str, *, expires_in: timedelta | None, tier: str = "mid_term"
 ) -> None:
-    from discord_memory.models.facts import (
+    from icelake.models.facts import (
         Attribution,
         AttributionType,
         FactCategory,
@@ -118,7 +118,7 @@ class TestMaintenanceAcrossBackends:
     async def test_prune_enforces_caps(self, store, fixed_clock) -> None:
         from datetime import timedelta
 
-        from discord_memory.models.facts import MemoryTier
+        from icelake.models.facts import MemoryTier
 
         for index in range(4):
             record = _fact(f"cap{index}", expires_at=None)
@@ -162,7 +162,7 @@ def _fact(fact_id: str, *, expires_at=None):
     """Build a SELF-attributed mid-tier seed fact."""
     from datetime import datetime as dt
 
-    from discord_memory.models.facts import (
+    from icelake.models.facts import (
         Attribution,
         AttributionType,
         FactCategory,
@@ -193,11 +193,11 @@ class TestMongoQueueEdges:
     async def test_release_requeue_recent_counts(self) -> None:
         from pymongo import AsyncMongoClient
 
-        from discord_memory.adapters.mongo.queue import MongoIngestQueue
-        from discord_memory.ports.queue import BatchKey, StoredMessage
+        from icelake.adapters.mongo.queue import MongoIngestQueue
+        from icelake.ports.queue import BatchKey, StoredMessage
 
         client = AsyncMongoClient("mongodb://127.0.0.1:27017", serverSelectionTimeoutMS=3000)
-        db = client["discord_memory_queue_edge"]
+        db = client["icelake_queue_edge"]
         await db["dm_messages"].delete_many({})
         await db["dm_batch_leases"].delete_many({})
         queue = MongoIngestQueue(db)
@@ -253,9 +253,9 @@ class TestMongoQueueEdges:
 class TestMongoStoreEdges:
     async def test_list_cursor_search_branches(self) -> None:
 
-        from discord_memory.adapters.mongo import MongoStore
+        from icelake.adapters.mongo import MongoStore
 
-        store = MongoStore("mongodb://127.0.0.1:27017/discord_memory_edges")
+        store = MongoStore("mongodb://127.0.0.1:27017/icelake_edges")
         await store.setup()
         for collection in ("dm_facts", "dm_aliases", "dm_links"):
             await store.db[collection].delete_many({})
@@ -274,9 +274,9 @@ class TestMongoStoreEdges:
 
     async def test_transition_missing_returns_none(self) -> None:
 
-        from discord_memory.adapters.mongo import MongoStore
+        from icelake.adapters.mongo import MongoStore
 
-        store = MongoStore("mongodb://127.0.0.1:27017/discord_memory_edges")
+        store = MongoStore("mongodb://127.0.0.1:27017/icelake_edges")
         await store.setup()
         result = await store.transition_fact(
             "g",

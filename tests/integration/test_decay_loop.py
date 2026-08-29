@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from discord_memory import DiscordMemory, RecallQuery
+from icelake import DiscordMemory, RecallQuery
 from tests.conftest import make_config
 
 GUILD = "500000000000000001"
@@ -15,7 +15,7 @@ def _memory_with_decay(*, enabled: bool):
     config = make_config(
         retrieval={"reinforce_on_recall": enabled},
     )
-    from discord_memory.api.client import DiscordMemory
+    from icelake.api.client import DiscordMemory
 
     memory = DiscordMemory(config, llm=None)
     return memory
@@ -101,7 +101,7 @@ import pytest as _pytest  # noqa: E402
 @_pytest.mark.parametrize("enabled", [True, False])
 async def test_touch_is_batched_single_statement(enabled: bool) -> None:
     """touch_facts port method exists on all backends (conformance guard)."""
-    from discord_memory.adapters.in_memory.store import InMemoryStore
+    from icelake.adapters.in_memory.store import InMemoryStore
 
     store = InMemoryStore()
     now = datetime.now(UTC)

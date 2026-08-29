@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from discord_memory import DiscordMemory
+from icelake import DiscordMemory
 from tests.conftest import (
     ScriptedLLM,
     extraction_response,
@@ -34,8 +34,8 @@ class TestAtomicLeases:
     """P0-1/2/3: one worker per key, theft impossible, heartbeat holds."""
 
     async def test_concurrent_claim_single_winner(self) -> None:
-        from discord_memory.adapters.sqlite.connection import SqliteConnection
-        from discord_memory.adapters.sqlite.queue import SqliteIngestQueue
+        from icelake.adapters.sqlite.connection import SqliteConnection
+        from icelake.adapters.sqlite.queue import SqliteIngestQueue
 
         conn = SqliteConnection("sqlite://:memory:")
         await conn.connect()
@@ -44,7 +44,7 @@ class TestAtomicLeases:
         now = datetime.now(UTC)
         for i in range(6):
             await queue.put_message(_msg(f"m{i}", now))
-        key = __import__("discord_memory.ports.queue", fromlist=["BatchKey"]).BatchKey(
+        key = __import__("icelake.ports.queue", fromlist=["BatchKey"]).BatchKey(
             guild_id="g1",
             subject_key="u1",
         )
@@ -62,9 +62,9 @@ class TestAtomicLeases:
         assert len(losers) == 3
 
     async def test_heartbeat_holds_past_original_expiry(self) -> None:
-        from discord_memory.adapters.sqlite.connection import SqliteConnection
-        from discord_memory.adapters.sqlite.queue import SqliteIngestQueue
-        from discord_memory.ports.queue import BatchKey
+        from icelake.adapters.sqlite.connection import SqliteConnection
+        from icelake.adapters.sqlite.queue import SqliteIngestQueue
+        from icelake.ports.queue import BatchKey
 
         conn = SqliteConnection("sqlite://:memory:")
         await conn.connect()
@@ -95,9 +95,9 @@ class TestAtomicLeases:
         """Regression: a concurrent same-owner claim must NOT re-read an
         in-flight batch (the old SELECT-by-owner returned it and two workers
         extracted/committed the same messages twice)."""
-        from discord_memory.adapters.sqlite.connection import SqliteConnection
-        from discord_memory.adapters.sqlite.queue import SqliteIngestQueue
-        from discord_memory.ports.queue import BatchKey
+        from icelake.adapters.sqlite.connection import SqliteConnection
+        from icelake.adapters.sqlite.queue import SqliteIngestQueue
+        from icelake.ports.queue import BatchKey
 
         conn = SqliteConnection("sqlite://:memory:")
         await conn.connect()
@@ -122,9 +122,9 @@ class TestAtomicLeases:
         assert third.messages == ()
 
     async def test_stolen_owner_cannot_complete(self) -> None:
-        from discord_memory.adapters.sqlite.connection import SqliteConnection
-        from discord_memory.adapters.sqlite.queue import SqliteIngestQueue
-        from discord_memory.ports.queue import BatchKey
+        from icelake.adapters.sqlite.connection import SqliteConnection
+        from icelake.adapters.sqlite.queue import SqliteIngestQueue
+        from icelake.ports.queue import BatchKey
 
         conn = SqliteConnection("sqlite://:memory:")
         await conn.connect()
@@ -148,7 +148,7 @@ class TestAtomicLeases:
 
 
 def _msg(message_id: str, now: datetime):
-    from discord_memory.ports.queue import StoredMessage
+    from icelake.ports.queue import StoredMessage
 
     return StoredMessage(
         message_id=message_id,
@@ -165,15 +165,15 @@ class TestMongoLeaseParity:
     async def test_mongo_atomic_claim_contention(self) -> None:
         from datetime import datetime as dt
 
-        from discord_memory.adapters.mongo import MongoStore
+        from icelake.adapters.mongo import MongoStore
 
-        store = MongoStore("mongodb://127.0.0.1:27017/discord_memory_lease_test")
+        store = MongoStore("mongodb://127.0.0.1:27017/icelake_lease_test")
         await store.setup()
         await store.db["dm_messages"].delete_many({})
         await store.db["dm_batch_leases"].delete_many({})
         for i in range(4):
             await store.queue.put_message(_msg(f"ml{i}", dt.now(UTC)))
-        key = __import__("discord_memory.ports.queue", fromlist=["BatchKey"]).BatchKey(
+        key = __import__("icelake.ports.queue", fromlist=["BatchKey"]).BatchKey(
             guild_id="g1",
             subject_key="u1",
         )
@@ -194,7 +194,7 @@ class TestMongoLeaseParity:
 class TestPurgeCompleteness:
     async def test_sqlite_purge_deletes_vectors(self, tmp_path) -> None:
         """P0-6 regression: purged users' embeddings must not persist."""
-        from discord_memory.api.client import DiscordMemory
+        from icelake.api.client import DiscordMemory
         from tests.conftest import make_config
 
         memory = DiscordMemory(make_config(), llm=None)
@@ -217,8 +217,8 @@ class TestPurgeCompleteness:
 class TestTopStrengthBeyondCap:
     async def test_subject_anchors_found_past_global_cap(self) -> None:
         """P0-7 regression: post-LIMIT filtering starved subjects."""
-        from discord_memory.adapters.in_memory.store import InMemoryStore
-        from discord_memory.models.facts import (
+        from icelake.adapters.in_memory.store import InMemoryStore
+        from icelake.models.facts import (
             Attribution,
             AttributionType,
             FactCategory,
@@ -273,16 +273,16 @@ class TestObserveNeverRaises:
     async def test_storage_failure_returns_rejected_receipt(self) -> None:
         class ExplodingQueue(
             __import__(
-                "discord_memory.adapters.in_memory.queue",
+                "icelake.adapters.in_memory.queue",
                 fromlist=["InMemoryIngestQueue"],
             ).InMemoryIngestQueue
         ):
             async def put_message(self, message):
                 raise RuntimeError("disk full")
 
-        from discord_memory import MessageEvent
-        from discord_memory.api.client import DiscordMemory
-        from discord_memory.models.events import ObserveStatus, RejectReason
+        from icelake import MessageEvent
+        from icelake.api.client import DiscordMemory
+        from icelake.models.events import ObserveStatus, RejectReason
         from tests.conftest import make_config
 
         memory = DiscordMemory(make_config(), llm=None, queue=ExplodingQueue())
@@ -303,8 +303,8 @@ class TestObserveNeverRaises:
 
 class TestIdentityGrounding:
     async def test_backfill_via_fixture(self, fixed_clock) -> None:
-        from discord_memory.api.client import DiscordMemory
-        from discord_memory.models.identity import AliasSource
+        from icelake.api.client import DiscordMemory
+        from icelake.models.identity import AliasSource
 
         memory = DiscordMemory(make_config(), clock=fixed_clock, llm=None)
         await memory.start()
@@ -373,8 +373,8 @@ class TestIdentityGrounding:
 
 class TestExtractNow:
     async def test_extract_now_commits_immediately(self) -> None:
-        from discord_memory import MessageEvent
-        from discord_memory.api.client import DiscordMemory
+        from icelake import MessageEvent
+        from icelake.api.client import DiscordMemory
         from tests.conftest import extraction_response
 
         llm = ScriptedLLM(
@@ -420,7 +420,7 @@ class TestTemporalRecall:
         """Time travel: facts superseded TODAY were still valid LAST MONTH."""
         from datetime import timedelta
 
-        from discord_memory.models.retrieval import RecallQuery
+        from icelake.models.retrieval import RecallQuery
 
         llm = ScriptedLLM(
             {
@@ -487,7 +487,7 @@ class TestTemporalRecall:
 
 def event_factory_stub(client):
     """Minimal event builder bound to this module's constants."""
-    from discord_memory.models.events import MessageEvent
+    from icelake.models.events import MessageEvent
 
     def _build(*, author_id: str, content: str) -> MessageEvent:
         return MessageEvent(
@@ -508,8 +508,8 @@ class TestLazyStartAndClosedGuard:
     raise, and a fresh client must self-initialize on first use."""
 
     async def test_observe_autostarts_storage(self) -> None:
-        from discord_memory import MessageEvent
-        from discord_memory.api.client import DiscordMemory
+        from icelake import MessageEvent
+        from icelake.api.client import DiscordMemory
         from tests.conftest import make_config
 
         memory = DiscordMemory(make_config(workers={"enabled": False}), llm=None)
@@ -547,9 +547,9 @@ class TestLazyStartAndClosedGuard:
 
     async def test_observe_after_close_returns_rejected_not_crash(self) -> None:
         """After close(), the listener path gets a REJECTED receipt — no raise."""
-        from discord_memory import MessageEvent
-        from discord_memory.api.client import DiscordMemory
-        from discord_memory.models.events import ObserveStatus, RejectReason
+        from icelake import MessageEvent
+        from icelake.api.client import DiscordMemory
+        from icelake.models.events import ObserveStatus, RejectReason
         from tests.conftest import make_config
 
         memory = DiscordMemory(make_config(workers={"enabled": False}), llm=None)
@@ -577,8 +577,8 @@ class TestReportedCrashRegression:
     async def test_observe_without_start_autostarts_cleanly(self) -> None:
         from datetime import UTC
 
-        from discord_memory import MessageEvent
-        from discord_memory.api.client import DiscordMemory
+        from icelake import MessageEvent
+        from icelake.api.client import DiscordMemory
         from tests.conftest import make_config
 
         memory = DiscordMemory(
@@ -606,8 +606,8 @@ class TestReportedCrashRegression:
 
     async def test_consent_query_on_unstarted_store_raises_typed_error(self) -> None:
         """Raw store access pre-connect raises our typed error, not AssertionError."""
-        from discord_memory.adapters.sqlite.store import SqliteStore
-        from discord_memory.errors import StorageUnavailableError
+        from icelake.adapters.sqlite.store import SqliteStore
+        from icelake.errors import StorageUnavailableError
 
         store = SqliteStore("sqlite://:memory:")
         with pytest.raises(StorageUnavailableError):

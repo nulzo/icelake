@@ -58,7 +58,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from discord_memory import (
+from icelake import (
     BatchCompleted,
     ChannelName,
     CommandAction,
@@ -72,7 +72,7 @@ from discord_memory import (
     RecallQuery,
     Scope,
 )
-from discord_memory.models.admin import MeterSnapshot
+from icelake.models.admin import MeterSnapshot
 
 GUILD = "900000000000000001"
 GUILD2 = "900000000000000099"  # isolation probe; only the multitenancy phase uses it

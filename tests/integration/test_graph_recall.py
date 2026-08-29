@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from discord_memory.models.retrieval import (
+from icelake.models.retrieval import (
     CHANNELS_DISCOVERY,
     RecallQuery,
     channels,
@@ -85,12 +85,12 @@ class TestGraphHopChannel:
                 text="movies",
                 subject_ids=(ALICE,),
                 scope=__import__(
-                    "discord_memory.models.retrieval", fromlist=["Scope"]
+                    "icelake.models.retrieval", fromlist=["Scope"]
                 ).Scope.SUBJECTS,
                 channels=frozenset(
                     {
                         __import__(
-                            "discord_memory.models.retrieval", fromlist=["ChannelName"]
+                            "icelake.models.retrieval", fromlist=["ChannelName"]
                         ).ChannelName.GRAPH_HOP
                     }
                 ),
@@ -117,7 +117,7 @@ class TestSimilarUsers:
 
 class TestDiscoveryChannelSet:
     async def test_discovery_includes_hop(self) -> None:
-        from discord_memory.models.retrieval import ChannelName
+        from icelake.models.retrieval import ChannelName
 
         assert ChannelName.GRAPH_HOP in CHANNELS_DISCOVERY
         custom = channels(ChannelName.GRAPH_HOP)

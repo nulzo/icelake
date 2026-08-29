@@ -7,15 +7,15 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
-from discord_memory.adapters.embedders import HashingEmbedder
-from discord_memory.adapters.llm_openai_compat import OpenAICompatLLM
-from discord_memory.adapters.llm_openrouter import OpenRouterLLM
-from discord_memory.adapters.meter import InMemoryMeter
-from discord_memory.config import BudgetsConfig, EmbeddingsConfig, EmbeddingsProvider, LlmConfig
-from discord_memory.errors import ConfigError, LlmCapabilityError
-from discord_memory.models.admin import BudgetStep
-from discord_memory.ports.clock import FixedClock
-from discord_memory.ports.llm import ChatRequest, ChatResponse, LlmMessage
+from icelake.adapters.embedders import HashingEmbedder
+from icelake.adapters.llm_openai_compat import OpenAICompatLLM
+from icelake.adapters.llm_openrouter import OpenRouterLLM
+from icelake.adapters.meter import InMemoryMeter
+from icelake.config import BudgetsConfig, EmbeddingsConfig, EmbeddingsProvider, LlmConfig
+from icelake.errors import ConfigError, LlmCapabilityError
+from icelake.models.admin import BudgetStep
+from icelake.ports.clock import FixedClock
+from icelake.ports.llm import ChatRequest, ChatResponse, LlmMessage
 
 
 class TestHashingEmbedder:
@@ -28,7 +28,7 @@ class TestHashingEmbedder:
         assert norm == pytest.approx(1.0, abs=1e-3)
 
     async def test_similar_text_scores_higher_than_unrelated(self) -> None:
-        from discord_memory.adapters.in_memory.vectors import cosine
+        from icelake.adapters.in_memory.vectors import cosine
 
         embedder = HashingEmbedder(256)
         base, similar, unrelated = await embedder.embed(
@@ -56,7 +56,7 @@ def test_local_embedder_extra_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     import importlib.util
 
     monkeypatch.setattr(importlib.util, "find_spec", lambda _name: None)
-    from discord_memory.adapters.embedders import build_embedder
+    from icelake.adapters.embedders import build_embedder
 
     with pytest.raises(ConfigError, match="local-embeddings"):
         build_embedder(EmbeddingsConfig(provider=EmbeddingsProvider.LOCAL))
@@ -109,7 +109,7 @@ class TestInMemoryMeter:
 
 class TestMeteredLLM:
     async def test_records_usage_per_purpose(self) -> None:
-        from discord_memory.adapters.meter import MeteredLLM
+        from icelake.adapters.meter import MeteredLLM
 
         class _Fake:
             @property
@@ -136,9 +136,9 @@ class TestMeteredLLM:
 
 class TestCachedLLM:
     async def test_hit_replays_without_inner_call_and_zero_tokens(self) -> None:
-        from discord_memory.adapters.llm_cache import CachedLLM
-        from discord_memory.adapters.sqlite.connection import SqliteConnection
-        from discord_memory.adapters.sqlite.llm_cache import SqliteLlmCache
+        from icelake.adapters.llm_cache import CachedLLM
+        from icelake.adapters.sqlite.connection import SqliteConnection
+        from icelake.adapters.sqlite.llm_cache import SqliteLlmCache
 
         calls = {"n": 0}
 
@@ -166,7 +166,7 @@ class TestCachedLLM:
         await db.close()
 
     async def test_distinct_requests_miss(self) -> None:
-        from discord_memory.adapters.llm_cache import CachedLLM
+        from icelake.adapters.llm_cache import CachedLLM
 
         class _Fake:
             @property

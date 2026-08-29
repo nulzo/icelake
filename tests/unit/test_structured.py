@@ -6,8 +6,8 @@ import json
 
 from pydantic import BaseModel
 
-from discord_memory.ports.llm import ChatRequest, LlmMessage
-from discord_memory.structured import complete_structured
+from icelake.ports.llm import ChatRequest, LlmMessage
+from icelake.structured import complete_structured
 from tests.conftest import ScriptedLLM
 
 

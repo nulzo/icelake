@@ -7,13 +7,13 @@ from datetime import UTC, datetime
 
 import pytest
 
-from discord_memory.adapters.in_memory.store import InMemoryStore
-from discord_memory.adapters.in_memory.vectors import InMemoryVectorIndex
-from discord_memory.config import ExtractionConfig
-from discord_memory.ingest.reconcile import Reconciler
-from discord_memory.models.facts import FactRecord
-from discord_memory.models.operations import ProposedFact, ReconcileKind
-from discord_memory.ports.vectors import VectorItem
+from icelake.adapters.in_memory.store import InMemoryStore
+from icelake.adapters.in_memory.vectors import InMemoryVectorIndex
+from icelake.config import ExtractionConfig
+from icelake.ingest.reconcile import Reconciler
+from icelake.models.facts import FactRecord
+from icelake.models.operations import ProposedFact, ReconcileKind
+from icelake.ports.vectors import VectorItem
 from tests.conftest import ScriptedLLM
 
 GUILD = "g1"
@@ -245,7 +245,7 @@ class TestBatchedResolve:
 
 @pytest.mark.parametrize("kind", ["update", "invalidate"])
 def test_wire_schema_accepts_integer_target_ids(kind: str) -> None:
-    from discord_memory.models.operations import ReconcileDecision
+    from icelake.models.operations import ReconcileDecision
 
     decision = ReconcileDecision.model_validate(
         {"kind": kind, "target_id": 7, "candidate_index": 0}

@@ -1,4 +1,4 @@
-# discord-memory
+# icelake
 
 Accurate, scalable, cost-effective **agentic memory for Discord bots** — ChatGPT/Claude-style
 memory of your users, hardened against cross-user attribution errors, working across every
@@ -19,10 +19,10 @@ member of a server.
 ## Install
 
 ```bash
-pip install discord-memory                    # core (SQLite backend, hashing embedder)
-pip install "discord-memory[discord]"         # + discord.py integration
-pip install "discord-memory[mongo]"           # + MongoDB backend (PyMongo Async)
-pip install "discord-memory[local-embeddings]"# + sentence-transformers embeddings
+pip install icelake                    # core (SQLite backend, hashing embedder)
+pip install "icelake[discord]"         # + discord.py integration
+pip install "icelake[mongo]"           # + MongoDB backend (PyMongo Async)
+pip install "icelake[local-embeddings]"# + sentence-transformers embeddings
 ```
 
 Requires Python ≥ 3.12.
@@ -33,7 +33,7 @@ Requires Python ≥ 3.12.
 import asyncio
 from datetime import UTC, datetime
 
-from discord_memory import DiscordMemory, MemoryConfig, MessageEvent
+from icelake import DiscordMemory, MemoryConfig, MessageEvent
 
 
 async def main() -> None:
@@ -147,7 +147,7 @@ if command.action == "remember":
 Manual facts accept graph participation too:
 
 ```python
-from discord_memory.models.operations import ProposedRelation
+from icelake.models.operations import ProposedRelation
 
 await memory.facts.remember(
     guild_id=guild_id, subject_id=bob_id,
@@ -340,10 +340,10 @@ Design: [`docs/PLAN.md`](docs/PLAN.md) · Roadmap: [`docs/ROADMAP.md`](docs/ROAD
 ## discord.py integration
 
 ```python
-# pip install discord-memory[discord]
+# pip install icelake[discord]
 from discord.ext import commands
-from discord_memory import MemoryConfig
-from discord_memory.integrations import setup_discord_memory
+from icelake import MemoryConfig
+from icelake.integrations import setup_discord_memory
 
 config = MemoryConfig(
     storage="sqlite:///bot-memory.db",
@@ -399,7 +399,7 @@ Unknown keys raise immediately — typo protection by construction.
 |---|---|---|
 | **Hashing** (default) | `"hashing"` | Tests, zero-dependency demos, deterministic CI |
 | **Hosted** | `"openai://$KEY@openrouter.ai/api/v1?model=openai/text-embedding-3-small"` | Production bots already on OpenRouter/OpenAI |
-| **Local** | `"local"` | Air-gapped or no embedding API cost (`pip install discord-memory[local-embeddings]`) |
+| **Local** | `"local"` | Air-gapped or no embedding API cost (`pip install icelake[local-embeddings]`) |
 
 Embeddings power **semantic recall**, **reconcile collision detection** (paraphrase → reinforce
 instead of duplicate ADD), and consolidation sanity checks. Cosine similarity is compared against
@@ -453,7 +453,7 @@ New backends must pass the executable conformance suite
 
 ```bash
 uv sync --group dev
-uv run pytest tests/ -q --cov=discord_memory   # ≥90% coverage enforced
+uv run pytest tests/ -q --cov=icelake   # ≥90% coverage enforced
 uv run ruff check src tests && uv run ruff format --check src tests
 uv run mypy                                    # strict mode
 ```

@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from discord_memory import DiscordMemory
-from discord_memory.models.events import ObserveStatus
+from icelake import DiscordMemory
+from icelake.models.events import ObserveStatus
 from tests.conftest import ScriptedLLM, extraction_response
 
 GUILD = "500000000000000001"
@@ -173,7 +173,7 @@ class TestCrossUserBleed:
         for subject in (CAROL, ALICE):
             result = await client.recall(
                 __import__(
-                    "discord_memory.models.retrieval",
+                    "icelake.models.retrieval",
                     fromlist=["RecallQuery"],
                 ).RecallQuery(guild_id=GUILD, text="cheating cards", subject_ids=(subject,))
             )
@@ -256,7 +256,7 @@ class TestConsentLifecycle:
         # Recall also excludes opted-out subjects
         result = await client.recall(
             __import__(
-                "discord_memory.models.retrieval",
+                "icelake.models.retrieval",
                 fromlist=["RecallQuery"],
             ).RecallQuery(guild_id=GUILD, text="hiking mountains", subject_ids=(ALICE,))
         )
@@ -327,7 +327,7 @@ class TestTemporalRecallE2E:
         # Present recall: gone
         now_result = await client.recall(
             __import__(
-                "discord_memory.models.retrieval",
+                "icelake.models.retrieval",
                 fromlist=["RecallQuery"],
             ).RecallQuery(guild_id=GUILD, text="chicago", subject_ids=(ALICE,))
         )
@@ -336,7 +336,7 @@ class TestTemporalRecallE2E:
         # Point-in-time before invalidation: still visible
         past_result = await client.recall(
             __import__(
-                "discord_memory.models.retrieval",
+                "icelake.models.retrieval",
                 fromlist=["RecallQuery"],
             ).RecallQuery(
                 guild_id=GUILD,

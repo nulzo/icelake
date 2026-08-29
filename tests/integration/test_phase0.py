@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from discord_memory import DiscordMemory, MessageEvent
-from discord_memory.models.events import IgnoreReason
-from discord_memory.models.facts import AttributionType
+from icelake import DiscordMemory, MessageEvent
+from icelake.models.events import IgnoreReason
+from icelake.models.facts import AttributionType
 from tests.conftest import ScriptedLLM, extraction_response, make_config
 
 GUILD = "500000000000000001"
@@ -69,8 +69,8 @@ class TestAttributionTypes:
     async def test_queue_capacity_enforcement(self) -> None:
         from datetime import datetime as dt
 
-        from discord_memory.adapters.in_memory.queue import InMemoryIngestQueue
-        from discord_memory.ports.queue import StoredMessage
+        from icelake.adapters.in_memory.queue import InMemoryIngestQueue
+        from icelake.ports.queue import StoredMessage
 
         queue = InMemoryIngestQueue()
         now = dt.now(UTC)
@@ -155,8 +155,8 @@ ALICE = "100000000000000001"
 
 class TestQueueCapacity:
     async def test_capacity_returns_rejected_receipt(self) -> None:
-        from discord_memory.api.client import DiscordMemory
-        from discord_memory.models.events import ObserveStatus, RejectReason
+        from icelake.api.client import DiscordMemory
+        from icelake.models.events import ObserveStatus, RejectReason
         from tests.conftest import make_config
 
         memory = DiscordMemory(
@@ -213,7 +213,7 @@ class TestQueueCapacity:
 
 class TestStoreRawMessagesPrivacy:
     async def test_hash_only_mode_stores_no_raw_content(self) -> None:
-        from discord_memory.api.client import DiscordMemory
+        from icelake.api.client import DiscordMemory
         from tests.conftest import make_config
 
         memory = DiscordMemory(

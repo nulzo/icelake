@@ -6,20 +6,20 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from discord_memory.graph.relations import (
+from icelake.graph.relations import (
     compute_edge_weight,
     merge_edge,
     polarity_for_verb,
 )
-from discord_memory.graph.traversal import (
+from icelake.graph.traversal import (
     aggregate_stances,
     hop_neighbors,
     jaccard_similarity,
     node_key,
 )
-from discord_memory.models.graph import NodeType, Polarity, RelationEdge
-from discord_memory.models.retrieval import ChannelName
-from discord_memory.scoring.fusion import (
+from icelake.models.graph import NodeType, Polarity, RelationEdge
+from icelake.models.retrieval import ChannelName
+from icelake.scoring.fusion import (
     FusedCandidate,
     RankedChannel,
     RerankInputs,

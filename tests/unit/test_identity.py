@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import pytest
 
-from discord_memory.adapters.in_memory.store import InMemoryStore
-from discord_memory.identity.aliases import (
+from icelake.adapters.in_memory.store import InMemoryStore
+from icelake.identity.aliases import (
     alias_slug,
     is_valid_alias,
     normalize_alias,
     weight_for_source,
 )
-from discord_memory.identity.guards import BotGuard, ConsentPolicy, SubjectGate
-from discord_memory.identity.resolver import IdentityResolver
-from discord_memory.models.identity import AliasSource
+from icelake.identity.guards import BotGuard, ConsentPolicy, SubjectGate
+from icelake.identity.resolver import IdentityResolver
+from icelake.models.identity import AliasSource
 
 
 def test_normalize() -> None:

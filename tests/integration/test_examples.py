@@ -41,7 +41,7 @@ def test_prompt_context_separates_asker_and_referenced_users() -> None:
     import asyncio
     from datetime import UTC, datetime
 
-    from discord_memory import DiscordMemory, MemoryConfig, MessageEvent
+    from icelake import DiscordMemory, MemoryConfig, MessageEvent
     from tests.conftest import ScriptedLLM, extraction_response
 
     llm = ScriptedLLM(
@@ -111,7 +111,7 @@ def test_omni_style_turn_with_coreference_and_citations(
     import asyncio
     from datetime import UTC, datetime
 
-    from discord_memory import DiscordMemory, MemoryConfig, MessageEvent
+    from icelake import DiscordMemory, MemoryConfig, MessageEvent
     from tests.conftest import ScriptedLLM, extraction_response
 
     llm = ScriptedLLM(

@@ -494,62 +494,6 @@ nvtx = [
 ]
 
 [[package]]
-name = "discord-memory"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "httpx" },
-    { name = "pydantic" },
-]
-
-[package.optional-dependencies]
-discord = [
-    { name = "discord-py" },
-]
-local-embeddings = [
-    { name = "sentence-transformers" },
-]
-mongo = [
-    { name = "dnspython" },
-    { name = "pymongo" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "discord-py" },
-    { name = "mypy" },
-    { name = "pymongo" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pyyaml" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "discord-py", marker = "extra == 'discord'", specifier = ">=2.4" },
-    { name = "dnspython", marker = "extra == 'mongo'", specifier = ">=2.6" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "pydantic", specifier = ">=2.9" },
-    { name = "pymongo", marker = "extra == 'mongo'", specifier = ">=4.10" },
-    { name = "sentence-transformers", marker = "extra == 'local-embeddings'", specifier = ">=3.0" },
-]
-provides-extras = ["mongo", "local-embeddings", "discord"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "discord-py", specifier = ">=2.4" },
-    { name = "mypy", specifier = ">=1.13" },
-    { name = "pymongo", specifier = ">=4.10" },
-    { name = "pytest", specifier = ">=8.3" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
-    { name = "pytest-cov", specifier = ">=5.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "ruff", specifier = ">=0.8" },
-]
-
-[[package]]
 name = "discord-py"
 version = "2.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -757,6 +701,62 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c6/ae/222a91937ebee7f62c0ca8f5ee0afd97577caf24c0abb927d1f5c7e9f6d2/huggingface_hub-1.28.0.tar.gz", hash = "sha256:46a2e950c09234de54093d587d1675382f0d08dbd600d9fb599b5932f5b2c6cb", size = 959609, upload-time = "2026-08-18T12:27:15.101Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/51/0e/eafef18f1a75e125e68395db21131db0cf868a128ecd2fce69b4df6c584b/huggingface_hub-1.28.0-py3-none-any.whl", hash = "sha256:58a8bacb03072edfc38067065e9dc24bbb34805410fcd36a1632de0b329660bb", size = 793202, upload-time = "2026-08-18T12:27:12.719Z" },
+]
+
+[[package]]
+name = "icelake"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+discord = [
+    { name = "discord-py" },
+]
+local-embeddings = [
+    { name = "sentence-transformers" },
+]
+mongo = [
+    { name = "dnspython" },
+    { name = "pymongo" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "discord-py" },
+    { name = "mypy" },
+    { name = "pymongo" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "pyyaml" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "discord-py", marker = "extra == 'discord'", specifier = ">=2.4" },
+    { name = "dnspython", marker = "extra == 'mongo'", specifier = ">=2.6" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pydantic", specifier = ">=2.9" },
+    { name = "pymongo", marker = "extra == 'mongo'", specifier = ">=4.10" },
+    { name = "sentence-transformers", marker = "extra == 'local-embeddings'", specifier = ">=3.0" },
+]
+provides-extras = ["mongo", "local-embeddings", "discord"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "discord-py", specifier = ">=2.4" },
+    { name = "mypy", specifier = ">=1.13" },
+    { name = "pymongo", specifier = ">=4.10" },
+    { name = "pytest", specifier = ">=8.3" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "pytest-cov", specifier = ">=5.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "ruff", specifier = ">=0.8" },
 ]
 
 [[package]]

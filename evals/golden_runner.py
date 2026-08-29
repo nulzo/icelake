@@ -17,7 +17,7 @@ from pathlib import Path
 
 import yaml
 
-from discord_memory import DiscordMemory, MessageEvent
+from icelake import DiscordMemory, MessageEvent
 from tests.conftest import ScriptedLLM
 
 GOLDEN_DIR = Path(__file__).parent / "golden"

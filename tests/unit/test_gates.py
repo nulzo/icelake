@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from discord_memory.ingest.gates import (
+from icelake.ingest.gates import (
     batch_worth_extracting,
     confidence_gate,
     ephemeral_share_gate,

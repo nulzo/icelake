@@ -7,14 +7,14 @@ import json
 
 import pytest
 
-from discord_memory.api.classify import CommandAction, CommandClassifier
-from discord_memory.api.client import DiscordMemory
-from discord_memory.api.events import EventBus
-from discord_memory.config import MemoryConfig
-from discord_memory.consolidation.service import ConsolidationService, profile_summary_due
-from discord_memory.models.events import BatchCompleted, FactCommitted
-from discord_memory.models.facts import ProfileSummary
-from discord_memory.ports.queue import BatchKey
+from icelake.api.classify import CommandAction, CommandClassifier
+from icelake.api.client import DiscordMemory
+from icelake.api.events import EventBus
+from icelake.config import MemoryConfig
+from icelake.consolidation.service import ConsolidationService, profile_summary_due
+from icelake.models.events import BatchCompleted, FactCommitted
+from icelake.models.facts import ProfileSummary
+from icelake.ports.queue import BatchKey
 from tests.conftest import ScriptedLLM, extraction_response
 
 GUILD = "500000000000000001"
@@ -277,7 +277,7 @@ class TestClientPaths:
             "workers": {"enabled": False},
             "embeddings": "hashing",
         }
-        from discord_memory.config import MemoryConfig
+        from icelake.config import MemoryConfig
 
         config = MemoryConfig(
             **{
@@ -309,7 +309,7 @@ class DiscordMemoryWorkerHelper:
         import os
 
         os.environ.setdefault("X_TEST", "1")
-        from discord_memory.api.client import DiscordMemory
+        from icelake.api.client import DiscordMemory
 
         config = MemoryConfig(
             **{
@@ -344,8 +344,8 @@ class _FastClock:
 
 class TestPipelineBranches:
     async def test_budget_skip_extraction(self, make_client, event_factory) -> None:
-        from discord_memory.adapters.meter import InMemoryMeter
-        from discord_memory.config import BudgetsConfig
+        from icelake.adapters.meter import InMemoryMeter
+        from icelake.config import BudgetsConfig
 
         meter = InMemoryMeter(
             BudgetsConfig(guild_daily_prompt_tokens=10),
@@ -356,8 +356,8 @@ class TestPipelineBranches:
         client = make_client.__wrapped__(llm) if hasattr(make_client, "__wrapped__") else None
         del client
         # direct pipeline-level check via a fresh client with injected meter
-        from discord_memory.api.client import DiscordMemory
-        from discord_memory.config import MemoryConfig
+        from icelake.api.client import DiscordMemory
+        from icelake.config import MemoryConfig
 
         config = MemoryConfig(
             storage="sqlite://:memory:",

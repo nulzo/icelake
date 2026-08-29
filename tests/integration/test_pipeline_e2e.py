@@ -6,8 +6,8 @@ import asyncio
 import json
 from collections.abc import Sequence
 
-from discord_memory import DiscordMemory
-from discord_memory.models.events import BatchCompleted, FactCommitted
+from icelake import DiscordMemory
+from icelake.models.events import BatchCompleted, FactCommitted
 from tests.conftest import (
     ExplodingLLM,
     ScriptedLLM,
@@ -21,7 +21,7 @@ class CountingEmbedder:
     """Hashing embedder that records every call's batch shape."""
 
     def __init__(self) -> None:
-        from discord_memory.adapters.embedders import HashingEmbedder
+        from icelake.adapters.embedders import HashingEmbedder
 
         self._inner = HashingEmbedder(64)
         self.calls: list[tuple[str, ...]] = []
@@ -36,7 +36,7 @@ class CountingEmbedder:
 
 
 async def observe_and_flush(client, event_factory, **event_kwargs):
-    from discord_memory.models.events import ObserveStatus
+    from icelake.models.events import ObserveStatus
 
     event_kwargs.setdefault("content", "hey everyone, quick update from me today")
     event = event_factory(**event_kwargs)
@@ -77,7 +77,7 @@ class TestExtractionEndToEnd:
 
         result = await client.recall(
             __import__(
-                "discord_memory",
+                "icelake",
                 fromlist=["RecallQuery"],
             ).RecallQuery(
                 guild_id="500000000000000001", text="keyboards", subject_ids=("100000000000000001",)
@@ -111,7 +111,7 @@ class TestExtractionEndToEnd:
         await client.start()
         await observe_and_flush(client, event_factory)
         result = await client.recall(
-            __import__("discord_memory", fromlist=["RecallQuery"]).RecallQuery(
+            __import__("icelake", fromlist=["RecallQuery"]).RecallQuery(
                 guild_id="500000000000000001",
                 text="keyboards",
                 subject_ids=("100000000000000001",),
@@ -213,7 +213,7 @@ class TestExtractionEndToEnd:
         for subject in (alice, bob):
             result = await client.recall(
                 __import__(
-                    "discord_memory",
+                    "icelake",
                     fromlist=["RecallQuery"],
                 ).RecallQuery(guild_id=guild, text="hacker", subject_ids=(subject,))
             )
@@ -508,7 +508,7 @@ class TestReliability:
         make_client,
         event_factory,
     ) -> None:
-        from discord_memory.models.events import ExtractionFailed
+        from icelake.models.events import ExtractionFailed
 
         llm = ScriptedLLM({"extraction": "not json at all"})
         client, _ = make_client(llm=llm)

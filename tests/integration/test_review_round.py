@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import pytest
 
-from discord_memory._json import parse_json_object
-from discord_memory.identity.aliases import (
+from icelake._json import parse_json_object
+from icelake.identity.aliases import (
     extract_self_name_aliases,
     is_third_party_name_reference,
 )
-from discord_memory.lifecycle.maintenance import MaintenanceService
+from icelake.lifecycle.maintenance import MaintenanceService
 from tests.conftest import ScriptedLLM, extraction_response
 
 GUILD = "500000000000000001"
@@ -81,16 +81,16 @@ class TestMaintenanceService:
         """Extracted-style facts (non-manual) get swept by the maintenance job."""
         from datetime import timedelta
 
-        from discord_memory.adapters.in_memory.store import InMemoryStore
+        from icelake.adapters.in_memory.store import InMemoryStore
 
         store = InMemoryStore()
-        config = __import__("discord_memory", fromlist=["MemoryConfig"]).MemoryConfig()
+        config = __import__("icelake", fromlist=["MemoryConfig"]).MemoryConfig()
         service = MaintenanceService(store=store, config=config, clock=fixed_clock)
         now = fixed_clock.now()
 
         async def seed(fact_id: str, *, expires_in: timedelta | None) -> None:
             record = __import__(
-                "discord_memory.models.facts",
+                "icelake.models.facts",
                 fromlist=["FactRecord"],
             ).FactRecord(
                 id=fact_id,
@@ -98,7 +98,7 @@ class TestMaintenanceService:
                 subject_id=ALICE,
                 text=f"extracted observation {fact_id} for maintenance testing",
                 category=__import__(
-                    "discord_memory.models.facts",
+                    "icelake.models.facts",
                     fromlist=["FactCategory"],
                 ).FactCategory.INTERESTS,
                 strength=1.0,
@@ -120,8 +120,8 @@ class TestMaintenanceService:
         assert kept is not None and kept.is_active
 
     async def test_throttling(self, fixed_clock) -> None:
-        from discord_memory.adapters.in_memory.store import InMemoryStore
-        from discord_memory.config import MemoryConfig
+        from icelake.adapters.in_memory.store import InMemoryStore
+        from icelake.config import MemoryConfig
 
         service = MaintenanceService(
             store=InMemoryStore(),
@@ -164,7 +164,7 @@ class TestMentionLinksAndSummaryRefresh:
         )
         await client.observe(event)
         await client.flush()
-        from discord_memory.models.graph import NodeType
+        from icelake.models.graph import NodeType
 
         linked = await client._store.links_for_node(GUILD, NodeType.USER, CAROL)
         assert any(row.kind.value in {"mentioned_with", "about_user"} for row, _record in linked)
@@ -251,7 +251,7 @@ class TestPairAndEntityHintRecall:
 
         result = await client.recall(
             __import__(
-                "discord_memory.models.retrieval",
+                "icelake.models.retrieval",
                 fromlist=["RecallQuery"],
             ).RecallQuery(guild_id=GUILD, pair_ids=(ALICE, BOB))
         )
@@ -291,7 +291,7 @@ class TestPairAndEntityHintRecall:
         await client.flush()
         result = await client.recall(
             __import__(
-                "discord_memory.models.retrieval",
+                "icelake.models.retrieval",
                 fromlist=["RecallQuery"],
             ).RecallQuery(guild_id=GUILD, entity_hint="chess")
         )
@@ -303,9 +303,9 @@ class TestCiteInstructions:
     def test_instruction_appended_when_citations_exist(self) -> None:
         from datetime import UTC, datetime
 
-        from discord_memory.models.facts import FactRecord, SourceRef, SourceRole
-        from discord_memory.models.retrieval import ScoredFact
-        from discord_memory.retrieval.injection import (
+        from icelake.models.facts import FactRecord, SourceRef, SourceRole
+        from icelake.models.retrieval import ScoredFact
+        from icelake.retrieval.injection import (
             CITATION_INSTRUCTION,
             InjectionBuilder,
         )

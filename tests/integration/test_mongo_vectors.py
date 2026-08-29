@@ -20,8 +20,8 @@ def _mongo_available() -> bool:
 if not _mongo_available():
     pytest.skip("no MongoDB at localhost:27017", allow_module_level=True)
 
-from discord_memory.adapters.mongo.vectors import MongoVectorIndex  # noqa: E402
-from discord_memory.ports.vectors import VectorItem  # noqa: E402
+from icelake.adapters.mongo.vectors import MongoVectorIndex  # noqa: E402
+from icelake.ports.vectors import VectorItem  # noqa: E402
 
 
 @pytest.fixture()
@@ -29,7 +29,7 @@ async def vectors():
     from pymongo import AsyncMongoClient
 
     client = AsyncMongoClient("mongodb://127.0.0.1:27017", serverSelectionTimeoutMS=3000)
-    db = client["discord_memory_vec_test"]
+    db = client["icelake_vec_test"]
     await db["dm_vectors"].delete_many({})
     index = MongoVectorIndex(db)
     await index.setup()

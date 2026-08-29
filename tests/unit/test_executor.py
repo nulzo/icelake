@@ -6,12 +6,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from discord_memory.adapters.in_memory.store import InMemoryStore
-from discord_memory.config import MemoryConfig
-from discord_memory.ingest.executor import FactCommitter
-from discord_memory.models.graph import EdgeKind, NodeType
-from discord_memory.models.operations import ProposedEntity, ProposedFact, ProposedRelation
-from discord_memory.ports.clock import FixedClock, UlidIdGen
+from icelake.adapters.in_memory.store import InMemoryStore
+from icelake.config import MemoryConfig
+from icelake.ingest.executor import FactCommitter
+from icelake.models.graph import EdgeKind, NodeType
+from icelake.models.operations import ProposedEntity, ProposedFact, ProposedRelation
+from icelake.ports.clock import FixedClock, UlidIdGen
 
 
 def _proposal(**overrides) -> ProposedFact:
@@ -48,7 +48,7 @@ class TestCommitAdd:
         self,
         committer,
     ) -> None:
-        from discord_memory.ingest.roster import Roster
+        from icelake.ingest.roster import Roster
 
         roster = Roster()
         roster.add("u-alice", "alice")
@@ -89,7 +89,7 @@ class TestCommitAdd:
         self,
         committer,
     ) -> None:
-        from discord_memory.ingest.roster import Roster
+        from icelake.ingest.roster import Roster
 
         roster = Roster()
         roster.add("u-speaker", "speaker")
@@ -110,7 +110,7 @@ class TestCommitAdd:
         assert (NodeType.USER, EdgeKind.SPEAKER_OF) in kinds
 
     async def test_server_fact_scope(self, committer) -> None:
-        from discord_memory.ingest.roster import Roster
+        from icelake.ingest.roster import Roster
 
         commit, store = committer
         record = await commit.commit_add(
@@ -126,7 +126,7 @@ class TestCommitAdd:
         del store
 
     async def test_duplicate_relations_merge_into_single_edge(self, committer):
-        from discord_memory.ingest.roster import Roster
+        from icelake.ingest.roster import Roster
 
         roster = Roster()
         roster.add("ua", "a")
@@ -150,7 +150,7 @@ class TestCommitAdd:
         assert friend_edges[0].occurrences == 2
 
     async def test_relation_with_unknown_tokens_skipped(self, committer):
-        from discord_memory.ingest.roster import Roster
+        from icelake.ingest.roster import Roster
 
         commit, store = committer
         await commit.commit_add(
@@ -167,7 +167,7 @@ class TestCommitAdd:
         assert stats.relation_count == 0
 
     async def test_commit_add_binds_roster_tokens_in_text(self, committer) -> None:
-        from discord_memory.ingest.roster import Roster
+        from icelake.ingest.roster import Roster
 
         roster = Roster()
         roster.add("u-alice", "alice")
@@ -185,7 +185,7 @@ class TestCommitAdd:
 
 class TestReinforceAndTransitions:
     async def test_commit_reinforce_bumps_strength(self, committer):
-        from discord_memory.ingest.roster import Roster
+        from icelake.ingest.roster import Roster
 
         commit, _store = committer
         record = await commit.commit_add(
@@ -200,7 +200,7 @@ class TestReinforceAndTransitions:
         assert updated.occurrences == record.occurrences + 1
 
     async def test_commit_supersede_links_history(self, committer):
-        from discord_memory.ingest.roster import Roster
+        from icelake.ingest.roster import Roster
 
         roster = Roster()
         roster.add("u-alice", "alice")
@@ -226,8 +226,8 @@ class TestReinforceAndTransitions:
         assert reloaded_old.superseded_by_id == new.id
 
     async def test_commit_supersede_keeps_citations(self, committer) -> None:
-        from discord_memory.ingest.roster import Roster
-        from discord_memory.models.facts import SourceRef
+        from icelake.ingest.roster import Roster
+        from icelake.models.facts import SourceRef
 
         roster = Roster()
         roster.add("u-alice", "alice")
@@ -263,7 +263,7 @@ class TestReinforceAndTransitions:
         assert "u-bob" in new.related_user_ids
 
     async def test_commit_invalidate_detaches_evidence(self, committer):
-        from discord_memory.ingest.roster import Roster
+        from icelake.ingest.roster import Roster
 
         roster = Roster()
         roster.add("u-alice", "alice")

@@ -12,9 +12,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from discord_memory.adapters.in_memory.store import InMemoryStore
-from discord_memory.adapters.sqlite.store import SqliteStore
-from discord_memory.models.facts import (
+from icelake.adapters.in_memory.store import InMemoryStore
+from icelake.adapters.sqlite.store import SqliteStore
+from icelake.models.facts import (
     Attribution,
     AttributionType,
     FactCategory,
@@ -23,8 +23,8 @@ from discord_memory.models.facts import (
     MemoryTier,
     ProfileSummary,
 )
-from discord_memory.models.graph import EdgeKind, LinkRow, NodeType
-from discord_memory.models.identity import AliasSource
+from icelake.models.graph import EdgeKind, LinkRow, NodeType
+from icelake.models.identity import AliasSource
 
 
 def make_fact(**overrides) -> FactRecord:
@@ -67,9 +67,9 @@ async def store(request) -> AsyncIterator[InMemoryStore | SqliteStore | object]:
     else:
         if not MONGO_AVAILABLE:
             pytest.skip("no MongoDB at localhost:27017")
-        from discord_memory.adapters.mongo import MongoStore
+        from icelake.adapters.mongo import MongoStore
 
-        backend = MongoStore("mongodb://127.0.0.1:27017/discord_memory_test")
+        backend = MongoStore("mongodb://127.0.0.1:27017/icelake_test")
     await backend.setup()
     if request.param == "mongo":
         for collection in (
@@ -216,7 +216,7 @@ class TestFacts:
 
 class TestLinksAndRelations:
     async def test_links_bidirectional(self, store) -> None:
-        from discord_memory.models.graph import NodeType
+        from icelake.models.graph import NodeType
 
         now = datetime.now(UTC)
         await store.insert_fact(make_fact(id="fct_l"))
@@ -235,7 +235,7 @@ class TestLinksAndRelations:
         assert len(reverse) == 1
 
     async def test_relation_upsert_merges(self, store) -> None:
-        from discord_memory.models.graph import Polarity, RelationEdge
+        from icelake.models.graph import Polarity, RelationEdge
 
         now = datetime.now(UTC)
         edge = RelationEdge(
@@ -270,7 +270,7 @@ class TestLinksAndRelations:
         assert len(between) == 1
 
     async def test_entity_stances_filtered_by_polarity(self, store) -> None:
-        from discord_memory.models.graph import Polarity, RelationEdge
+        from icelake.models.graph import Polarity, RelationEdge
 
         now = datetime.now(UTC)
         like = RelationEdge(
@@ -301,7 +301,7 @@ class TestLinksAndRelations:
         assert len(positives) == 1 and positives[0].verb == "likes"
 
     async def test_drop_evidence_expires_empty_edges(self, store) -> None:
-        from discord_memory.models.graph import Polarity, RelationEdge
+        from icelake.models.graph import Polarity, RelationEdge
 
         now = datetime.now(UTC)
         edge = RelationEdge(
@@ -356,7 +356,7 @@ class TestSummariesConsentGovernance:
         assert not await store.get_opt_out("g1", "uz")
 
     async def test_purge_dry_run_then_execute(self, store) -> None:
-        from discord_memory.models.graph import Polarity, RelationEdge
+        from icelake.models.graph import Polarity, RelationEdge
 
         now = datetime.now(UTC)
         await store.insert_fact(make_fact(id="fct_victim"))

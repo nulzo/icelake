@@ -10,9 +10,9 @@ from datetime import UTC, datetime
 
 import pytest
 
-from discord_memory.adapters.mongo import mapping as m
-from discord_memory.adapters.mongo.queue import doc_to_message, message_to_doc
-from discord_memory.models.facts import (
+from icelake.adapters.mongo import mapping as m
+from icelake.adapters.mongo.queue import doc_to_message, message_to_doc
+from icelake.models.facts import (
     Attribution,
     AttributionType,
     FactCategory,
@@ -22,7 +22,7 @@ from discord_memory.models.facts import (
     SourceRef,
     SourceRole,
 )
-from discord_memory.models.graph import (
+from icelake.models.graph import (
     EdgeKind,
     EntityRecord,
     LinkRow,
@@ -30,8 +30,8 @@ from discord_memory.models.graph import (
     Polarity,
     RelationEdge,
 )
-from discord_memory.models.identity import AliasSource
-from discord_memory.ports.queue import StoredMessage
+from icelake.models.identity import AliasSource
+from icelake.ports.queue import StoredMessage
 
 
 def _fact() -> FactRecord:
@@ -154,23 +154,23 @@ class TestMessageMapping:
 
 class TestConfigWiring:
     def test_mongo_url_backend_detection(self) -> None:
-        from discord_memory.config import MemoryConfig
+        from icelake.config import MemoryConfig
 
         assert MemoryConfig(storage="mongodb://localhost:27017/mydb").storage.backend == "mongo"
         assert MemoryConfig(storage="mongodb+srv://cluster.example/db").storage.backend == "mongo"
 
     def test_mongo_store_requires_pymongo_but_loads_with_it(self) -> None:
         pytest.importorskip("pymongo")
-        from discord_memory.adapters.mongo import MongoStore
-        from discord_memory.api.client import _build_store
-        from discord_memory.config import MemoryConfig
+        from icelake.adapters.mongo import MongoStore
+        from icelake.api.client import _build_store
+        from icelake.config import MemoryConfig
 
         store = _build_store(MemoryConfig(storage="mongodb://localhost:27017/memdb"))
         assert isinstance(store, MongoStore)
 
     async def test_mongo_store_ping_fails_fast_without_server(self) -> None:
         pytest.importorskip("pymongo")
-        from discord_memory.adapters.mongo import MongoStore
+        from icelake.adapters.mongo import MongoStore
 
         store = MongoStore("mongodb://127.0.0.1:1/?serverSelectionTimeoutMS=200")
         assert await store.ping() is False

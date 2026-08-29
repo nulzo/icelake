@@ -1,4 +1,4 @@
-# discord-memory: Library Design & Implementation Plan
+# icelake: Library Design & Implementation Plan
 
 A drop-in Python library that gives Discord bots accurate, scalable, cost-effective
 agentic memory of their users — ChatGPT/Claude-style memory, but for every member of
@@ -530,7 +530,7 @@ domain changes.
 > [`API.md`](./API.md). The sketch below is illustrative only.
 
 ```python
-from discord_memory import DiscordMemory, MemoryConfig
+from icelake import DiscordMemory, MemoryConfig
 
 config = MemoryConfig(
     storage="sqlite:///memory.db",          # or postgres://...
@@ -647,7 +647,7 @@ Budgets and metering are structural, not aspirational:
 ### 10.1 Layout (module ≤ ~300 lines; function ≤ ~40; justification comments where exceeded)
 
 ```
-discord_memory/
+icelake/
   __init__.py            # exports DiscordMemory, config, models only
   config.py              # MemoryConfig (validated pydantic-settings)
   api.py                 # DiscordMemory facade (~200 lines max; composition only)

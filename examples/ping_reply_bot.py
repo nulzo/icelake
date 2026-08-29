@@ -23,7 +23,7 @@ import os
 import discord
 from discord.ext import commands
 
-from discord_memory import (
+from icelake import (
     DiscordMemory,
     MemoryConfig,
     UserMemoryCommand,
@@ -204,7 +204,7 @@ class PingReplyBot(commands.Bot):
 def _to_event(message: discord.Message, *, bot_id: int):
     from datetime import UTC
 
-    from discord_memory.models.events import MessageEvent
+    from icelake.models.events import MessageEvent
 
     created = message.created_at
     if created.tzinfo is None:

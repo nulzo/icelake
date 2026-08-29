@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from discord_memory.adapters.in_memory.store import InMemoryStore
-from discord_memory.adapters.sqlite.store import SqliteStore
+from icelake.adapters.in_memory.store import InMemoryStore
+from icelake.adapters.sqlite.store import SqliteStore
 from tests.integration.test_store_conformance import make_fact
 
 

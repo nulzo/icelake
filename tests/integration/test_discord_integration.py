@@ -9,7 +9,7 @@ import pytest
 
 pytest.importorskip("discord")
 
-from discord_memory.integrations.discord_py import (
+from icelake.integrations.discord_py import (
     MemoryCog,
     _event_from_message,
     setup_discord_memory,

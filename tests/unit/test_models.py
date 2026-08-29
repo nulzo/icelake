@@ -7,12 +7,12 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from discord_memory.ids import prefixed, ulid
-from discord_memory.models.common import ensure_aware
-from discord_memory.models.events import MessageEvent
-from discord_memory.models.facts import FactRecord, MemoryTier, ProfileSummary
-from discord_memory.models.identity import AliasSource
-from discord_memory.models.retrieval import (
+from icelake.ids import prefixed, ulid
+from icelake.models.common import ensure_aware
+from icelake.models.events import MessageEvent
+from icelake.models.facts import FactRecord, MemoryTier, ProfileSummary
+from icelake.models.identity import AliasSource
+from icelake.models.retrieval import (
     CHANNELS_DEFAULT,
     ChannelName,
     Citation,

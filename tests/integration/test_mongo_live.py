@@ -33,16 +33,16 @@ if not _mongo_available():
         "no MongoDB at localhost:27017 (set MONGODB_URI to enable)", allow_module_level=True
     )
 
-from discord_memory.adapters.mongo import MongoStore  # noqa: E402
-from discord_memory.models.graph import LinkRow, NodeType  # noqa: E402
-from discord_memory.models.identity import AliasSource  # noqa: E402
+from icelake.adapters.mongo import MongoStore  # noqa: E402
+from icelake.models.graph import LinkRow, NodeType  # noqa: E402
+from icelake.models.identity import AliasSource  # noqa: E402
 from tests.integration.test_store_conformance import make_fact  # noqa: E402
 
 
 @pytest.fixture()
 async def store() -> AsyncIterator[MongoStore]:
 
-    backend = MongoStore("mongodb://127.0.0.1:27017/discord_memory_test")
+    backend = MongoStore("mongodb://127.0.0.1:27017/icelake_test")
     await backend.setup()
     # clean test database between scenarios
     await backend.db["dm_facts"].delete_many({})
@@ -102,7 +102,7 @@ class TestMongoConformance:
         del history
 
     async def test_links_relations_entities(self, store: MongoStore) -> None:
-        from discord_memory.models.graph import Polarity, RelationEdge
+        from icelake.models.graph import Polarity, RelationEdge
 
         now = datetime.now(UTC)
         await store.insert_fact(make_fact(id="fct_lk"))
@@ -114,7 +114,7 @@ class TestMongoConformance:
                     node_type=NodeType.USER,
                     node_id="u1",
                     kind=__import__(
-                        "discord_memory.models.graph", fromlist=["EdgeKind"]
+                        "icelake.models.graph", fromlist=["EdgeKind"]
                     ).EdgeKind.SUBJECT_OF,
                     created_at=now,
                 ),
@@ -153,7 +153,7 @@ class TestMongoConformance:
         assert target is not None and target.fact_count >= 3
 
     async def test_summaries_consent_stats_export(self, store: MongoStore) -> None:
-        from discord_memory.models.facts import ProfileSummary
+        from icelake.models.facts import ProfileSummary
 
         summary = ProfileSummary(guild_id="g", subject_id="u1", text="digest", source_fact_count=2)
         await store.put_summary(summary)
@@ -173,7 +173,7 @@ class TestMongoConformance:
     async def test_queue_lease_cycle(self, store: MongoStore) -> None:
         from datetime import datetime as dt
 
-        from discord_memory.ports.queue import BatchKey, StoredMessage
+        from icelake.ports.queue import BatchKey, StoredMessage
 
         message = StoredMessage(
             message_id="qm1",

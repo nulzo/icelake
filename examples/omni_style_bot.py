@@ -1,4 +1,4 @@
-"""A full "omni-style" Discord bot with discord-memory as its memory layer.
+"""A full "omni-style" Discord bot with icelake as its memory layer.
 
 Mirrors the architecture of a production memory-native bot:
 
@@ -30,14 +30,14 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from discord_memory import (
+from icelake import (
     DiscordMemory,
     MemoryConfig,
     MessageEvent,
 )
-from discord_memory.adapters.llm_openai_compat import OpenAICompatLLM, build_chat_llm
-from discord_memory.config import LlmConfig
-from discord_memory.ports.llm import ChatRequest, LlmMessage
+from icelake.adapters.llm_openai_compat import OpenAICompatLLM, build_chat_llm
+from icelake.config import LlmConfig
+from icelake.ports.llm import ChatRequest, LlmMessage
 
 logging.basicConfig(level=logging.INFO)
 # logging.getLogger("httpx").setLevel(logging.WARNING)

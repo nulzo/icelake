@@ -9,8 +9,8 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-from discord_memory import DiscordMemory, MessageEvent
-from discord_memory.models.events import ObserveStatus
+from icelake import DiscordMemory, MessageEvent
+from icelake.models.events import ObserveStatus
 from tests.conftest import ScriptedLLM, extraction_response
 
 GUILD = "500000000000000001"
@@ -122,7 +122,7 @@ class TestMultiTurnAgentLifetime:
         # recall quality after lifetime: alice's profile answers about her work
         result = await memory.recall(
             __import__(
-                "discord_memory.models.retrieval",
+                "icelake.models.retrieval",
                 fromlist=["RecallQuery"],
             ).RecallQuery(guild_id=GUILD, text="what does alice do for work", subject_ids=(ALICE,))
         )
@@ -395,7 +395,7 @@ class TestScaleSanity:
             for i in range(facts_per_user):
                 await client._store.insert_fact(
                     __import__(
-                        "discord_memory.models.facts",
+                        "icelake.models.facts",
                         fromlist=["FactRecord"],
                     ).FactRecord(
                         id=f"fct_s{u}_{i}",
@@ -403,7 +403,7 @@ class TestScaleSanity:
                         subject_id=user_id,
                         text=f"user {u} hobby number {i} is collecting thing sets",
                         category=__import__(
-                            "discord_memory.models.facts",
+                            "icelake.models.facts",
                             fromlist=["FactCategory"],
                         ).FactCategory.INTERESTS,
                         strength=1.0 + (i % 5),
@@ -416,7 +416,7 @@ class TestScaleSanity:
         started = datetime.now(UTC)
         result = await client.recall(
             __import__(
-                "discord_memory.models.retrieval",
+                "icelake.models.retrieval",
                 fromlist=["RecallQuery"],
             ).RecallQuery(
                 guild_id=GUILD, text="hobby number 7", subject_ids=("900000000000000007",)

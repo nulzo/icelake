@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from discord_memory.config import (
+from icelake.config import (
     EmbeddingsConfig,
     EmbeddingsProvider,
     LlmConfig,
     MemoryConfig,
 )
-from discord_memory.errors import ConfigError
+from icelake.errors import ConfigError
 
 
 def test_default_config_is_valid() -> None:
@@ -74,7 +74,7 @@ def test_llm_url_parses_max_tokens_and_key() -> None:
 
 
 def test_postgres_url_is_recognized_but_unimplemented() -> None:
-    from discord_memory import DiscordMemory
+    from icelake import DiscordMemory
 
     config = MemoryConfig(storage="postgresql://localhost/memory")
     assert config.storage.backend == "postgres"
@@ -83,7 +83,7 @@ def test_postgres_url_is_recognized_but_unimplemented() -> None:
 
 
 def test_small_model_routes_reconcile_classify_consolidation() -> None:
-    from discord_memory import DiscordMemory
+    from icelake import DiscordMemory
 
     config = MemoryConfig(
         storage="sqlite://:memory:",
@@ -97,7 +97,7 @@ def test_small_model_routes_reconcile_classify_consolidation() -> None:
 
 
 def test_small_model_defaults_to_main_llm() -> None:
-    from discord_memory import DiscordMemory
+    from icelake import DiscordMemory
 
     config = MemoryConfig(
         storage="sqlite://:memory:",
@@ -108,9 +108,9 @@ def test_small_model_defaults_to_main_llm() -> None:
 
 
 def test_openrouter_host_selects_openrouter_adapter() -> None:
-    from discord_memory import DiscordMemory
-    from discord_memory.adapters.llm_openai_compat import OpenAICompatLLM
-    from discord_memory.adapters.llm_openrouter import OpenRouterLLM
+    from icelake import DiscordMemory
+    from icelake.adapters.llm_openai_compat import OpenAICompatLLM
+    from icelake.adapters.llm_openrouter import OpenRouterLLM
 
     openrouter = DiscordMemory(
         MemoryConfig(
@@ -158,7 +158,7 @@ def test_openai_embeddings_requires_full_spec() -> None:
 
 
 def test_public_capability_types_are_exported() -> None:
-    from discord_memory import LlmCapabilityError, ObserveConfig, StructuredOutputError
+    from icelake import LlmCapabilityError, ObserveConfig, StructuredOutputError
 
     assert issubclass(LlmCapabilityError, Exception)
     assert issubclass(StructuredOutputError, Exception)
@@ -171,7 +171,7 @@ def test_unknown_top_level_key_rejected() -> None:
 
 
 def test_openai_embedder_requires_credentials() -> None:
-    from discord_memory.adapters.embedders import OpenAICompatEmbedder
+    from icelake.adapters.embedders import OpenAICompatEmbedder
 
     with pytest.raises(ConfigError):
         OpenAICompatEmbedder(LlmConfig(base_url=None, model="m"))  # type: ignore[arg-type]

@@ -6,14 +6,14 @@ import json
 
 import pytest
 
-from discord_memory.config import ExtractionConfig
-from discord_memory.errors import StructuredOutputError
-from discord_memory.ingest.extraction import (
+from icelake.config import ExtractionConfig
+from icelake.errors import StructuredOutputError
+from icelake.ingest.extraction import (
     FactExtractor,
     category_of,
 )
-from discord_memory.ingest.roster import Roster
-from discord_memory.models.operations import ExtractionOutput, ProposedFact
+from icelake.ingest.roster import Roster
+from icelake.models.operations import ExtractionOutput, ProposedFact
 from tests.conftest import ScriptedLLM
 
 
@@ -42,7 +42,7 @@ class TestParsing:
         assert proposal.category == "general"
 
     def test_entity_kind_coercion(self) -> None:
-        from discord_memory.models.operations import ProposedEntity
+        from icelake.models.operations import ProposedEntity
 
         entity = ProposedEntity(name="Paris", kind="city")
         assert entity.kind == "concept"
@@ -153,7 +153,7 @@ class TestExtractVetting:
             messages=(("alice", "i ran ten miles on the trail this weekend"),),
             existing_memories_block="",
         )
-        from discord_memory.prompts.extraction import EXTRACTION_INSTRUCTIONS
+        from icelake.prompts.extraction import EXTRACTION_INSTRUCTIONS
 
         system = llm.calls[0].messages[0]
         assert system.role == "system"

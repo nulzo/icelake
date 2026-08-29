@@ -6,9 +6,9 @@ import asyncio
 
 import pytest
 
-from discord_memory import FactCommitted, FactSupersededEvent
-from discord_memory.errors import FactNotFoundError, SubjectNotAllowedError
-from discord_memory.models.facts import FactCategory
+from icelake import FactCommitted, FactSupersededEvent
+from icelake.errors import FactNotFoundError, SubjectNotAllowedError
+from icelake.models.facts import FactCategory
 
 
 class TestFactsApi:

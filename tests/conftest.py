@@ -8,11 +8,11 @@ from datetime import UTC, datetime
 
 import pytest
 
-from discord_memory.api.client import DiscordMemory
-from discord_memory.config import MemoryConfig
-from discord_memory.models.events import MessageEvent
-from discord_memory.ports.clock import FixedClock, IdGen, SystemClock, UlidIdGen
-from discord_memory.ports.llm import ChatRequest, ChatResponse
+from icelake.api.client import DiscordMemory
+from icelake.config import MemoryConfig
+from icelake.models.events import MessageEvent
+from icelake.ports.clock import FixedClock, IdGen, SystemClock, UlidIdGen
+from icelake.ports.llm import ChatRequest, ChatResponse
 
 
 class ScriptedLLM:

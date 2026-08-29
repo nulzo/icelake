@@ -6,10 +6,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from discord_memory.adapters.in_memory.queue import InMemoryIngestQueue
-from discord_memory.adapters.sqlite.connection import SqliteConnection
-from discord_memory.adapters.sqlite.queue import SqliteIngestQueue
-from discord_memory.ports.queue import BatchKey, StoredMessage
+from icelake.adapters.in_memory.queue import InMemoryIngestQueue
+from icelake.adapters.sqlite.connection import SqliteConnection
+from icelake.adapters.sqlite.queue import SqliteIngestQueue
+from icelake.ports.queue import BatchKey, StoredMessage
 
 
 def make_queue(request) -> object:

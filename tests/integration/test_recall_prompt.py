@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from discord_memory.models.events import ObserveStatus
-from discord_memory.models.retrieval import RecallQuery, Scope
+from icelake.models.events import ObserveStatus
+from icelake.models.retrieval import RecallQuery, Scope
 from tests.conftest import ScriptedLLM, extraction_response
 
 GUILD = "500000000000000001"

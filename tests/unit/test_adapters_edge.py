@@ -8,19 +8,19 @@ import sqlite3
 import httpx
 import pytest
 
-from discord_memory.adapters.embedders import (
+from icelake.adapters.embedders import (
     HashingEmbedder,
     OpenAICompatEmbedder,
     build_embedder,
 )
-from discord_memory.adapters.in_memory.vectors import InMemoryVectorIndex
-from discord_memory.adapters.llm_openai_compat import OpenAICompatLLM
-from discord_memory.adapters.sqlite.connection import SqliteConnection
-from discord_memory.adapters.sqlite.vectors import SqliteVectorIndex
-from discord_memory.config import EmbeddingsConfig, EmbeddingsProvider, LlmConfig
-from discord_memory.errors import ConfigError
-from discord_memory.ports.llm import ChatRequest, LlmMessage
-from discord_memory.ports.vectors import VectorItem
+from icelake.adapters.in_memory.vectors import InMemoryVectorIndex
+from icelake.adapters.llm_openai_compat import OpenAICompatLLM
+from icelake.adapters.sqlite.connection import SqliteConnection
+from icelake.adapters.sqlite.vectors import SqliteVectorIndex
+from icelake.config import EmbeddingsConfig, EmbeddingsProvider, LlmConfig
+from icelake.errors import ConfigError
+from icelake.ports.llm import ChatRequest, LlmMessage
+from icelake.ports.vectors import VectorItem
 
 
 @pytest.fixture(params=["in_memory", "sqlite"])
@@ -134,7 +134,7 @@ class TestEmbedderAdapters:
         import sys
 
         monkeypatch.setitem(sys.modules, "sentence_transformers", fake_module)
-        from discord_memory.adapters.embedders.local import LocalEmbedder
+        from icelake.adapters.embedders.local import LocalEmbedder
 
         embedder = LocalEmbedder(EmbeddingsConfig(provider=EmbeddingsProvider.LOCAL, dimensions=32))
         out = await embedder.embed(("hello there", "second"))
@@ -212,14 +212,14 @@ async def test_connection_transaction_rollback() -> None:
     rows = await connection.query("SELECT * FROM t")
     assert rows == []  # rolled back
     await connection.close()
-    from discord_memory.errors import StorageUnavailableError
+    from icelake.errors import StorageUnavailableError
 
     with pytest.raises(StorageUnavailableError):
         await connection.query("SELECT 1")
 
 
 def test_config_error_on_unknown_scheme_message() -> None:
-    from discord_memory.errors import IdentityAmbiguousError, StorageUnavailableError
+    from icelake.errors import IdentityAmbiguousError, StorageUnavailableError
 
     error = IdentityAmbiguousError("klim", ("u1", "u2"))
     assert "klim" in str(error) and len(error.candidate_ids) == 2

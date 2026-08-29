@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 
-from discord_memory import (
+from icelake import (
     ChannelName,
     DiscordMemory,
     MemoryConfig,
@@ -28,8 +28,8 @@ from discord_memory import (
     RecallQuery,
     channels,
 )
-from discord_memory.models.graph import NodeType
-from discord_memory.models.operations import ProposedEntity, ProposedRelation
+from icelake.models.graph import NodeType
+from icelake.models.operations import ProposedEntity, ProposedRelation
 
 GUILD = "555"
 MEMBERS = {

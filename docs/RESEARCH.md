@@ -3,7 +3,7 @@
 Date: 2026-08-27. Sources: local source review of `~/Github/mem0` (OSS v3),
 `~/Github/graphiti` (graphiti_core), and `~/Github/CringeDiscordBot` (our production
 predecessor), plus current 2026 production-memory literature.
-Purpose: concrete, prioritized improvements for `discord-memory`, mapped to our files.
+Purpose: concrete, prioritized improvements for `icelake`, mapped to our files.
 
 ---
 

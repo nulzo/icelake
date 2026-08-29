@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from discord_memory.config import LifecycleConfig
-from discord_memory.lifecycle.strength import (
+from icelake.config import LifecycleConfig
+from icelake.lifecycle.strength import (
     reinforced_strength,
     retention,
     should_forget,
     strength_signal,
 )
-from discord_memory.lifecycle.tiers import assign_tier
-from discord_memory.models.facts import FactCategory
+from icelake.lifecycle.tiers import assign_tier
+from icelake.models.facts import FactCategory
 
 
 class TestTierAssignment:
@@ -170,8 +170,8 @@ class TestPruneVictimSelection:
     def test_weakest_and_short_term_go_first(self) -> None:
         from datetime import UTC, datetime
 
-        from discord_memory.lifecycle.prune import select_prune_victims
-        from discord_memory.models.facts import (
+        from icelake.lifecycle.prune import select_prune_victims
+        from icelake.models.facts import (
             Attribution,
             AttributionType,
             FactCategory,
