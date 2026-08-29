@@ -317,8 +317,7 @@ class IngestPipeline:
                     reason="below_min_volume",
                     messages=window,
                     detail=(
-                        f"have={len(window)} need={need} before community "
-                        "extraction; no LLM call"
+                        f"have={len(window)} need={need} before community extraction; no LLM call"
                     ),
                 )
 

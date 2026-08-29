@@ -194,9 +194,7 @@ class TestCommitAdd:
             guild_id="g1",
             roster=roster,
         )
-        edges_after = await store.edges_between(
-            "g1", (NodeType.USER, "ua"), (NodeType.USER, "ub")
-        )
+        edges_after = await store.edges_between("g1", (NodeType.USER, "ua"), (NodeType.USER, "ub"))
         assert not [e for e in edges_after if e.verb == "mentors"]
 
     async def test_commit_add_binds_roster_tokens_in_text(self, committer) -> None:

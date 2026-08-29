@@ -36,9 +36,7 @@ async def test_subject_filter_applies_before_cap(vectors) -> None:
     applies to the already-filtered candidate set, not the whole guild."""
     query = (1.0, 0.0)
     # Fill the cap with OTHER subjects' vectors, all orthogonal to the query.
-    filler = tuple(
-        _item(f"fct_fill_{i}", f"u-other-{i}", (0.0, 1.0)) for i in range(10)
-    )
+    filler = tuple(_item(f"fct_fill_{i}", f"u-other-{i}", (0.0, 1.0)) for i in range(10))
     # The target fact matches the query perfectly but is the oldest row.
     target = _item("fct_target", "u-quiet", (1.0, 0.0))
     await vectors.upsert((target, *filler))
@@ -60,7 +58,5 @@ async def test_server_only_excludes_subject_vectors(vectors) -> None:
             _item("fct_server", None, (1.0, 0.0)),
         )
     )
-    hits = await vectors.search(
-        (1.0, 0.0), guild_id="g1", server_only=True, limit=10
-    )
+    hits = await vectors.search((1.0, 0.0), guild_id="g1", server_only=True, limit=10)
     assert tuple(hit.id for hit in hits) == ("fct_server",)

@@ -431,9 +431,7 @@ class TestDiscordPyRemainingLines:
             async def add_cog(self, cog) -> None:
                 pass
 
-        memory = await setup_discord_memory(
-            StubBot(), make_config(), clock=fixed_clock, llm=None
-        )
+        memory = await setup_discord_memory(StubBot(), make_config(), clock=fixed_clock, llm=None)
         await listeners["on_ready"][0]()
         dm_message = SimpleNamespace(guild=None)
         await listeners["on_message"][0](dm_message)  # early return, no crash

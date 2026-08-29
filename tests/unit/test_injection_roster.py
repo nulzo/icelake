@@ -78,11 +78,7 @@ class TestInjectionBuilder:
         fact = _fact("was called a hacker by alice", subject_id="u-bob")
         # Simulate the fact carrying the SPEAKER's name (alice) — the bug.
         fact = fact.model_copy(
-            update={
-                "attribution": fact.attribution.model_copy(
-                    update={"speaker_name": "alice"}
-                )
-            }
+            update={"attribution": fact.attribution.model_copy(update={"speaker_name": "alice"})}
         )
         block, _citations, _trimmed = builder.build(
             asker_id="u-asker",

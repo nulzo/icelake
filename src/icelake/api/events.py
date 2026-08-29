@@ -26,11 +26,7 @@ E = TypeVar("E")
 Handler = Callable[[object], None]
 
 HookEvent = (
-    BatchCompleted
-    | FactCommitted
-    | FactSupersededEvent
-    | ExtractionFailed
-    | ComponentDegraded
+    BatchCompleted | FactCommitted | FactSupersededEvent | ExtractionFailed | ComponentDegraded
 )
 
 

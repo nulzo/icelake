@@ -84,9 +84,7 @@ class TestGraphHopChannel:
                 guild_id=GUILD,
                 text="movies",
                 subject_ids=(ALICE,),
-                scope=__import__(
-                    "icelake.models.retrieval", fromlist=["Scope"]
-                ).Scope.SUBJECTS,
+                scope=__import__("icelake.models.retrieval", fromlist=["Scope"]).Scope.SUBJECTS,
                 channels=frozenset(
                     {
                         __import__(

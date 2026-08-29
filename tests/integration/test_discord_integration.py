@@ -94,9 +94,7 @@ class TestEventConversion:
 
 
 class TestSetupAndCog:
-    async def test_setup_registers_listeners_cog_and_starts(
-        self, make_client, fixed_clock
-    ) -> None:
+    async def test_setup_registers_listeners_cog_and_starts(self, make_client, fixed_clock) -> None:
         bot = StubBot()
         config = make_config()
         memory = await setup_discord_memory(bot, config, clock=fixed_clock, llm=None)
