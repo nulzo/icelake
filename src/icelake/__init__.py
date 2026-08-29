@@ -91,7 +91,7 @@ from icelake.models.events import (
     FactSupersededEvent,
 )
 
-__version__ = "0.1.1"
+__version__ = "0.1.3"
 
 # Public, transport-free name. ``DiscordMemory`` stays as the back-compat
 # alias; the class itself is store/LLM-agnostic and Discord is an extra.
