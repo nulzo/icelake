@@ -24,7 +24,7 @@ from icelake.identity.aliases import (
 from icelake.identity.guards import SubjectGate
 from icelake.ingest.context_builder import build_extraction_context
 from icelake.ingest.executor import CommitSummary, FactCommitter
-from icelake.ingest.extraction import FactExtractor
+from icelake.ingest.extraction import ExtractionResult, FactExtractor
 from icelake.ingest.gates import batch_worth_extracting, normalize_text
 from icelake.ingest.reconcile import Reconciler
 from icelake.ingest.roster import Roster
@@ -46,6 +46,29 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SERVER_SUBJECT_KEY = "__server__"
+_SNIPPET_CHARS = 160
+
+
+def _snippet(text: str) -> str:
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= _SNIPPET_CHARS:
+        return collapsed
+    return collapsed[: _SNIPPET_CHARS - 1] + "…"
+
+
+def _extract_skip_reason(
+    result: ExtractionResult,
+    candidates: list[tuple[ProposedFact, str | None, str | None]],
+    summary: CommitSummary,
+) -> str | None:
+    """Classify a finished extraction that wrote nothing to the store."""
+    if summary.adds or summary.reinforces or summary.supersessions or summary.invalidations:
+        return None
+    if not result.vetted and not result.rejected:
+        return "empty_ops"
+    if not candidates:
+        return "gated" if result.rejected and not result.vetted else "filtered"
+    return None
 
 
 def _window_sort_key(message: StoredMessage) -> str:
@@ -143,6 +166,36 @@ class IngestPipeline:
         """Wire profile-summary regeneration (called by the facade)."""
         self.consolidation = consolidation
 
+    def _skip_batch(
+        self,
+        key: BatchKey,
+        *,
+        reason: str,
+        messages: tuple[StoredMessage, ...] = (),
+    ) -> BatchReport:
+        """Log a skip, optionally emit BatchCompleted, and return the report."""
+        logger.debug(
+            "batch skipped guild=%s subject=%s reason=%s messages=%d snippet=%r",
+            key.guild_id,
+            key.subject_key,
+            reason,
+            len(messages),
+            _snippet(" ".join(m.content for m in messages)),
+        )
+        if self.event_bus is not None:
+            self.event_bus.publish(
+                BatchCompleted(
+                    guild_id=key.guild_id,
+                    subject_key=key.subject_key,
+                    skipped_reason=reason,
+                )
+            )
+        return BatchReport(
+            key=key,
+            messages_processed=len(messages),
+            skipped_reason=reason,
+        )
+
     async def run_pending(self, *, limit_batches: int = 8) -> int:
         """Process all due batches; returns how many were processed."""
         now = self._clock.now()
@@ -180,13 +233,7 @@ class IngestPipeline:
         )
         if claim.locked_by_other or not claim.messages:
             reason = "locked" if claim.locked_by_other else "empty"
-            if self.event_bus is not None and reason == "locked":
-                self.event_bus.publish(
-                    BatchCompleted(
-                        guild_id=key.guild_id, subject_key=key.subject_key, skipped_reason=reason
-                    ),
-                )
-            return BatchReport(key=key, skipped_reason=reason)
+            return self._skip_batch(key, reason=reason, messages=claim.messages)
         message_ids = tuple(m.message_id for m in claim.messages)
 
         async def _heartbeat() -> None:
@@ -241,7 +288,7 @@ class IngestPipeline:
             limit=self._config.batching.server_scope_window,
         )
         if claim.locked_by_other:
-            return BatchReport(key=key, skipped_reason="locked")
+            return self._skip_batch(key, reason="locked")
         try:
             window: tuple[StoredMessage, ...] = claim.messages or await self._queue.recent_messages(
                 key.guild_id,
@@ -257,11 +304,11 @@ class IngestPipeline:
                     message for message in window if _window_sort_key(message) > watermark
                 )
             if not window:
-                return BatchReport(key=key, skipped_reason="empty")
+                return self._skip_batch(key, reason="empty")
             if len(window) < self._config.batching.batch_size_messages:
                 # Community roll-up waits for batch-sized volume; per-message
                 # culture extraction doubles cost and races the user batches.
-                return BatchReport(key=key, skipped_reason="below_min_volume")
+                return self._skip_batch(key, reason="below_min_volume", messages=window)
 
             summary = CommitSummary()
             try:
@@ -270,7 +317,7 @@ class IngestPipeline:
                     summary = report.summary
             except Exception:
                 logger.exception("Server window %s failed", key.as_tuple)
-                return BatchReport(key=key, skipped_reason="error")
+                return self._skip_batch(key, reason="error", messages=window)
             # Advance the watermark to the newest processed message so the next
             # pass only ever sees genuinely new activity.
             newest = max(window, key=lambda m: (m.created_at, m.message_id))
@@ -304,11 +351,11 @@ class IngestPipeline:
         if self._config.extraction.noise_gate and not batch_worth_extracting(
             tuple(m.content for m in messages),
         ):
-            return BatchReport(key=key, messages_processed=len(messages), skipped_reason="noise")
+            return self._skip_batch(key, reason="noise", messages=messages)
 
         step = self._meter.check_budget(guild_id)
         if step is BudgetStep.SKIP_EXTRACTION:
-            return BatchReport(key=key, messages_processed=len(messages), skipped_reason="budget")
+            return self._skip_batch(key, reason="budget", messages=messages)
 
         roster = await self._build_roster(messages, author_id=subject_key_author)
         batch_embedding = None
@@ -331,7 +378,13 @@ class IngestPipeline:
         )
         summary = CommitSummary()
         for text, reason in result.rejected:
-            logger.debug("Rejected candidate (%s): %s", reason, text)
+            logger.debug(
+                "candidate rejected guild=%s subject=%s reason=%s text=%r",
+                guild_id,
+                key.subject_key,
+                reason,
+                _snippet(text),
+            )
 
         # In-batch candidate dedup: identical/near-identical proposals within
         # one response collapse into the first occurrence.
@@ -343,6 +396,12 @@ class IngestPipeline:
             )
             key_tuple = (vetted.subject_id, normalize_text(bound.text))
             if key_tuple in seen_norms:
+                logger.debug(
+                    "in-batch duplicate dropped guild=%s subject=%s text=%r",
+                    guild_id,
+                    vetted.subject_id,
+                    _snippet(bound.text),
+                )
                 continue
             seen_norms.add(key_tuple)
             candidates.append((bound, vetted.subject_id, vetted.speaker_id))
@@ -350,7 +409,15 @@ class IngestPipeline:
             # The community pass owns guild-scope facts only. User-anchored
             # facts belong to per-user batches — otherwise both passes extract
             # the same messages concurrently and race duplicates into the store.
+            before_filter = len(candidates)
             candidates = [c for c in candidates if c[1] is None]
+            dropped = before_filter - len(candidates)
+            if dropped:
+                logger.debug(
+                    "server-scope filtered user-anchored candidates guild=%s dropped=%d",
+                    guild_id,
+                    dropped,
+                )
         mentioned_ids = self._subject_gate.exclude_bots(
             mention_id for message in messages for mention_id in message.mention_ids
         )
@@ -369,6 +436,16 @@ class IngestPipeline:
                 source_refs=source_refs,
             )
 
+        skip_reason = _extract_skip_reason(result, candidates, summary)
+        if skip_reason is not None:
+            logger.debug(
+                "batch skipped guild=%s subject=%s reason=%s messages=%d snippet=%r",
+                guild_id,
+                key.subject_key,
+                skip_reason,
+                len(messages),
+                _snippet(joined_text),
+            )
         completed = BatchCompleted(
             guild_id=guild_id,
             subject_key=key.subject_key,
@@ -376,11 +453,17 @@ class IngestPipeline:
             reinforces=summary.reinforces,
             supersessions=summary.supersessions,
             invalidations=summary.invalidations,
+            skipped_reason=skip_reason,
         )
         if self.event_bus is not None:
             self.event_bus.publish(completed)
         await self._maybe_refresh_summary(key, summary.adds)
-        return BatchReport(key=key, messages_processed=len(messages), summary=summary)
+        return BatchReport(
+            key=key,
+            messages_processed=len(messages),
+            summary=summary,
+            skipped_reason=skip_reason,
+        )
 
     async def _maybe_refresh_summary(
         self,

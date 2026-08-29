@@ -61,6 +61,32 @@ log = logger
 
 _MISSING = object()
 _SERVER_BLOCK_FACTS = 3
+_SNIPPET_CHARS = 160
+
+
+def _snippet(text: str) -> str:
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= _SNIPPET_CHARS:
+        return collapsed
+    return collapsed[: _SNIPPET_CHARS - 1] + "…"
+
+
+def _dropped_observe(
+    event: MessageEvent,
+    status: ObserveStatus,
+    reason: IgnoreReason | RejectReason,
+) -> ObserveReceipt:
+    """Build a drop receipt and log why observe did not queue the message."""
+    logger.debug(
+        "observe %s message=%s guild=%s author=%s reason=%s snippet=%r",
+        status.value,
+        event.message_id,
+        event.guild_id,
+        event.author_id,
+        reason.value,
+        _snippet(event.content),
+    )
+    return ObserveReceipt(message_id=event.message_id, status=status, reason=reason)
 
 
 class _OpsApi:
@@ -335,21 +361,13 @@ class DiscordMemory:
             await self.ensure_started()
         except Exception:
             log.exception("lazy start failed")
-            return ObserveReceipt(
-                message_id=event.message_id,
-                status=ObserveStatus.REJECTED,
-                reason=RejectReason.STORAGE_UNAVAILABLE,
-            )
+            return _dropped_observe(event, ObserveStatus.REJECTED, RejectReason.STORAGE_UNAVAILABLE)
         try:
             return await self._observe_inner(event)
         except StorageUnavailableError:
             # Expected after close(); a listener must never see this raise.
             log.info("observe on closed/unavailable storage -> rejected receipt")
-            return ObserveReceipt(
-                message_id=event.message_id,
-                status=ObserveStatus.REJECTED,
-                reason=RejectReason.STORAGE_UNAVAILABLE,
-            )
+            return _dropped_observe(event, ObserveStatus.REJECTED, RejectReason.STORAGE_UNAVAILABLE)
 
     async def _observe_inner(self, event: MessageEvent) -> ObserveReceipt:
         observe_cfg = self.config.observe
@@ -357,34 +375,18 @@ class DiscordMemory:
         # 1. Bot guard (structural — never a subject).
         self._guard.note_author(event.author_id, is_bot=event.author_is_bot)
         if event.author_is_bot or self._guard.is_bot(event.author_id):
-            return ObserveReceipt(
-                message_id=event.message_id,
-                status=ObserveStatus.IGNORED,
-                reason=IgnoreReason.BOT_AUTHOR,
-            )
+            return _dropped_observe(event, ObserveStatus.IGNORED, IgnoreReason.BOT_AUTHOR)
 
         # 2. Consent (policy decision).
         if await self._subject_gate.allows(event.guild_id, event.author_id) is False:
-            return ObserveReceipt(
-                message_id=event.message_id,
-                status=ObserveStatus.IGNORED,
-                reason=IgnoreReason.OPTED_OUT,
-            )
+            return _dropped_observe(event, ObserveStatus.IGNORED, IgnoreReason.OPTED_OUT)
 
         # 3. Content quality gates.
         if not event.content.strip() or len(event.content.strip()) < observe_cfg.min_message_chars:
-            return ObserveReceipt(
-                message_id=event.message_id,
-                status=ObserveStatus.IGNORED,
-                reason=IgnoreReason.EMPTY_CONTENT,
-            )
+            return _dropped_observe(event, ObserveStatus.IGNORED, IgnoreReason.EMPTY_CONTENT)
         for pattern in observe_cfg.ignore_patterns:
             if re.search(pattern, event.content):
-                return ObserveReceipt(
-                    message_id=event.message_id,
-                    status=ObserveStatus.IGNORED,
-                    reason=IgnoreReason.IGNORED_PATTERN,
-                )
+                return _dropped_observe(event, ObserveStatus.IGNORED, IgnoreReason.IGNORED_PATTERN)
 
         import hashlib
 
@@ -411,25 +413,15 @@ class DiscordMemory:
             accepted = await self._queue.put_message(message, max_depth=max_depth)
         except Exception:
             log.exception("observe: queue persistence failed")
-            return ObserveReceipt(
-                message_id=event.message_id,
-                status=ObserveStatus.REJECTED,
-                reason=RejectReason.STORAGE_UNAVAILABLE,
-            )
+            return _dropped_observe(event, ObserveStatus.REJECTED, RejectReason.STORAGE_UNAVAILABLE)
         if not accepted:
             # Distinguish duplicate vs capacity by checking pending count.
             pending = await self._queue.pending_count(event.guild_id)
             if max_depth is not None and pending >= max_depth:
-                return ObserveReceipt(
-                    message_id=event.message_id,
-                    status=ObserveStatus.REJECTED,
-                    reason=RejectReason.QUEUE_OVER_CAPACITY,
+                return _dropped_observe(
+                    event, ObserveStatus.REJECTED, RejectReason.QUEUE_OVER_CAPACITY
                 )
-            return ObserveReceipt(
-                message_id=event.message_id,
-                status=ObserveStatus.IGNORED,
-                reason=IgnoreReason.DUPLICATE,
-            )
+            return _dropped_observe(event, ObserveStatus.IGNORED, IgnoreReason.DUPLICATE)
         self.active_guilds.add(event.guild_id)
         try:
             await self._register_author_alias(event)

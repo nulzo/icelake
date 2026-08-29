@@ -94,7 +94,7 @@ class FactExtractor:
         for operation in output.operations[: self._config.max_candidates_per_batch]:
             decision = self._vet(operation, roster, messages)
             if isinstance(decision, GateDecision):
-                result.rejected.append((operation.text[:80], decision.reason))
+                result.rejected.append((operation.text, decision.reason))
                 continue
             result.vetted.append(decision)
         return result
