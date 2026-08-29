@@ -1,6 +1,6 @@
 # icelake
 
-Persistant memory layer specifically for discord bots. Passively consumes messages, extracts facts about users, and hands you a labeled block to put in your system prompt when you need to reply.
+Persistent memory layer specifically for discord bots. Passively consumes messages, extracts facts about users, and hands you a labeled block to put in your system prompt when you need to reply.
 
 Facts are stored against Discord user IDs (as opposed to names), so a rename does not move someone else's memories onto a new person. Third-party claims ("alice called bob
 a hacker") attach to the person they are about.
