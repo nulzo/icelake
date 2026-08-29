@@ -253,10 +253,108 @@ class TestPairAndEntityHintRecall:
             __import__(
                 "icelake.models.retrieval",
                 fromlist=["RecallQuery"],
-            ).RecallQuery(guild_id=GUILD, pair_ids=(ALICE, BOB))
+            ).RecallQuery(guild_id=GUILD, pair_ids=((ALICE, BOB),))
         )
         texts = [sf.fact.text for sf in result.facts]
         assert any("called out" in t or "hacking" in t for t in texts), texts
+        await client.close()
+
+    async def test_multi_pair_recall_unions_intersections(self, make_client, event_factory):
+        """pair_ids accepts several pairs; each intersects independently."""
+        BOB = "200000000000000002"
+        CAROL = "200000000000000003"
+        llm = ScriptedLLM(
+            {
+                "extraction": extraction_response(
+                    [
+                        {
+                            "subject_token": "p1",
+                            "speaker_token": "p0",
+                            "text": "bob got called out by alice after the ranked match ended",
+                            "category": "relationships",
+                            "confidence": 0.9,
+                            "source_message_indexes": [1],
+                        },
+                    ]
+                )
+            }
+        )
+        client, _ = make_client(llm=llm)
+        await client.start()
+        await client.observe(
+            event_factory(
+                content="@bob that was blatant hacking in the ranked match and everyone saw",
+                author_id=ALICE,
+                mentions=(BOB,),
+                display_name="alice",
+            )
+        )
+        await client.flush()
+
+        from icelake.models.retrieval import RecallQuery
+
+        # One pair matches, one does not; union must still surface the match.
+        result = await client.recall(
+            RecallQuery(guild_id=GUILD, pair_ids=((ALICE, BOB), (ALICE, CAROL)))
+        )
+        assert any("called out" in sf.fact.text for sf in result.facts)
+        # Self-pairs are ignored rather than erroring: LINKS-only channels make
+        # the pair intersection the sole candidate source.
+        from icelake.models.retrieval import ChannelName, channels
+
+        empty = await client.recall(
+            RecallQuery(
+                guild_id=GUILD,
+                pair_ids=((ALICE, ALICE),),
+                channels=channels(ChannelName.LINKS),
+            )
+        )
+        assert empty.facts == ()
+        await client.close()
+
+    async def test_prompt_context_surfaces_pair_facts_for_mentions(
+        self, make_client, event_factory
+    ):
+        """'what does alice think of bob' — the shared-link fact lands in bob's
+        section without the consumer writing a second recall call."""
+        BOB = "200000000000000002"
+        llm = ScriptedLLM(
+            {
+                "extraction": extraction_response(
+                    [
+                        {
+                            "subject_token": "p1",
+                            "speaker_token": "p0",
+                            "text": "bob got called out by alice after the ranked match ended",
+                            "category": "relationships",
+                            "confidence": 0.9,
+                            "source_message_indexes": [1],
+                        },
+                    ]
+                )
+            }
+        )
+        client, _ = make_client(llm=llm)
+        await client.start()
+        await client.observe(
+            event_factory(
+                content="@bob that was blatant hacking in the ranked match and everyone saw",
+                author_id=ALICE,
+                mentions=(BOB,),
+                display_name="alice",
+            )
+        )
+        await client.flush()
+
+        ctx = await client.prompt_context(
+            guild_id=GUILD,
+            asker_id=ALICE,
+            text="what do I think of bob?",
+            mentioned_ids=(BOB,),
+        )
+        assert "called out" in ctx.injection_block
+        # The fact's subject is bob: it renders under the referenced-user header.
+        assert "REFERENCED USER" in ctx.injection_block
         await client.close()
 
     async def test_entity_hint_seeds_aggregation(self, make_client, event_factory):

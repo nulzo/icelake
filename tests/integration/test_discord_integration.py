@@ -11,7 +11,9 @@ pytest.importorskip("discord")
 
 from icelake.integrations.discord_py import (
     MemoryCog,
+    _ConfirmPurgeView,
     _event_from_message,
+    prompt_from_message,
     setup_discord_memory,
 )
 from tests.conftest import make_config
@@ -46,6 +48,23 @@ def _stub_message(**overrides):
     return message
 
 
+class StubBot:
+    def __init__(self) -> None:
+        self.user = _stub_member(42, "memboto", bot=True)
+        self.listeners: dict[str, list] = {}
+        self.cogs: dict[str, object] = {}
+
+    def listen(self, name):
+        def decorator(fn):
+            self.listeners.setdefault(name, []).append(fn)
+            return fn
+
+        return decorator
+
+    async def add_cog(self, cog) -> None:
+        self.cogs[type(cog).__name__] = cog
+
+
 class TestEventConversion:
     def test_full_mapping(self) -> None:
         bob = _stub_member(456, "bob")
@@ -75,46 +94,29 @@ class TestEventConversion:
 
 
 class TestSetupAndCog:
-    async def test_setup_registers_listeners_and_starts(self, make_client, fixed_clock):
-        listeners: dict[str, list] = {}
-
-        class StubBot:
-            user = _stub_member(42, "memboto", bot=True)
-
-            def listen(self, name):
-                def decorator(fn):
-                    listeners.setdefault(name, []).append(fn)
-                    return fn
-
-                return decorator
-
+    async def test_setup_registers_listeners_cog_and_starts(
+        self, make_client, fixed_clock
+    ) -> None:
+        bot = StubBot()
         config = make_config()
-        memory, cog = await setup_discord_memory(
-            StubBot(),
-            config,
-            clock=fixed_clock,
-            llm=None,
-        )
-        assert set(listeners) == {"on_message", "on_member_update", "on_ready"}
-        assert isinstance(cog, MemoryCog)
+        memory = await setup_discord_memory(bot, config, clock=fixed_clock, llm=None)
+        assert set(bot.listeners) == {"on_message", "on_member_update", "on_ready"}
+        assert isinstance(bot.cogs.get("MemoryCog"), MemoryCog)
         assert not memory.started  # on_ready owns startup
 
-        await listeners["on_ready"][0]()
+        await bot.listeners["on_ready"][0]()
         assert memory.started
 
-        # on_message path observes into the queue
-        on_message = listeners["on_message"][0]
+        on_message = bot.listeners["on_message"][0]
         await on_message(_stub_message(content="a substantive chat message here"))
         assert await memory._queue.pending_count("555") == 1
 
-        # on_ready registers the bot's own guard id (already registered here)
-        # on_member_update re-indexes renames
         guild_stub = SimpleNamespace(id=555)
         before = _stub_member(123, "alice", "OldName")
         after = _stub_member(123, "alice", "NewName")
         before.guild = guild_stub
         after.guild = guild_stub
-        await listeners["on_member_update"][0](before, after)
+        await bot.listeners["on_member_update"][0](before, after)
         aliases = await memory.identity.aliases_of("555", "123")
         assert any(record.alias_norm == "newname" for record in aliases)
         await memory.close()
@@ -126,16 +128,17 @@ class TestSetupAndCog:
 
         sent = {}
 
-        async def respond(text: str, ephemeral: bool = False) -> None:
+        async def respond(text: str, ephemeral: bool = False, view=None) -> None:
             sent["text"] = text
             sent["ephemeral"] = ephemeral
+            sent["view"] = view
 
         interaction = SimpleNamespace(
             user=_stub_member(123, "alice"),
             guild_id=555,
             response=SimpleNamespace(send_message=respond),
         )
-        await cog.remember(interaction, "loves spicy ramen on fridays")
+        await cog.remember.callback(cog, interaction, "loves spicy ramen on fridays")
         assert "Noted" in sent["text"]
         facts_page = await client.facts.list_for_subject(
             "555",
@@ -144,9 +147,81 @@ class TestSetupAndCog:
         )
         assert any("ramen" in f.text for f in facts_page.items)
 
-        await cog.me(interaction)
+        await cog.me.callback(cog, interaction)
         assert "Your stored memories" in sent["text"]
+        await client.close()
 
-        await cog.forget_me(interaction)
-        assert sent["text"] == "Purged 1 memories about you."
+    async def test_forget_is_two_phase(self, make_client) -> None:
+        """Preview first; nothing is purged until the confirm button fires."""
+        client, _ = make_client(llm=False)
+        await client.start()
+        await client.facts.remember(
+            guild_id="555",
+            subject_id="123",
+            text="loves spicy ramen on fridays",
+            actor_id="123",
+        )
+        cog = MemoryCog(client)
+
+        sent = {}
+
+        async def respond(text: str, ephemeral: bool = False, view=None) -> None:
+            sent["text"] = text
+            sent["view"] = view
+
+        interaction = SimpleNamespace(
+            user=_stub_member(123, "alice"),
+            guild_id=555,
+            response=SimpleNamespace(send_message=respond),
+        )
+        await cog.forget.callback(cog, interaction)
+        assert "permanently purge" in sent["text"]
+        assert isinstance(sent["view"], _ConfirmPurgeView)
+        # Preview alone must not delete anything.
+        page = await client.facts.list_for_subject("555", "123", include_server=False)
+        assert len(page.items) == 1
+
+        edited = {}
+
+        async def edit_message(content: str, view=None) -> None:
+            edited["content"] = content
+
+        confirm_interaction = SimpleNamespace(
+            user=_stub_member(123, "alice"),
+            guild_id=555,
+            response=SimpleNamespace(edit_message=edit_message, send_message=respond),
+        )
+        await sent["view"].confirm.callback(confirm_interaction)
+        assert "Purged 1 memories" in edited["content"]
+        page = await client.facts.list_for_subject("555", "123", include_server=False)
+        assert len(page.items) == 0
+        await client.close()
+
+    async def test_forget_empty_memory_short_circuits(self, make_client) -> None:
+        client, _ = make_client(llm=False)
+        await client.start()
+        cog = MemoryCog(client)
+        sent = {}
+
+        async def respond(text: str, ephemeral: bool = False, view=None) -> None:
+            sent["text"] = text
+
+        interaction = SimpleNamespace(
+            user=_stub_member(123, "alice"),
+            guild_id=555,
+            response=SimpleNamespace(send_message=respond),
+        )
+        await cog.forget.callback(cog, interaction)
+        assert sent["text"] == "I hold no memories of you."
+        await client.close()
+
+    async def test_prompt_from_message_maps_and_builds(self, make_client) -> None:
+        client, _ = make_client(llm=False)
+        await client.start()
+        bob = _stub_member(456, "bob")
+        ctx = await prompt_from_message(
+            client,
+            _stub_message(content="what do you think of @bob?", mentions=[bob]),
+        )
+        assert ctx.injection_block.startswith("[MEMORY CONTEXT]")
         await client.close()

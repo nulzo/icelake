@@ -7,6 +7,7 @@ from icelake.identity.aliases import (
     alias_slug,
     is_valid_alias,
     normalize_alias,
+    strongest_alias,
     weight_for_source,
 )
 from icelake.identity.guards import BotGuard, ConsentPolicy, SubjectGate
@@ -26,6 +27,32 @@ def test_snowflake_aliases_rejected() -> None:
 def test_slug_generation() -> None:
     assert alias_slug("Rust Programming!") == "rust-programming"
     assert alias_slug("!!!") == "unknown"
+
+
+def test_strongest_alias_prefers_rank_then_weight() -> None:
+    from icelake.models.identity import AliasRecord
+
+    def record(alias: str, source: AliasSource, weight: float) -> AliasRecord:
+        return AliasRecord(
+            guild_id="g",
+            alias_norm=alias,
+            user_id="u",
+            source=source,
+            weight=weight,
+        )
+
+    assert strongest_alias(()) is None
+    records = (
+        record("ally", AliasSource.MENTION, 0.9),
+        record("alice", AliasSource.DISCORD_USERNAME, 0.6),
+    )
+    # Higher source rank wins even at lower weight (rank is the authority).
+    assert strongest_alias(records) == "alice"
+    same_rank = (
+        record("ally", AliasSource.MENTION, 0.9),
+        record("al", AliasSource.MENTION, 0.6),
+    )
+    assert strongest_alias(same_rank) == "ally"
 
 
 def test_weight_for_source_ordering() -> None:

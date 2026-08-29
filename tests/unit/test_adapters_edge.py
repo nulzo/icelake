@@ -219,8 +219,6 @@ async def test_connection_transaction_rollback() -> None:
 
 
 def test_config_error_on_unknown_scheme_message() -> None:
-    from icelake.errors import IdentityAmbiguousError, StorageUnavailableError
+    from icelake.errors import StorageUnavailableError
 
-    error = IdentityAmbiguousError("klim", ("u1", "u2"))
-    assert "klim" in str(error) and len(error.candidate_ids) == 2
     assert issubclass(StorageUnavailableError, ConfigError.__bases__[0])

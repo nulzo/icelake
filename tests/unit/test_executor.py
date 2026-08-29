@@ -164,6 +164,41 @@ class TestCommitAdd:
         stats = await store.guild_stats("g1")
         assert stats.relation_count == 0
 
+    async def test_supersede_drops_old_fact_edge_evidence(self, committer):
+        """A superseded fact must stop holding its relation edges alive."""
+        from icelake.ingest.roster import Roster
+
+        roster = Roster()
+        roster.add("ua", "a")
+        roster.add("ub", "b")
+        commit, store = committer
+        old = await commit.commit_add(
+            proposal=_proposal(
+                text="ua mentors ub on weekends",
+                relations=[ProposedRelation(verb="mentors", from_token="p0", to_token="p1")],
+            ),
+            subject_id="ua",
+            speaker_id=None,
+            guild_id="g1",
+            roster=roster,
+        )
+        edges = await store.edges_between("g1", (NodeType.USER, "ua"), (NodeType.USER, "ub"))
+        assert any(e.verb == "mentors" for e in edges)
+
+        await commit.commit_supersede(
+            old_record=old,
+            proposal=_proposal(text="ua no longer mentors ub"),
+            subject_id="ua",
+            speaker_id=None,
+            reason="contradicted",
+            guild_id="g1",
+            roster=roster,
+        )
+        edges_after = await store.edges_between(
+            "g1", (NodeType.USER, "ua"), (NodeType.USER, "ub")
+        )
+        assert not [e for e in edges_after if e.verb == "mentors"]
+
     async def test_commit_add_binds_roster_tokens_in_text(self, committer) -> None:
         from icelake.ingest.roster import Roster
 

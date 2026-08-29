@@ -117,6 +117,33 @@ class TestGroupsSurface:
         assert neighbors == ()
         await client.close()
 
+    async def test_graph_between_unions_both_directions(self, make_client) -> None:
+        """between(A, B) must see b→a edges too — relationships are directed in
+        storage but symmetric in user expectation."""
+        from icelake.models.graph import NodeType, RelationEdge
+
+        client, _ = make_client(llm=False)
+        await client.start()
+        now = datetime.now(UTC)
+        await client._store.upsert_relation(
+            RelationEdge(
+                guild_id=GUILD,
+                src_type=NodeType.USER,
+                src_id=BOB,
+                dst_type=NodeType.USER,
+                dst_id=ALICE,
+                verb="rivals",
+                weight=0.8,
+                confidence=0.9,
+                valid_from=now,
+            )
+        )
+        forward = await client.graph.between(GUILD, ALICE, BOB)
+        backward = await client.graph.between(GUILD, BOB, ALICE)
+        assert [e.verb for e in forward] == ["rivals"]
+        assert [e.verb for e in backward] == ["rivals"]
+        await client.close()
+
 
 def event_factory_for(client, *, content: str, author_id: str, mentions: tuple[str, ...] = ()):
 
@@ -401,7 +428,10 @@ class TestDiscordPyRemainingLines:
 
                 return decorator
 
-        memory, _cog = await setup_discord_memory(
+            async def add_cog(self, cog) -> None:
+                pass
+
+        memory = await setup_discord_memory(
             StubBot(), make_config(), clock=fixed_clock, llm=None
         )
         await listeners["on_ready"][0]()
