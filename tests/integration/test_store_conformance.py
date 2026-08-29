@@ -76,6 +76,7 @@ async def store(request) -> AsyncIterator[InMemoryStore | SqliteStore | object]:
             "dm_summaries",
             "dm_optouts",
             "dm_history",
+            "dm_budgets",
         ):
             await backend.db[collection].delete_many({})
     yield backend
@@ -106,6 +107,24 @@ class TestAliases:
 
 
 class TestFacts:
+    async def test_list_guild_ids_derives_from_facts(self, store) -> None:
+        assert await store.list_guild_ids() == ()
+        await store.insert_fact(make_fact(id="fct_g1", guild_id="g1"))
+        await store.insert_fact(make_fact(id="fct_g2", guild_id="g2"))
+        assert set(await store.list_guild_ids()) == {"g1", "g2"}
+
+    async def test_guild_token_budget_counters(self, store) -> None:
+        keys = {"day_key": "2026-08-29", "month_key": "2026-08"}
+        assert await store.guild_token_usage("g1", **keys) == (0, 0)
+        assert await store.charge_guild_tokens("g1", prompt_tokens=40, **keys) == (40, 40)
+        assert await store.charge_guild_tokens("g1", prompt_tokens=15, **keys) == (55, 55)
+        # Other guilds and other periods are isolated.
+        assert await store.guild_token_usage("g2", **keys) == (0, 0)
+        assert (await store.guild_token_usage("g1", day_key="2026-08-30", month_key="2026-09")) == (
+            0,
+            0,
+        )
+
     async def test_insert_and_get(self, store) -> None:
         fact = make_fact(id="fct_1")
         await store.insert_fact(fact)
@@ -338,6 +357,73 @@ class TestLinksAndRelations:
         assert await store.resolve_entity_alias("g1", "movie") == "movies"
         moved = await store.merge_entities("g1", ("films",), to_slug="movies")
         del moved
+
+    async def test_batch_node_queries_match_single_node_results(self, store) -> None:
+        """links_for_nodes / incident_edges_many / edges_to_nodes = batched singles."""
+        from icelake.models.graph import LinkRow, Polarity, RelationEdge
+
+        now = datetime.now(UTC)
+        await store.insert_fact(make_fact(id="fct_b1"))
+        await store.insert_fact(make_fact(id="fct_b2"))
+        await store.add_links(
+            (
+                LinkRow(
+                    guild_id="g1",
+                    memory_id="fct_b1",
+                    node_type=NodeType.ENTITY,
+                    node_id="tea",
+                    kind=EdgeKind.ABOUT_ENTITY,
+                    created_at=now,
+                ),
+                LinkRow(
+                    guild_id="g1",
+                    memory_id="fct_b2",
+                    node_type=NodeType.ENTITY,
+                    node_id="coffee",
+                    kind=EdgeKind.ABOUT_ENTITY,
+                    created_at=now,
+                ),
+            )
+        )
+        for src, dst, verb in (
+            ("ua", "tea", "likes"),
+            ("ub", "tea", "likes"),
+            ("ub", "coffee", "dislikes"),
+        ):
+            await store.upsert_relation(
+                RelationEdge(
+                    guild_id="g1",
+                    src_type=NodeType.USER,
+                    src_id=src,
+                    dst_type=NodeType.ENTITY,
+                    dst_id=dst,
+                    verb=verb,
+                    polarity=Polarity.POSITIVE,
+                    weight=1.0,
+                    valid_from=now,
+                )
+            )
+
+        batched_links = await store.links_for_nodes(
+            "g1",
+            ((NodeType.ENTITY, "tea"), (NodeType.ENTITY, "coffee")),
+        )
+        assert {record.id for _row, record in batched_links} == {"fct_b1", "fct_b2"}
+        assert await store.links_for_nodes("g1", ()) == ()
+
+        inbound = await store.edges_to_nodes("g1", ((NodeType.ENTITY, "tea"),))
+        assert {(e.src_id, e.dst_id) for e in inbound} == {("ua", "tea"), ("ub", "tea")}
+
+        many = await store.incident_edges_many(
+            "g1",
+            ((NodeType.USER, "ua"), (NodeType.USER, "ub")),
+        )
+        assert {(e.src_id, e.dst_id) for e in many} == {
+            ("ua", "tea"),
+            ("ub", "tea"),
+            ("ub", "coffee"),
+        }
+        assert await store.incident_edges_many("g1", ()) == ()
 
 
 class TestSummariesConsentGovernance:

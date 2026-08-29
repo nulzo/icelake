@@ -270,6 +270,27 @@ class TestClientPaths:
         assert processed == 0
         await client.close()
 
+    async def test_start_restores_active_guilds_from_store(self, make_client, fixed_clock) -> None:
+        """A quiet guild's maintenance must survive a process restart."""
+        from icelake.adapters.in_memory.store import InMemoryStore
+        from tests.conftest import make_config
+
+        shared_store = InMemoryStore()
+        client = DiscordMemory(make_config(), clock=fixed_clock, llm=None, store=shared_store)
+        await client.facts.remember(
+            guild_id=GUILD,
+            subject_id=ALICE,
+            text="alice maintains the guild wiki pages",
+            actor_id=ALICE,
+        )
+        await client.close()
+
+        restarted = DiscordMemory(make_config(), clock=fixed_clock, llm=None, store=shared_store)
+        assert restarted.active_guilds == set()
+        await restarted.start()
+        assert GUILD in restarted.active_guilds
+        await restarted.close()
+
     async def test_worker_loop_processes_pending(self, event_factory) -> None:
         llm = ScriptedLLM({"extraction": extraction_response([])})
         config_dict = {
@@ -344,14 +365,17 @@ class _FastClock:
 
 class TestPipelineBranches:
     async def test_budget_skip_extraction(self, make_client, event_factory) -> None:
-        from icelake.adapters.meter import InMemoryMeter
+        from icelake.adapters.in_memory.store import InMemoryStore
+        from icelake.adapters.meter import UsageMeter
         from icelake.config import BudgetsConfig
 
-        meter = InMemoryMeter(
+        store = InMemoryStore()
+        meter = UsageMeter(
             BudgetsConfig(guild_daily_prompt_tokens=10),
             _FastClock(),
+            store=store,
         )
-        meter.charge_guild(GUILD, prompt_tokens=100)
+        await meter.charge_guild(GUILD, prompt_tokens=100)
         llm = ScriptedLLM({"extraction": extraction_response([])})
         client = make_client.__wrapped__(llm) if hasattr(make_client, "__wrapped__") else None
         del client
@@ -380,15 +404,17 @@ class TestPipelineBranches:
     async def test_budget_skip_reconcile_still_commits(self, make_client, event_factory) -> None:
         """Near budget: extraction runs, the reconcile LLM is skipped, and
         candidates still commit as direct adds."""
-        from icelake.adapters.meter import InMemoryMeter
+        from icelake.adapters.in_memory.store import InMemoryStore
+        from icelake.adapters.meter import UsageMeter
         from icelake.config import BudgetsConfig, MemoryConfig
 
-        meter = InMemoryMeter(
+        meter = UsageMeter(
             BudgetsConfig(guild_daily_prompt_tokens=100),
             _FastClock(),
+            store=InMemoryStore(),
         )
         # 90% of the daily budget → SKIP_RECONCILE, not SKIP_EXTRACTION.
-        meter.charge_guild(GUILD, prompt_tokens=90)
+        await meter.charge_guild(GUILD, prompt_tokens=90)
         llm = ScriptedLLM(
             {
                 "extraction": extraction_response(
@@ -411,9 +437,7 @@ class TestPipelineBranches:
         )
         client = DiscordMemory(config, clock=_FastClock(), llm=llm, meter=meter)
         await client.start()
-        await client.observe(
-            event_factory(content="i love going rock climbing every weekend")
-        )
+        await client.observe(event_factory(content="i love going rock climbing every weekend"))
         await client.flush()
         page = await client.facts.list_for_subject(
             guild_id=GUILD, subject_id=event_factory().author_id

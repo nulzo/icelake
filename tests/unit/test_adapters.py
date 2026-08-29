@@ -10,7 +10,7 @@ import pytest
 from icelake.adapters.embedders import HashingEmbedder
 from icelake.adapters.llm_openai_compat import OpenAICompatLLM
 from icelake.adapters.llm_openrouter import OpenRouterLLM
-from icelake.adapters.meter import InMemoryMeter
+from icelake.adapters.meter import UsageMeter
 from icelake.config import BudgetsConfig, EmbeddingsConfig, EmbeddingsProvider, LlmConfig
 from icelake.errors import ConfigError, LlmCapabilityError
 from icelake.models.admin import BudgetStep
@@ -62,22 +62,36 @@ def test_local_embedder_extra_missing(monkeypatch: pytest.MonkeyPatch) -> None:
         build_embedder(EmbeddingsConfig(provider=EmbeddingsProvider.LOCAL))
 
 
-class TestInMemoryMeter:
+class TestUsageMeter:
     NOW = datetime(2026, 8, 24, tzinfo=UTC)
 
-    def test_budget_ladder(self) -> None:
-        meter = InMemoryMeter(
-            BudgetsConfig(guild_daily_prompt_tokens=100),
-            FixedClock(self.NOW),
-        )
-        assert meter.check_budget("g") is BudgetStep.NONE
-        meter.charge_guild("g", prompt_tokens=90)
-        assert meter.check_budget("g") is BudgetStep.SKIP_RECONCILE
-        meter.charge_guild("g", prompt_tokens=20)
-        assert meter.check_budget("g") is BudgetStep.SKIP_EXTRACTION
+    def _meter(self, budgets: BudgetsConfig | None = None) -> UsageMeter:
+        from icelake.adapters.in_memory.store import InMemoryStore
+
+        return UsageMeter(budgets or BudgetsConfig(), FixedClock(self.NOW), store=InMemoryStore())
+
+    async def test_budget_ladder(self) -> None:
+        meter = self._meter(BudgetsConfig(guild_daily_prompt_tokens=100))
+        assert await meter.check_budget("g") is BudgetStep.NONE
+        await meter.charge_guild("g", prompt_tokens=90)
+        assert await meter.check_budget("g") is BudgetStep.SKIP_RECONCILE
+        await meter.charge_guild("g", prompt_tokens=20)
+        assert await meter.check_budget("g") is BudgetStep.SKIP_EXTRACTION
+
+    async def test_budgets_are_store_backed_across_meter_instances(self) -> None:
+        """Two processes (two meters, one store) share one budget pool."""
+        from icelake.adapters.in_memory.store import InMemoryStore
+
+        store = InMemoryStore()
+        budgets = BudgetsConfig(guild_daily_prompt_tokens=100)
+        meter_a = UsageMeter(budgets, FixedClock(self.NOW), store=store)
+        meter_b = UsageMeter(budgets, FixedClock(self.NOW), store=store)
+        await meter_a.charge_guild("g", prompt_tokens=60)
+        await meter_b.charge_guild("g", prompt_tokens=50)
+        assert await meter_a.check_budget("g") is BudgetStep.SKIP_EXTRACTION
 
     def test_snapshot_counts(self) -> None:
-        meter = InMemoryMeter(BudgetsConfig(), FixedClock(self.NOW))
+        meter = self._meter()
         meter.record_llm("extraction", prompt_tokens=10, completion_tokens=5, model="m")
         meter.increment("facts_added")
         snapshot = meter.snapshot()
@@ -85,7 +99,7 @@ class TestInMemoryMeter:
         assert snapshot.prompt_tokens["extraction"] == 10
 
     def test_provider_reported_cost_wins_over_price_table(self) -> None:
-        meter = InMemoryMeter(BudgetsConfig(), FixedClock(self.NOW))
+        meter = self._meter()
         meter.record_llm(
             "extraction",
             prompt_tokens=1_000_000,
@@ -96,7 +110,7 @@ class TestInMemoryMeter:
         assert meter.snapshot().estimated_cost_usd["extraction"] == 0.5
 
     def test_actual_cost_recorded_for_unpriced_model(self) -> None:
-        meter = InMemoryMeter(BudgetsConfig(), FixedClock(self.NOW))
+        meter = self._meter()
         meter.record_llm(
             "extraction",
             prompt_tokens=10,
@@ -119,7 +133,9 @@ class TestMeteredLLM:
             async def complete(self, request: ChatRequest) -> ChatResponse:
                 return ChatResponse(text="{}", prompt_tokens=1000, completion_tokens=500)
 
-        meter = InMemoryMeter(BudgetsConfig(), FixedClock(TestInMemoryMeter.NOW))
+        from icelake.adapters.in_memory.store import InMemoryStore
+
+        meter = UsageMeter(BudgetsConfig(), FixedClock(TestUsageMeter.NOW), store=InMemoryStore())
         llm = MeteredLLM(_Fake(), meter)
         await llm.complete(
             ChatRequest(
