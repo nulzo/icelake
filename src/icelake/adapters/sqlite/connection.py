@@ -163,6 +163,12 @@ CREATE TABLE IF NOT EXISTS dm_cursors (
     value TEXT NOT NULL,
     PRIMARY KEY (guild_id, key)
 );
+CREATE TABLE IF NOT EXISTS dm_budgets (
+    guild_id TEXT NOT NULL,
+    period_key TEXT NOT NULL,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (guild_id, period_key)
+);
 CREATE TABLE IF NOT EXISTS dm_batch_leases (
     guild_id TEXT NOT NULL,
     subject_key TEXT NOT NULL,
@@ -191,6 +197,38 @@ def iso(moment: Any) -> str | None:
 Params = tuple[object, ...]
 
 
+class _TaskLock:
+    """Task-reentrant variant of ``asyncio.Lock``.
+
+    A transaction scope must hold exclusivity for its whole body while store
+    methods called *inside* it (same task) pass through. Other tasks block —
+    SQLite is single-writer, so serialization is the correct behavior.
+    """
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._owner: asyncio.Task[object] | None = None
+        self._depth = 0
+
+    async def acquire(self) -> None:
+        task = asyncio.current_task()
+        if self._owner is not None and self._owner is task:
+            self._depth += 1
+            return
+        await self._lock.acquire()
+        self._owner = task
+        self._depth = 1
+
+    def release(self) -> None:
+        self._depth -= 1
+        if self._depth == 0:
+            self._owner = None
+            self._lock.release()
+
+    def held_by_current_task(self) -> bool:
+        return self._owner is not None and self._owner is asyncio.current_task()
+
+
 class SqliteConnection:
     """Async facade over a single-writer SQLite connection run off-loop."""
 
@@ -204,7 +242,10 @@ class SqliteConnection:
                 Path(parent).mkdir(parents=True, exist_ok=True)
         self._path = path
         self._conn: sqlite3.Connection | None = None
-        self._lock = asyncio.Lock()
+        self._lock = _TaskLock()
+        # While a transaction_scope is open, per-statement auto-commit must be
+        # suppressed or every inner write would commit the unit of work early.
+        self._txn_open = False
 
     async def connect(self) -> None:
         if self._conn is not None:
@@ -252,11 +293,14 @@ class SqliteConnection:
 
     async def query(self, sql: str, params: Params = ()) -> list[sqlite3.Row]:
         conn = self._require_conn()
-        async with self._lock:
+        await self._lock.acquire()
+        try:
             cursor = await asyncio.to_thread(conn.execute, sql, tuple(params))
             rows = await asyncio.to_thread(cursor.fetchall)
             cursor.close()
             return list(rows)
+        finally:
+            self._lock.release()
 
     async def query_one(self, sql: str, params: Params = ()) -> sqlite3.Row | None:
         rows = await self.query(sql, params)
@@ -265,47 +309,77 @@ class SqliteConnection:
     async def execute_returning(self, sql: str, params: Params = ()) -> list[sqlite3.Row]:
         """Write statement with RETURNING: rows fetched and committed under one lock."""
         conn = self._require_conn()
-        async with self._lock:
+        await self._lock.acquire()
+        try:
             cursor = await asyncio.to_thread(conn.execute, sql, tuple(params))
             rows = await asyncio.to_thread(cursor.fetchall)
-            await asyncio.to_thread(conn.commit)
+            if not self._txn_open:
+                await asyncio.to_thread(conn.commit)
             cursor.close()
             return list(rows)
+        finally:
+            self._lock.release()
 
     async def _execute(self, sql: str, params: Params = ()) -> None:
         conn = self._require_conn()
-        async with self._lock:
+        await self._lock.acquire()
+        try:
             cursor = await asyncio.to_thread(conn.execute, sql, tuple(params))
-            await asyncio.to_thread(conn.commit)
+            if not self._txn_open:
+                await asyncio.to_thread(conn.commit)
             cursor.close()
+        finally:
+            self._lock.release()
 
     async def _executescript(self, script: str) -> None:
         conn = self._require_conn()
-        async with self._lock:
+        await self._lock.acquire()
+        try:
             await asyncio.to_thread(conn.executescript, script)
             await asyncio.to_thread(conn.commit)
+        finally:
+            self._lock.release()
 
     @contextlib.asynccontextmanager
     async def transaction_scope(self) -> AsyncIterator[SqliteConnection]:
-        """Async CM wrapping BEGIN IMMEDIATE / COMMIT / ROLLBACK."""
-        conn = self._require_conn()
-        await asyncio.to_thread(conn.execute, "BEGIN IMMEDIATE", ())
-        try:
-            yield self
-            await asyncio.to_thread(conn.execute, "COMMIT", ())
-        except Exception:
-            await asyncio.to_thread(conn.execute, "ROLLBACK", ())
-            raise
+        """Async CM wrapping BEGIN IMMEDIATE / COMMIT / ROLLBACK.
 
-    async def transaction(self, statements: list[tuple[str, Params]]) -> None:
-        """Apply a group of writes atomically."""
+        Holds the connection lock for the whole unit of work (single-writer
+        serialization) and suppresses per-statement commits inside the scope.
+        A nested scope joins the open transaction — savepoint semantics are
+        deliberately not offered; keep units of work flat.
+        """
         conn = self._require_conn()
-        async with self._lock:
+        if self._txn_open and self._lock.held_by_current_task():
+            yield self
+            return
+        await self._lock.acquire()
+        self._txn_open = True
+        try:
+            await asyncio.to_thread(conn.execute, "BEGIN IMMEDIATE", ())
             try:
-                await asyncio.to_thread(conn.execute, "BEGIN IMMEDIATE", ())
-                for sql, params in statements:
-                    await asyncio.to_thread(conn.execute, sql, tuple(params))
+                yield self
                 await asyncio.to_thread(conn.execute, "COMMIT", ())
             except Exception:
                 await asyncio.to_thread(conn.execute, "ROLLBACK", ())
                 raise
+        finally:
+            self._txn_open = False
+            self._lock.release()
+
+    async def transaction(self, statements: list[tuple[str, Params]]) -> None:
+        """Apply a group of writes atomically."""
+        conn = self._require_conn()
+        await self._lock.acquire()
+        self._txn_open = True
+        try:
+            await asyncio.to_thread(conn.execute, "BEGIN IMMEDIATE", ())
+            for sql, params in statements:
+                await asyncio.to_thread(conn.execute, sql, tuple(params))
+            await asyncio.to_thread(conn.execute, "COMMIT", ())
+        except Exception:
+            await asyncio.to_thread(conn.execute, "ROLLBACK", ())
+            raise
+        finally:
+            self._txn_open = False
+            self._lock.release()

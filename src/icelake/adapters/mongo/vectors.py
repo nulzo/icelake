@@ -32,6 +32,8 @@ class MongoVectorIndex:
 
     async def setup(self) -> None:
         await self.col.create_index([("guild_id", 1)])
+        # Compound so the subject scope filter is index-served, not a scan.
+        await self.col.create_index([("guild_id", 1), ("subject_id", 1)])
 
     async def upsert(self, items: tuple[VectorItem, ...]) -> None:
         for item in items:
@@ -72,7 +74,12 @@ class MongoVectorIndex:
                 {"subject_id": {"$in": list(subject_ids)}},
                 {"subject_id": None},
             ]
-        cursor = self.col.find(query).limit(candidate_cap)
+        cursor = (
+            # Recency-biased slice (fact ids are time-ordered ULIDs): an
+            # arbitrary capped slice silently degrades recall once a guild
+            # exceeds the candidate cap.
+            self.col.find(query).sort("_id", -1).limit(candidate_cap)
+        )
         scored: list[VectorHit] = []
         async for doc in cursor:
             score = _cosine(embedding, _unpack(doc["embedding"]))

@@ -48,6 +48,7 @@ class InMemoryStore:
         self._entity_aliases: dict[tuple[str, str], str] = {}
         self._summaries: dict[tuple[str, str | None], ProfileSummary] = {}
         self._cursors: dict[tuple[str, str], str] = {}
+        self._budgets: dict[tuple[str, str], int] = {}
         self._opt_outs: set[tuple[str, str]] = set()
         self.closed = False
 
@@ -427,6 +428,31 @@ class InMemoryStore:
     async def nodes_for_fact(self, guild_id: str, memory_id: str) -> tuple[LinkRow, ...]:
         return tuple(self._links.get(memory_id, ()))
 
+    async def links_for_nodes(
+        self,
+        guild_id: str,
+        nodes: tuple[NodeRef, ...],
+        *,
+        active_only: bool = True,
+        limit_per_node: int = 50,
+    ) -> tuple[tuple[LinkRow, FactRecord], ...]:
+        wanted = set(nodes)
+        results: list[tuple[LinkRow, FactRecord]] = []
+        per_node: dict[NodeRef, int] = {}
+        for rows in self._links.values():
+            for row in rows:
+                node = (row.node_type, row.node_id)
+                if row.guild_id != guild_id or node not in wanted:
+                    continue
+                if per_node.get(node, 0) >= limit_per_node:
+                    continue
+                record = self._facts.get((guild_id, row.memory_id))
+                if record is None or (active_only and not self._active(record)):
+                    continue
+                per_node[node] = per_node.get(node, 0) + 1
+                results.append((row, record))
+        return tuple(results)
+
     # -- relations -------------------------------------------------------------
 
     @staticmethod
@@ -483,6 +509,55 @@ class InMemoryStore:
             if edge.guild_id == guild_id
             and edge.valid_until is None
             and (node[0], node[1]) in {(edge.src_type, edge.src_id), (edge.dst_type, edge.dst_id)}
+        ]
+        hits.sort(key=lambda e: -e.weight)
+        return tuple(hits[:limit])
+
+    async def incident_edges_many(
+        self,
+        guild_id: str,
+        nodes: tuple[NodeRef, ...],
+        *,
+        limit_per_node: int = 50,
+    ) -> tuple[RelationEdge, ...]:
+        wanted = set(nodes)
+        hits = [
+            edge
+            for edge in self._relations.values()
+            if edge.guild_id == guild_id
+            and edge.valid_until is None
+            and ((edge.src_type, edge.src_id) in wanted or (edge.dst_type, edge.dst_id) in wanted)
+        ]
+        hits.sort(key=lambda e: -e.weight)
+        results: list[RelationEdge] = []
+        per_node: dict[NodeRef, int] = {}
+        for edge in hits:
+            touches = [
+                node
+                for node in ((edge.src_type, edge.src_id), (edge.dst_type, edge.dst_id))
+                if node in wanted
+            ]
+            if any(per_node.get(node, 0) >= limit_per_node for node in touches):
+                continue
+            for node in touches:
+                per_node[node] = per_node.get(node, 0) + 1
+            results.append(edge)
+        return tuple(results)
+
+    async def edges_to_nodes(
+        self,
+        guild_id: str,
+        nodes: tuple[NodeRef, ...],
+        *,
+        limit: int = 500,
+    ) -> tuple[RelationEdge, ...]:
+        wanted = set(nodes)
+        hits = [
+            edge
+            for edge in self._relations.values()
+            if edge.guild_id == guild_id
+            and edge.valid_until is None
+            and (edge.dst_type, edge.dst_id) in wanted
         ]
         hits.sort(key=lambda e: -e.weight)
         return tuple(hits[:limit])
@@ -606,6 +681,40 @@ class InMemoryStore:
 
     async def set_cursor(self, guild_id: str, key: str, value: str) -> None:
         self._cursors[(guild_id, key)] = value
+
+    async def list_guild_ids(self) -> tuple[str, ...]:
+        # The in-memory queue is a separate object; facts are the durable
+        # state this store owns, so they define "active guild" here.
+        return tuple(sorted({fact.guild_id for fact in self._facts.values()}))
+
+    async def charge_guild_tokens(
+        self,
+        guild_id: str,
+        *,
+        day_key: str,
+        month_key: str,
+        prompt_tokens: int,
+    ) -> tuple[int, int]:
+        async with self._lock:
+            for period in (day_key, month_key):
+                key = (guild_id, period)
+                self._budgets[key] = self._budgets.get(key, 0) + prompt_tokens
+            return (
+                self._budgets[(guild_id, day_key)],
+                self._budgets[(guild_id, month_key)],
+            )
+
+    async def guild_token_usage(
+        self,
+        guild_id: str,
+        *,
+        day_key: str,
+        month_key: str,
+    ) -> tuple[int, int]:
+        return (
+            self._budgets.get((guild_id, day_key), 0),
+            self._budgets.get((guild_id, month_key), 0),
+        )
 
     async def get_summary(
         self,

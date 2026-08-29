@@ -184,6 +184,54 @@ class IdentityGraphMixin:
             for r in rows
         )
 
+    async def links_for_nodes(
+        self,
+        guild_id: str,
+        nodes: tuple[NodeRef, ...],
+        *,
+        active_only: bool = True,
+        limit_per_node: int = 50,
+    ) -> tuple[tuple[LinkRow, FactRecord], ...]:
+        from icelake.adapters.sqlite.store_facts import record_from_row
+
+        if not nodes:
+            return ()
+        unique = tuple(dict.fromkeys(nodes))
+        marks = ",".join("(?,?)" for _ in unique)
+        params: list[object] = [guild_id]
+        for node_type, node_id in unique:
+            params.extend([node_type.value, node_id])
+        conditions = ["l.guild_id=?", f"(l.node_type, l.node_id) IN ({marks})"]
+        if active_only:
+            conditions.append("f.valid_until IS NULL AND f.superseded_by_id IS NULL")
+        # Fetch bounded by the worst case, then apply per-node caps in Python —
+        # portable across backends and the pools here are small by config.
+        params.append(limit_per_node * len(unique))
+        rows = await self._db.query(
+            f"""SELECT l.*, f.id AS f_id, f.*
+                FROM dm_links l JOIN dm_facts f ON f.id=l.memory_id AND f.guild_id=l.guild_id
+                WHERE {" AND ".join(conditions)}
+                LIMIT ?""",
+            tuple(params),
+        )
+        results: list[tuple[LinkRow, FactRecord]] = []
+        per_node: dict[tuple[str, str], int] = {}
+        for row in rows:
+            key = (row["node_type"], row["node_id"])
+            if per_node.get(key, 0) >= limit_per_node:
+                continue
+            per_node[key] = per_node.get(key, 0) + 1
+            link = LinkRow(
+                guild_id=row["guild_id"],
+                memory_id=row["memory_id"],
+                node_type=NodeType(row["node_type"]),
+                node_id=row["node_id"],
+                kind=EdgeKind(row["kind"]),
+                created_at=parse_moment(row["created_at"]),
+            )
+            results.append((link, record_from_row(row)))
+        return tuple(results)
+
     # -- relations --------------------------------------------------------------------
 
     def _edge_from_row(self, row: sqlite3.Row) -> RelationEdge:
@@ -306,6 +354,69 @@ class IdentityGraphMixin:
                  AND ((src_type=? AND src_id=?) OR (dst_type=? AND dst_id=?))
                ORDER BY weight DESC LIMIT ?""",
             (guild_id, node[0].value, node[1], node[0].value, node[1], limit),
+        )
+        return tuple(self._edge_from_row(r) for r in rows)
+
+    async def incident_edges_many(
+        self,
+        guild_id: str,
+        nodes: tuple[NodeRef, ...],
+        *,
+        limit_per_node: int = 50,
+    ) -> tuple[RelationEdge, ...]:
+        if not nodes:
+            return ()
+        unique = tuple(dict.fromkeys(nodes))
+        marks = ",".join("(?,?)" for _ in unique)
+        params: list[object] = [guild_id]
+        for _ in range(2):  # src IN (...) first, then dst IN (...)
+            for node_type, node_id in unique:
+                params.extend([node_type.value, node_id])
+        rows = await self._db.query(
+            f"""SELECT * FROM dm_relations
+                WHERE guild_id=? AND valid_until IS NULL
+                  AND ((src_type, src_id) IN ({marks}) OR (dst_type, dst_id) IN ({marks}))
+                ORDER BY weight DESC LIMIT ?""",
+            (*params, limit_per_node * len(unique)),
+        )
+        results: list[RelationEdge] = []
+        per_node: dict[tuple[str, str], int] = {}
+        wanted = {(t.value, i) for t, i in unique}
+        for row in rows:
+            edge = self._edge_from_row(row)
+            touches = [
+                key
+                for key in ((edge.src_type.value, edge.src_id), (edge.dst_type.value, edge.dst_id))
+                if key in wanted
+            ]
+            if any(per_node.get(key, 0) >= limit_per_node for key in touches):
+                continue
+            for key in touches:
+                per_node[key] = per_node.get(key, 0) + 1
+            results.append(edge)
+        return tuple(results)
+
+    async def edges_to_nodes(
+        self,
+        guild_id: str,
+        nodes: tuple[NodeRef, ...],
+        *,
+        limit: int = 500,
+    ) -> tuple[RelationEdge, ...]:
+        if not nodes:
+            return ()
+        unique = tuple(dict.fromkeys(nodes))
+        marks = ",".join("(?,?)" for _ in unique)
+        params: list[object] = [guild_id]
+        for node_type, node_id in unique:
+            params.extend([node_type.value, node_id])
+        params.append(limit)
+        rows = await self._db.query(
+            f"""SELECT * FROM dm_relations
+                WHERE guild_id=? AND valid_until IS NULL
+                  AND (dst_type, dst_id) IN ({marks})
+                ORDER BY weight DESC LIMIT ?""",
+            tuple(params),
         )
         return tuple(self._edge_from_row(r) for r in rows)
 

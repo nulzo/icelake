@@ -8,6 +8,7 @@ lives in pure modules above).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import typing
 from contextlib import AbstractAsyncContextManager
@@ -573,6 +574,57 @@ class MongoStore:
         )
         return tuple([link_from_doc(d) async for d in cursor])
 
+    async def links_for_nodes(
+        self,
+        guild_id: str,
+        nodes: tuple[Any, ...],
+        *,
+        active_only: bool = True,
+        limit_per_node: int = 50,
+    ) -> tuple[tuple[LinkRow, FactRecord], ...]:
+        if not nodes:
+            return ()
+        unique = tuple(dict.fromkeys(nodes))
+        pipeline: list[dict[str, Any]] = [
+            {
+                "$match": {
+                    "guild_id": guild_id,
+                    "$or": [
+                        {
+                            "node_type": getattr(t, "value", t),
+                            "node_id": i,
+                        }
+                        for t, i in unique
+                    ],
+                }
+            },
+            {"$limit": limit_per_node * len(unique)},
+            {
+                "$lookup": {
+                    "from": "dm_facts",
+                    "localField": "memory_id",
+                    "foreignField": "_id",
+                    "as": "fact",
+                }
+            },
+            {"$unwind": "$fact"},
+        ]
+        if active_only:
+            pipeline.insert(
+                1,
+                {"$match": {"fact.valid_until": None, "fact.superseded_by_id": None}},
+            )
+        results: list[tuple[LinkRow, FactRecord]] = []
+        per_node: dict[tuple[str, str], int] = {}
+        cursor = await self.db["dm_links"].aggregate(pipeline)
+        async for doc in cursor:
+            key = (doc["node_type"], doc["node_id"])
+            if per_node.get(key, 0) >= limit_per_node:
+                continue
+            per_node[key] = per_node.get(key, 0) + 1
+            results.append((link_from_doc(doc), fact_from_doc(doc["fact"])))
+        return tuple(results)
+
     # -- relations --------------------------------------------------------------------
 
     async def upsert_relation(self, edge: RelationEdge) -> RelationEdge:
@@ -637,6 +689,73 @@ class MongoStore:
                     "$or": [
                         {"src_type": node_value, "src_id": node[1]},
                         {"dst_type": node_value, "dst_id": node[1]},
+                    ],
+                }
+            )
+            .sort("weight", -1)
+            .limit(limit)
+        )
+        return tuple([relation_from_doc(d) async for d in cursor])
+
+    async def incident_edges_many(
+        self,
+        guild_id: str,
+        nodes: tuple[Any, ...],
+        *,
+        limit_per_node: int = 50,
+    ) -> tuple[RelationEdge, ...]:
+        if not nodes:
+            return ()
+        unique = tuple(dict.fromkeys(nodes))
+        wanted = {(getattr(t, "value", t), i) for t, i in unique}
+        clauses = [
+            clause
+            for node_value, node_id in wanted
+            for clause in (
+                {"src_type": node_value, "src_id": node_id},
+                {"dst_type": node_value, "dst_id": node_id},
+            )
+        ]
+        cursor = (
+            self.db["dm_relations"]
+            .find({"guild_id": guild_id, "valid_until": None, "$or": clauses})
+            .sort("weight", -1)
+            .limit(limit_per_node * len(unique))
+        )
+        results: list[RelationEdge] = []
+        per_node: dict[tuple[str, str], int] = {}
+        async for doc in cursor:
+            edge = relation_from_doc(doc)
+            touches = [
+                key
+                for key in ((edge.src_type.value, edge.src_id), (edge.dst_type.value, edge.dst_id))
+                if key in wanted
+            ]
+            if any(per_node.get(key, 0) >= limit_per_node for key in touches):
+                continue
+            for key in touches:
+                per_node[key] = per_node.get(key, 0) + 1
+            results.append(edge)
+        return tuple(results)
+
+    async def edges_to_nodes(
+        self,
+        guild_id: str,
+        nodes: tuple[Any, ...],
+        *,
+        limit: int = 500,
+    ) -> tuple[RelationEdge, ...]:
+        if not nodes:
+            return ()
+        cursor = (
+            self.db["dm_relations"]
+            .find(
+                {
+                    "guild_id": guild_id,
+                    "valid_until": None,
+                    "$or": [
+                        {"dst_type": getattr(t, "value", t), "dst_id": i}
+                        for t, i in dict.fromkeys(nodes)
                     ],
                 }
             )
@@ -1055,6 +1174,52 @@ class MongoStore:
             {"guild_id": guild_id, "key": key},
             {"$set": {"value": value}},
             upsert=True,
+        )
+
+    async def list_guild_ids(self) -> tuple[str, ...]:
+        from_facts, from_messages = await asyncio.gather(
+            self.db["dm_facts"].distinct("guild_id"),
+            self.db["dm_messages"].distinct("guild_id"),
+        )
+        return tuple(sorted(set(from_facts) | set(from_messages)))
+
+    async def charge_guild_tokens(
+        self,
+        guild_id: str,
+        *,
+        day_key: str,
+        month_key: str,
+        prompt_tokens: int,
+    ) -> tuple[int, int]:
+        from pymongo import ReturnDocument
+
+        async def bump(period: str) -> int:
+            doc = await self.db["dm_budgets"].find_one_and_update(
+                {"_id": f"{guild_id}:{period}"},
+                {"$inc": {"prompt_tokens": prompt_tokens}},
+                upsert=True,
+                return_document=ReturnDocument.AFTER,
+            )
+            assert doc is not None  # upsert + AFTER always returns the doc
+            return int(doc["prompt_tokens"])
+
+        day_total, month_total = await asyncio.gather(bump(day_key), bump(month_key))
+        return day_total, month_total
+
+    async def guild_token_usage(
+        self,
+        guild_id: str,
+        *,
+        day_key: str,
+        month_key: str,
+    ) -> tuple[int, int]:
+        cursor = self.db["dm_budgets"].find(
+            {"_id": {"$in": [f"{guild_id}:{day_key}", f"{guild_id}:{month_key}"]}}
+        )
+        by_id = {doc["_id"]: int(doc["prompt_tokens"]) async for doc in cursor}
+        return (
+            by_id.get(f"{guild_id}:{day_key}", 0),
+            by_id.get(f"{guild_id}:{month_key}", 0),
         )
 
     async def touch_facts(

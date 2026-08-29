@@ -459,6 +459,48 @@ class FactsMixin:
             (guild_id, key, value),
         )
 
+    async def list_guild_ids(self) -> tuple[str, ...]:
+        rows = await self._db.query(
+            "SELECT guild_id FROM dm_facts UNION SELECT guild_id FROM dm_messages"
+        )
+        return tuple(row["guild_id"] for row in rows)
+
+    async def charge_guild_tokens(
+        self,
+        guild_id: str,
+        *,
+        day_key: str,
+        month_key: str,
+        prompt_tokens: int,
+    ) -> tuple[int, int]:
+        totals: list[int] = []
+        for period in (day_key, month_key):
+            rows = await self._db.execute_returning(
+                """INSERT INTO dm_budgets (guild_id, period_key, prompt_tokens)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(guild_id, period_key)
+                   DO UPDATE SET prompt_tokens = prompt_tokens + excluded.prompt_tokens
+                   RETURNING prompt_tokens""",
+                (guild_id, period, prompt_tokens),
+            )
+            totals.append(int(rows[0]["prompt_tokens"]))
+        return totals[0], totals[1]
+
+    async def guild_token_usage(
+        self,
+        guild_id: str,
+        *,
+        day_key: str,
+        month_key: str,
+    ) -> tuple[int, int]:
+        rows = await self._db.query(
+            "SELECT period_key, prompt_tokens FROM dm_budgets "
+            "WHERE guild_id=? AND period_key IN (?, ?)",
+            (guild_id, day_key, month_key),
+        )
+        by_period = {row["period_key"]: int(row["prompt_tokens"]) for row in rows}
+        return by_period.get(day_key, 0), by_period.get(month_key, 0)
+
     async def get_summary(
         self,
         guild_id: str,
