@@ -1,31 +1,22 @@
 # icelake
 
-Accurate, scalable, cost-effective **agentic memory for Discord bots** — ChatGPT/Claude-style
-memory of your users, hardened against cross-user attribution errors, working across every
-member of a server.
+Memory for Discord bots. You feed it messages; it extracts facts about users and
+hands you a labeled block to put in your system prompt when you need to reply.
 
-> Priority order (non-negotiable): **Accuracy → Cost → Performance**.
+Facts are stored against Discord user IDs, not names, so a rename does not move
+someone else's memories onto a new person. Third-party claims ("alice called bob
+a hacker") attach to the person they are about.
 
-- **Accurate**: facts attach to *hardened* Discord user IDs via a roster-token protocol that
-  structurally prevents LLM hallucinated attribution; third-party statements ("X called Y a
-  hacker") anchor on the person they're about, with the speaker kept as attribution.
-- **Cost-effective**: batched extraction (~1 LLM call per ~10 messages), conditional
-  reconciliation (phase-2 fires only on collisions), zero-LLM retrieval, pluggable embeddings.
-- **Scalable**: durable lease queue safe across processes, guild-partitioned storage,
-  hub-aware bounded graph traversal, per-guild budgets with graceful degradation.
-- **Composable**: every external dependency sits behind a Protocol port — swap storage,
-  LLM provider, embedder, or clock with one constructor argument.
+Requires Python 3.12+.
 
 ## Install
 
 ```bash
-pip install icelake                    # core (SQLite backend, hashing embedder)
-pip install "icelake[discord]"         # + discord.py integration
-pip install "icelake[mongo]"           # + MongoDB backend (PyMongo Async)
-pip install "icelake[local-embeddings]"# + sentence-transformers embeddings
+pip install icelake
+pip install "icelake[discord]"           # discord.py helpers
+pip install "icelake[mongo]"             # MongoDB backend
+pip install "icelake[local-embeddings]"  # sentence-transformers
 ```
-
-Requires Python ≥ 3.12.
 
 ## Quickstart
 
@@ -43,55 +34,55 @@ async def main() -> None:
             "?model=google/gemini-3.7-flash",
     ))
     async with memory:
-        # 1. Feed it messages (fire-and-forget; extraction happens in background)
-        receipt = await memory.observe(MessageEvent(
-            message_id="9001", guild_id="555", channel_id="777",
+        await memory.observe(MessageEvent(
+            message_id="9001",
+            guild_id="555",
+            channel_id="777",
             author_id="100000000000000001",
             content="I've been learning Rust for about a year now!",
             created_at=datetime.now(UTC),
             author_display_name="alice",
         ))
 
-        # 2. Build prompt context for a reply: asker + mentioned users + server.
         ctx = await memory.prompt_context(
             guild_id="555",
             asker_id="100000000000000001",
             text="what am I learning these days?",
-            mentioned_ids=("200000000000000002",),   # @mentions in this message
+            mentioned_ids=("200000000000000002",),
         )
-        print(ctx.injection_block)   # labeled, budgeted, cite-tagged block
+        print(ctx.injection_block)
 
-        # 3. After generation, resolve echoed [mem:N] tags into jump links.
         reply = ctx.apply_citations("You're learning Rust [mem:1]!")
 
 
 asyncio.run(main())
 ```
 
-Runnable, complete examples live in [`examples/`](examples/):
+`observe` returns immediately. Extraction runs in the background.
 
-| File | What it demonstrates |
-|---|---|
-| [`examples/omni_style_bot.py`](examples/omni_style_bot.py) | **Production-shaped bot**: passive learning, ping/reply turns, `/memory` slash group, OpenRouter chat + embeddings |
-| [`examples/ping_reply_bot.py`](examples/ping_reply_bot.py) | Classic chat bot: observe every message, reply when pinged, citations, remember/forget, nickname tracking |
-| [`examples/relationship_queries.py`](examples/relationship_queries.py) | Zero-LLM graph demo: 8 members, pair recall, stances, 2-hop neighbors. No Discord required |
-| [`examples/e2e_simulation.py`](examples/e2e_simulation.py) | Public-API eval: 81 hard invariants + model expectations against a scripted guild |
-| [`examples/bench_models.py`](examples/bench_models.py) | Parallel model matrix; writes JSON + Markdown reports |
+`prompt_context` builds a block with separate sections for the asker, anyone
+they mentioned, and the server. Stick it on your system prompt, generate a
+reply, then run `ctx.apply_citations` so `[mem:N]` tags become jump links.
 
-### The ping-reply turn, step by step
+Examples:
 
-When `@Bot what happened between alice and bob?` arrives:
+- [`examples/omni_style_bot.py`](examples/omni_style_bot.py) - full bot: learns from everyone, replies when pinged or replied to, `/memory` slash commands
+- [`examples/ping_reply_bot.py`](examples/ping_reply_bot.py) - smaller ping-reply bot
+- [`examples/relationship_queries.py`](examples/relationship_queries.py) - graph queries with no Discord or LLM
+- [`examples/e2e_simulation.py`](examples/e2e_simulation.py) - scripted-guild eval
+- [`examples/bench_models.py`](examples/bench_models.py) - model matrix
+
+## A reply turn
 
 ```python
-# 1. Resolve memories for EVERYONE in the conversation in one call:
 ctx = await memory.prompt_context(
     guild_id=guild_id,
-    asker_id=str(message.author.id),       # who is talking -> their profile
-    text=question,                          # query + entity hints
-    mentioned_ids=("alice_id", "bob_id"),   # referenced users' profiles
+    asker_id=str(message.author.id),
+    text=question,
+    mentioned_ids=("alice_id", "bob_id"),
 )
 
-# ctx.injection_block is labeled so facts never bleed across users:
+# ctx.injection_block looks like:
 #
 #   [MEMORY CONTEXT]
 #
@@ -109,34 +100,29 @@ ctx = await memory.prompt_context(
 #
 #   When you use a fact above in your reply, echo its [mem:N] tag ...
 
-# 2. Generate your LLM reply using system_prompt + ctx.injection_block.
-
-# 3. Resolve echoed tags into jump links (deleted-message safe):
-reply = ctx.apply_citations(reply_text)
-#   "... bob was called out [[mem:2]](https://discord.com/channels/...)"
+reply = await generate(system_prompt + "\n\n" + ctx.injection_block, question)
+await message.reply(ctx.apply_citations(reply), mention_author=False)
 ```
 
-### Cross-user questions ("what does X think about Y")
-
-Names resolve through the alias ladder (mention ID / username / display name /
-saved real name); ambiguity never guesses:
+## Names, relationships, commands
 
 ```python
-resolution = await memory.identity.resolve(guild_id, "klim")     # or snowflake/@mention
+resolution = await memory.identity.resolve(guild_id, "klim")
 if resolution.ambiguous:
-    ...  # ask which member; never guess
+    ...  # ask which member; do not guess
 
-edges = await memory.graph.between(guild_id, x_id, y_id)         # typed edges
-stances = await memory.graph.entity_stances(guild_id, "movies")  # opposing stances co-presented
-neighbors = await memory.graph.neighbors(guild_id, x_id, depth=2)  # hop discovery w/ paths
-similar = await memory.graph.similar_users(guild_id, x_id)       # Jaccard over traits
+edges = await memory.graph.between(guild_id, x_id, y_id)
+stances = await memory.graph.entity_stances(guild_id, "movies")
+neighbors = await memory.graph.neighbors(guild_id, x_id, depth=2)
+similar = await memory.graph.similar_users(guild_id, x_id)
 ```
 
-### Chat-native commands (ChatGPT style)
+Names go through mention ID, username, display name, then saved real name.
+If more than one member matches, you get `ambiguous` instead of a guess.
 
 ```python
 command = await memory.classify_command("hey bot remember that I hate pineapple")
-# UserMemoryCommand(action="remember", target_text="that I hate pineapple", confidence=0.9)
+# UserMemoryCommand(action="remember", target_text="that I hate pineapple", ...)
 if command.action == "remember":
     await memory.facts.remember(
         guild_id=guild_id, subject_id=user_id,
@@ -144,7 +130,7 @@ if command.action == "remember":
     )
 ```
 
-Manual facts accept graph participation too:
+Third-party facts can carry a relation:
 
 ```python
 from icelake.models.operations import ProposedRelation
@@ -152,184 +138,70 @@ from icelake.models.operations import ProposedRelation
 await memory.facts.remember(
     guild_id=guild_id, subject_id=bob_id,
     text="carol called bob a sore loser during game night",
-    actor_id=carol_id, speaker_id=carol_id,          # third-party attribution
+    actor_id=carol_id, speaker_id=carol_id,
     relations=(ProposedRelation(
         verb="called_out", from_token=carol_id, to_token=bob_id),),
 )
 ```
 
-### Governance every production bot should wire
+Opt-out and purge:
 
 ```python
-@bot.command()
-async def forgetme(ctx: commands.Context):
-    await memory.admin.purge_user(str(ctx.guild.id), str(ctx.author.id),
-                                  dry_run=False)
-    await ctx.reply("All memories about you have been purged.", mention_author=False)
-
-# opt-out is enforced instantly across observe AND recall:
 await memory.admin.set_opt_out(guild_id, user_id, True)
+await memory.admin.purge_user(guild_id, user_id, dry_run=False)
 ```
 
----
+Opt-out applies to both `observe` and recall.
 
-## Full bot example (omni-style)
+## How extraction works
 
-For a production-shaped deployment — passive learning for everyone, replies only when
-addressed, requester-first multi-person context, `/memory` slash group, governance — see
-[`examples/omni_style_bot.py`](examples/omni_style_bot.py). It mirrors the architecture of
-a memory-native production bot and wires **OpenRouter** for both chat (`google/gemini-3.7-flash`)
-and embeddings (`openai/text-embedding-3-small`) so reconcile collisions and recall work on
-paraphrases, not just exact text matches.
+`observe` writes the message and enqueues it. A worker claims a batch per
+guild + author (leases, so two processes will not extract the same person
+twice). Short chatter is skipped with no LLM call. Otherwise the pipeline
+mints roster tokens (`p0`, `p1`, `server`), asks the model for JSON, runs
+quality gates, and stores what survives.
 
-- **Composition root**: `build_memory()` is the single place config → adapters → client
-  get wired; everything else receives `memory`.
-- **Learn from everyone, answer the addressed**: `on_message` observes every message
-  (bots included — they're registered as never-a-subject), then answers only when pinged
-  **or replied to**.
-- **Requester-first turn context** (capped at 4 subjects): asker + @mentions + reply-target,
-  resolved in one `prompt_context` call with per-person labeled sections.
-- **Coreference lines**: members known by several names get an explicit
-  *"these names all refer to ONE person"* line so the model never splits them.
-- **`/memory` group**: `show` (profile w/ aliases), `related` (typed edges),
-  `shared` (common entities), `edit` (teach a fact), `alias` (teach a nickname).
-- **Governance built in**: `/forgetme`, `/optout`, daily guild budgets, health.
+The model never sees Discord snowflakes. Identity fields may only use tokens
+minted for that batch; anything else is dropped. Stored text uses display
+names. The owner of a fact is the snowflake on `subject_id`, so a rename
+adds an alias instead of moving the row.
+
+Invalid JSON is repaired once, then dead-lettered. Contradictions invalidate
+or supersede the old fact; nothing is deleted. Profile digests regenerate
+after `extraction.auto_consolidate_after_adds` new facts (default 5).
+
+Recall does not call the LLM. Typical queries:
+
+| Question | Call |
+|---|---|
+| what do you know about X | `recall(subject_ids=(x,))` |
+| what does X think about Y | `graph.between(x, y)` |
+| who likes movies | `graph.entity_stances("movies")` |
+| people connected to X | `graph.neighbors(x, depth=2)` |
+
+## API
 
 ```python
-class OmniStyleBot(commands.Bot):
-    def __init__(self, memory: DiscordMemory) -> None:
-        ...
-        self.memory = memory
+memory.observe(event)
+memory.observe_many(events)
+memory.flush(guild_id=...)
+memory.register_bot_id(bot_user_id)   # never stored as a subject
 
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message) -> None:
-        if message.guild is None:
-            return
-        await self.memory.observe(to_event(message))     # learn; never blocks
-        if message.author.bot:
-            return
-        if await self._is_addressed(message):             # ping or reply-to-us
-            await self._handle_turn(message)
+memory.prompt_context(...)
+memory.recall(RecallQuery(...))
 
-    async def _handle_turn(self, message: discord.Message) -> None:
-        question = strip_bot_mention(message.content, self.user.id).strip()
-        subjects = await self._collect_subjects(message)   # mentions + reply target
-        ctx = await self.memory.prompt_context(
-            guild_id=guild_id,
-            asker_id=str(message.author.id),
-            text=question,
-            mentioned_ids=tuple(subjects),
-            token_budget_tokens=800,
-        )
-        system_prompt = PERSONA + "\n\n" + ctx.injection_block
-        reply = await generate(system_prompt, history, question)
-        await message.reply(ctx.apply_citations(reply)[:1900], mention_author=False)
+memory.facts.remember / update / forget / reinforce / history / list_for_subject / search
+memory.identity.resolve / register_alias / handle_member_rename / aliases_of
+memory.graph.between / entity_stances / neighbors / relations_of / similar_users
+memory.admin.set_opt_out / purge_user / export_guild / get_opt_out
+memory.ops.run_pending / retry_dead_letters / meter_snapshot / health
+memory.events.subscribe(BatchCompleted, handler)
+memory.classify_command(text)
+memory.regenerate_summaries(guild_id)
+memory.stats(guild_id)
 ```
 
-The injection block a turn produces looks like:
-
-```
-[MEMORY CONTEXT]
-
-REFERENCED USER: bob
-Coreference: these names all refer to ONE person: bob, bobert, bobby.
-Facts about bob ONLY. Do NOT attribute these to the asker.
-- [mem:1] bob was called a hacker by alice during the ranked match
-
-SERVER COMMUNITY FACTS
-Community-wide traits:
-- [mem:2] the community bonds over late night ranked gaming sessions
-
-When you use a fact above in your reply, echo its [mem:N] tag so the user
-can see the source. Do not invent tags for facts that were not listed.
-```
-
----
-
-## How it works
-
-```mermaid
-flowchart TB
-  observe["observe(event)"] --> queue["Pending message queue"]
-  queue --> worker["Lease worker<br/>one claim per guild + author"]
-  worker --> noise{"Noise gate"}
-  noise -->|chatter| skip["Ack - no LLM"]
-  noise -->|worth extracting| roster["Mint roster tokens<br/>p0, p1, server"]
-  roster --> extract["LLM extraction"]
-  extract --> schema{"Valid JSON schema?"}
-  schema -->|no after one repair| dead["Dead-letter the batch"]
-  schema -->|yes| gates["Quality gates"]
-  gates --> hit{"Near-duplicate collision?"}
-  hit -->|no| add["ADD fact"]
-  hit -->|yes| recon["Reconcile LLM"]
-  recon --> add
-  recon --> history["SUPERSEDE or INVALIDATE<br/>history kept"]
-  add --> store["Fact store<br/>bitemporal, one subject anchor"]
-  add --> vectors["Vector index"]
-  add --> kg["Knowledge graph<br/>incidence + typed edges"]
-  add --> digest["Profile digest<br/>every N new facts"]
-```
-
-`observe` is fire-and-forget: persist + enqueue, then return. Workers claim with keyed
-leases so multiple processes cannot double-extract the same author. Invalid extraction
-JSON is repaired once, then dead-lettered rather than silently acked empty.
-
-### Accuracy model
-
-- **Roster-token protocol** — identity fields (`subject_token`, `speaker_token`, relation
-  endpoints) may only use tokens we minted for this batch (`p0`, `p1`, `server`). The
-  model never sees Discord snowflakes; unknown tokens are dropped. Stored *prose* uses
-  display names (with a detokenize pass if the model leaks `p0` into `text`). Attribution
-  is the snowflake on `subject_id`, not the name in the sentence — renames add aliases;
-  they do not move rows.
-- **Anchoring invariant** — every fact has exactly one owner (a user or the guild).
-  Links between people/entities are additive.
-- **Truth maintenance** — contradictions *invalidate* (bitemporal `valid_until`) or
-  *supersede* (refinement chain); nothing auto-deletes. Citations and related-user
-  links survive supersede. Full audit history per fact.
-- **Quality gates** — refusals, LLM meta-talk, raw quotes (≥0.88 similarity), questions,
-  snowflakes in text, ephemeral media shares, and low-confidence claims are rejected by
-  pure, unit-tested gates. Registered bots are never subjects and are stripped from
-  mention links.
-- **Identity ladder** — usernames, display names, and saved real names resolve through
-  a source-ranked alias index. Ambiguity never guesses.
-- **Profile digests** — a paragraph summary regenerates after
-  `extraction.auto_consolidate_after_adds` new facts (default 5; not on a timer),
-  stamped with the library clock.
-
-### Query shapes (all zero-LLM by default)
-
-| Shape | Example | API |
-|---|---|---|
-| Profile | "what do you know about X" | `recall(subject_ids=(x,))` |
-| Cross-linked | "did X call Y a hacker?" | facts touching both via link intersect |
-| Relationship | "what does X think about Y" | `graph.between(x, y)` |
-| Entity stance | "who likes movies?" | `graph.entity_stances("movies")` |
-| Hop discovery | "shared connections of X" | `graph.neighbors(x, depth=2)` |
-
-## The consumer surface
-
-```python
-memory.observe(event)                  # → ObserveReceipt (never raises operational errors)
-memory.observe_many(events)            # bulk backfill
-memory.flush(guild_id=...)             # force-extract pending batches now
-memory.register_bot_id(bot_user_id)    # never a memory subject; stripped from mention links
-
-memory.prompt_context(...)             # → PromptContext (injection block + citations)
-memory.recall(RecallQuery(...))        # explicit query model
-
-memory.facts.remember/update/forget/reinforce/history/list_for_subject/search
-memory.identity.resolve/register_alias/handle_member_rename/aliases_of
-memory.graph.between/entity_stances/neighbors/relations_of/similar_users
-memory.admin.set_opt_out/purge_user/export_guild/get_opt_out
-memory.ops.run_pending/retry_dead_letters/meter_snapshot/health
-memory.events.subscribe(BatchCompleted, handler)   # typed hook events
-memory.classify_command(text)          # "remember that…" / "forget…" intent detection
-memory.regenerate_summaries(guild_id)  # force profile digests (else every N new facts)
-memory.stats(guild_id)                 # GuildStats snapshot
-```
-
-## discord.py integration
+## discord.py
 
 ```python
 # pip install icelake[discord]
@@ -346,123 +218,101 @@ class MyBot(commands.Bot):
     async def setup_hook(self) -> None:
         memory, helpers = await setup_discord_memory(self, config)
         self.memory = memory
-        # helpers.me / helpers.remember / helpers.forget_me — bind to your own slash commands
 ```
 
-The integration wires `on_message → observe`, `on_member_update → alias refresh`, and
-`on_ready → start` + `register_bot_id`. The returned `MemoryCog` is a helper with
-`me` / `remember` / `forget_me` methods you bind to slash commands in your bot — it is
-not a `commands.Cog` subclass. For a full `/memory` slash group, see
-[`examples/omni_style_bot.py`](examples/omni_style_bot.py).
+This wires `on_message` to `observe`, refreshes aliases on `on_member_update`,
+and registers the bot's user id on ready. `helpers` has `me`, `remember`, and
+`forget_me` methods you can bind to slash commands; it is not a Cog. For a
+full `/memory` group see [`examples/omni_style_bot.py`](examples/omni_style_bot.py).
 
 ## Configuration
 
-Providers are URL strings; nested typed configs also accepted:
-
 ```python
 MemoryConfig(
-    storage="sqlite:///memory.db",                       # or mongodb://… ([mongo] extra)
-    llm="openai://$KEY@openrouter.ai/api/v1?model=…",    # OpenAI-compatible endpoints
-    embeddings="hashing",                                # free default (see below)
-    # embeddings="local",                                 # sentence-transformers extra
+    storage="sqlite:///memory.db",          # or mongodb://... with [mongo]
+    llm="openai://$KEY@openrouter.ai/api/v1?model=...",
+    embeddings="hashing",                   # default; see below
+    # embeddings="local",
     # embeddings="openai://$KEY@openrouter.ai/api/v1?model=openai/text-embedding-3-small",
-    # embeddings="openai://$KEY@api.openai.com/v1?model=text-embedding-3-small",
     batching={"batch_size_messages": 10, "max_age_seconds": 300},
-    extraction={"auto_consolidate_after_adds": 5},       # 0 disables profile digests
-    budgets={"guild_daily_prompt_tokens": 200_000},      # graceful degradation ladder
+    extraction={"auto_consolidate_after_adds": 5},  # 0 disables digests
+    budgets={"guild_daily_prompt_tokens": 200_000},
     privacy={"store_raw_messages": True},
     workers={"enabled": True, "count": 2},
 )
 ```
 
-LLM URL query knobs that matter in production: `model`, `temperature=none` (omit sampling
-on reasoning endpoints), `reasoning=low`, `max_tokens`, `max_tokens_key=max_completion_tokens`
-(Azure), `structured_outputs=json_object` if the endpoint cannot enforce `json_schema`.
-Capability mismatches raise `LlmCapabilityError` instead of silently degrading.
+Useful LLM URL query params: `model`, `temperature=none` (omit sampling on
+reasoning endpoints), `reasoning=low`, `max_tokens`,
+`max_tokens_key=max_completion_tokens` (Azure),
+`structured_outputs=json_object` if the endpoint cannot enforce `json_schema`.
+A capability mismatch raises `LlmCapabilityError`.
 
-`postgresql://` is recognized and rejected with a clear error — there is no Postgres adapter
-yet (and no `[postgres]` extra).
+`postgresql://` is recognized and rejected. There is no Postgres adapter yet.
+Unknown config keys raise immediately.
 
-Unknown keys raise immediately — typo protection by construction.
+### Embeddings
 
-### Embeddings (`embeddings=`)
-
-| Provider | Spec | Best for |
+| Provider | Spec | Notes |
 |---|---|---|
-| **Hashing** (default) | `"hashing"` | Tests, zero-dependency demos, deterministic CI |
-| **Hosted** | `"openai://$KEY@openrouter.ai/api/v1?model=openai/text-embedding-3-small"` | Production bots already on OpenRouter/OpenAI |
-| **Local** | `"local"` | Air-gapped or no embedding API cost (`pip install icelake[local-embeddings]`) |
+| Hashing (default) | `"hashing"` | Free, deterministic, no extra deps. Fine for tests. |
+| Hosted | `"openai://$KEY@openrouter.ai/api/v1?model=openai/text-embedding-3-small"` | Use this for a real bot. |
+| Local | `"local"` | `pip install icelake[local-embeddings]` |
 
-Embeddings power **semantic recall**, **reconcile collision detection** (paraphrase → reinforce
-instead of duplicate ADD), and consolidation sanity checks. Cosine similarity is compared against
-`extraction.reconcile_collision_threshold` (default `0.85`).
+Embeddings are used for semantic recall and for catching paraphrases so the
+same fact is not stored twice. The default hashing embedder is n-gram feature
+hashing, not a neural model. "Loves coding in Go" and "Enjoys programming in
+Go" usually do not collide, so you get duplicate memories. Switch to hosted
+or local embeddings for anything you actually run.
 
-#### Hashing embedder limitations
+Changing embedder invalidates existing vectors. Re-embed or start a new
+database.
 
-The default hashing embedder is a signed feature-hash over word/char n-grams — **not** a neural
-model. It is fast, free, and reproducible, but:
+## Workers
 
-- **Paraphrases do not cluster.** "Loves coding in Go" and "Enjoys programming in Go" often score
-  below the reconcile threshold, so the pipeline treats them as unrelated facts and you can end up
-  with many near-duplicate memories per user.
-- **Recall is lexical-ish.** Vector search channels rank by token overlap more than meaning;
-  semantic recall quality is noticeably weaker than with a real embedding model.
-- **Reinforcement depends on collisions.** Ingest reinforce/update/noop only triggers semantic
-  collision when cosine similarity clears the threshold; hashing misses most real-world re-statements.
-
-Use **hosted** (OpenRouter/OpenAI) or **local** embeddings for any deployment where users repeat
-the same preference in different words — including the omni-style example, which sets
-`embeddings=EMBEDDINGS_URL` accordingly. Switching embedders invalidates existing vectors; re-embed
-or start fresh on dev databases when changing provider.
-
-## Deployment topologies
-
-| Topology | Config |
+| Setup | Config |
 |---|---|
-| Single process (small bots) | defaults — workers run as background tasks |
-| Split bot + worker | bot: `workers={"enabled": False}`; worker process: same storage, call `await memory.ops.run_pending()` in a loop |
-| Cron-style | workers disabled; invoke `ops.run_pending` from your scheduler |
-| Multi-process scale-out | any number of processes share one database — keyed leases make workers cooperative |
+| One process | defaults; workers run as background tasks |
+| Bot and worker split | bot: `workers={"enabled": False}`; worker: same DB, loop on `await memory.ops.run_pending()` |
+| Cron | workers off; call `ops.run_pending` from your scheduler |
+| Several processes | share one database; keyed leases keep workers from overlapping |
 
-## Extending (ports)
-
-Every dependency is a Protocol you can replace at construction:
+## Custom backends
 
 ```python
 memory = DiscordMemory(
     config,
-    store=MyPostgresStore(),       # implements MemoryStore (+ optional .queue/.vectors)
-    llm=MyLLM(),                   # implements ChatLLM (OpenAI-compatible shape)
-    embedder=MyEmbedder(),         # implements Embedder
-    clock=FakeClock(...),          # deterministic time in tests
+    store=MyPostgresStore(),   # MemoryStore (+ optional .queue / .vectors)
+    llm=MyLLM(),               # ChatLLM
+    embedder=MyEmbedder(),     # Embedder
+    clock=FakeClock(...),
 )
 ```
 
-New backends must pass the executable conformance suite
-(`tests/integration/test_store_conformance.py`) — the port contract is literally a test.
+A new store has to pass `tests/integration/test_store_conformance.py`.
 
 ## Development
 
 ```bash
 uv sync --group dev
-uv run pytest tests/ -q --cov=icelake   # ≥90% coverage enforced
+uv run pytest tests/ -q --cov=icelake
 uv run ruff check src tests && uv run ruff format --check src tests
-uv run mypy                                    # strict mode
+uv run mypy
 ```
 
-## Status & limitations (v0.1)
+Coverage floor is 90%. mypy is strict.
 
-- Storage backends shipped: **SQLite** (default), **MongoDB** (`[mongo]` extra), and in-memory
-  (tests). A Postgres/pgvector adapter is planned — `postgresql://` fails loudly today.
-- Default **hashing** embeddings are not suitable for production dedup/recall — see
-  [Embeddings](#embeddings-embeddings) above.
-- Invalid extraction JSON is repaired once, then **dead-lettered** (not silently stored as
-  empty). Re-drive with `ops.retry_dead_letters`.
-- Caps and TTL prune weakest-first (manual/CORE last). Budgets meter per-process; cross-process
-  budget accounting needs store-backed counters.
-- Server-scope ("community") batches read the recent-message window; watermarking across
-  restarts is best-effort.
-- `similar_users` uses capped Jaccard over entity adjacency (no Louvain/PPR by design).
+## Status (v0.1)
+
+- Storage: SQLite (default), MongoDB (`[mongo]`), in-memory (tests). Postgres
+  is not implemented; `postgresql://` fails with a clear error.
+- Default hashing embeddings are not good enough for production recall. See
+  [Embeddings](#embeddings).
+- Bad extraction JSON is repaired once, then dead-lettered. Retry with
+  `ops.retry_dead_letters`.
+- Caps and TTL drop weakest facts first (manual/CORE last). Budgets are
+  per-process; cross-process accounting needs store-backed counters.
+- `similar_users` is capped Jaccard over entity adjacency.
 
 ## License
 

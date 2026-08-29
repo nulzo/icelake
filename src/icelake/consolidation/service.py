@@ -10,7 +10,7 @@ from icelake.ports.store import MemoryStore
 
 logger = logging.getLogger(__name__)
 
-MAX_SUMMARY_FACTS = 40
+MAX_SUMMARY_FACTS = 50
 
 
 def profile_summary_due(
@@ -34,7 +34,7 @@ def profile_summary_due(
 
 SUMMARY_PROMPT = """\
 Synthesize the following durable facts about {subject} into one concise paragraph \
-(<=120 words). Preserve only information present in the facts. Do not invent details. \
+(<=200 words). Preserve only information present in the facts. Do not invent details. \
 Facts:
 {facts}
 """
