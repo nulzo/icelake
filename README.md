@@ -472,9 +472,6 @@ uv run mypy                                    # strict mode
   restarts is best-effort.
 - `similar_users` uses capped Jaccard over entity adjacency (no Louvain/PPR by design).
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for sequenced next work and
-[`docs/PLAN.md`](docs/PLAN.md) for design rationale.
-
 ## License
 
 MIT

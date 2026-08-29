@@ -20,3 +20,5 @@ wheels/
 .env
 
 bench_runs/
+
+docs/
