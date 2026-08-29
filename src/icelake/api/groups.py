@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Coroutine
 from typing import Any
 
@@ -78,6 +79,12 @@ class IdentityApi:
     async def aliases_of(self, guild_id: str, user_id: str) -> tuple[AliasRecord, ...]:
         return await self._store.aliases_for_user(guild_id, user_id)
 
+    async def display_name(self, guild_id: str, user_id: str) -> str | None:
+        """Strongest known alias for operator-facing labels (None if unknown)."""
+        from icelake.identity.aliases import strongest_alias
+
+        return strongest_alias(await self._store.aliases_for_user(guild_id, user_id))
+
 
 class GraphApi:
     """Relations, stances and discovery — the ``memory.graph.*`` namespace."""
@@ -97,11 +104,25 @@ class GraphApi:
         src_user_id: str,
         dst_user_id: str,
     ) -> tuple[RelationEdge, ...]:
-        return await self._store.edges_between(
-            guild_id,
-            (NodeType.USER, src_user_id),
-            (NodeType.USER, dst_user_id),
+        """Active edges between two users in BOTH directions, weight-ranked.
+
+        Relationships are asymmetric in storage (a→b and b→a are distinct
+        edges) but symmetric in user expectation: "between alice and bob"
+        means everything connecting them.
+        """
+        forward, backward = await asyncio.gather(
+            self._store.edges_between(
+                guild_id,
+                (NodeType.USER, src_user_id),
+                (NodeType.USER, dst_user_id),
+            ),
+            self._store.edges_between(
+                guild_id,
+                (NodeType.USER, dst_user_id),
+                (NodeType.USER, src_user_id),
+            ),
         )
+        return tuple(sorted((*forward, *backward), key=lambda e: -e.weight))
 
     async def relations_of(
         self,

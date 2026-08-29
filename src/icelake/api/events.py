@@ -14,7 +14,6 @@ from typing import TypeVar
 
 from icelake.models.events import (
     BatchCompleted,
-    BudgetWarning,
     ComponentDegraded,
     ExtractionFailed,
     FactCommitted,
@@ -31,7 +30,6 @@ HookEvent = (
     | FactCommitted
     | FactSupersededEvent
     | ExtractionFailed
-    | BudgetWarning
     | ComponentDegraded
 )
 

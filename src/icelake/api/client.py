@@ -20,6 +20,7 @@ from icelake.api.groups import AdminApi, GraphApi, IdentityApi
 from icelake.config import MemoryConfig
 from icelake.consolidation.service import ConsolidationService
 from icelake.errors import ConfigError, StorageUnavailableError
+from icelake.identity.aliases import strongest_alias
 from icelake.identity.guards import BotGuard, ConsentPolicy, SubjectGate
 from icelake.ingest.pipeline import SERVER_SUBJECT_KEY, IngestPipeline
 from icelake.lifecycle.maintenance import MaintenanceService
@@ -40,6 +41,7 @@ from icelake.models.events import (
 )
 from icelake.models.identity import AliasSource
 from icelake.models.retrieval import (
+    CHANNELS_DISCOVERY,
     PromptContext,
     RecallQuery,
     RecallResult,
@@ -307,6 +309,14 @@ class DiscordMemory:
                 return
             await self._store.setup()
             self.started = True
+            from icelake.adapters.embedders import HashingEmbedder
+
+            if isinstance(self._embedder, HashingEmbedder):
+                logger.warning(
+                    "embeddings=hashing is a deterministic TEST default — recall "
+                    "quality is lexical-only. Set embeddings= to a hosted provider "
+                    "for production."
+                )
             if self.config.workers.enabled:
                 for index in range(self.config.workers.count):
                     task = asyncio.create_task(
@@ -518,6 +528,10 @@ class DiscordMemory:
                 text=text,
                 subject_ids=tuple(subjects),
                 scope=Scope.SUBJECTS,
+                pair_ids=tuple((asker_id, m) for m in mentioned_ids if m != asker_id),
+                # Mentions make this a relationship-shaped question: hop facts
+                # earn their cost here, so widen to the discovery channel set.
+                channels=CHANNELS_DISCOVERY if mentioned_ids else None,
             )
         )
         server_result = await self.recall(
@@ -557,8 +571,9 @@ class DiscordMemory:
                 )
             # Header names the SUBJECT. Prefer the strongest alias; fall back to
             # the id. Never use the speaker name stored on the fact.
-            if names:
-                display_names[key] = names[0]
+            best = strongest_alias(alias_records)
+            if best:
+                display_names[key] = best
 
         sections["server"] = tuple(server_result.facts)
         server_doc = await self._store.get_summary(guild_id, None)
