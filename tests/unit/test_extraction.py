@@ -159,6 +159,11 @@ class TestExtractVetting:
         assert system.role == "system"
         assert "ALWAYS emit a fact when NEW MESSAGES restate" in system.content
         assert EXTRACTION_INSTRUCTIONS in system.content
+        # Shared events/plans are community-wide even when one person announces
+        # them — the community pass drops user-anchored candidates, so narrowing
+        # this rule silently loses server-scope facts.
+        assert 'subject_token="server" for community-wide facts' in EXTRACTION_INSTRUCTIONS
+        assert "shared" in EXTRACTION_INSTRUCTIONS
 
     async def test_max_tokens_comes_from_constructor(self, roster: Roster) -> None:
         payload = {

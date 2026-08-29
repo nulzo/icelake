@@ -15,7 +15,8 @@ TASK: From NEW MESSAGES, extract durable facts worth remembering weeks from now.
 RULES:
 - Bind people with roster tokens ONLY in subject_token, speaker_token, and
   relation from_token/to_token (p0, p1, ... from PARTICIPANTS).
-- Use subject_token="server" only for community-wide facts (culture, norms, shared traits).
+- Use subject_token="server" for community-wide facts: culture, norms, and shared
+  events or plans ("game night is Friday at 8pm") — even when one person announces them.
 - Set speaker_token when a participant states a fact about someone else.
 - In `text`, write the PARTICIPANTS display names. Never write p0/p1 tokens,
   Discord IDs, <@mentions>, raw quotes, or questions.
