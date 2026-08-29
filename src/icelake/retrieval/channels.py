@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from icelake.models.graph import NodeType
+from icelake.models.graph import NodeType, RelationEdge
 from icelake.models.retrieval import ChannelName
 from icelake.ports.llm import Embedder
 from icelake.ports.store import MemoryStore
@@ -173,42 +173,51 @@ async def graph_hop_channel(
     fan_out_per_node: int,
     limit: int,
 ) -> ChannelOutput:
-    """Bounded 2-hop expansion: neighbor nodes' facts enter the candidate pool."""
-    from collections import deque
+    """Bounded 2-hop expansion: neighbor nodes' facts enter the candidate pool.
 
+    Batched by BFS level: one ``incident_edges_many`` + one ``links_for_nodes``
+    per level — 2 round-trips per level regardless of fan-out.
+    """
     from icelake.graph.traversal import node_key
 
     ranked: list[str] = []
     seen_facts: set[str] = set()
-    visited: set[str] = set()
-    frontier: deque[tuple[NodeType, str, int]] = deque()
+    visited: set[str] = {node_key(NodeType.USER.value, u) for u in subject_ids}
+    frontier: list[tuple[NodeType, str]] = [(NodeType.USER, u) for u in subject_ids]
 
-    for user_id in subject_ids:
-        frontier.append((NodeType.USER, user_id, 0))
-        visited.add(node_key(NodeType.USER.value, user_id))
-
-    while frontier:
-        node_type, node_id, level = frontier.popleft()
-        edges = await store.incident_edges(
+    for level in range(depth):
+        if not frontier:
+            break
+        edges = await store.incident_edges_many(
             guild_id,
-            (node_type, node_id),
-            limit=fan_out_per_node,
+            tuple(frontier),
+            limit_per_node=fan_out_per_node,
         )
-        for edge in sorted(edges, key=lambda e: -e.weight)[:fan_out_per_node]:
-            child_key = node_key(edge.dst_type.value, edge.dst_id)
-            linked = await store.links_for_node(
-                guild_id,
-                edge.dst_type,
-                edge.dst_id,
-                active_only=True,
-                limit=limit,
-            )
-            for _row, record in linked:
-                if record.id not in seen_facts:
-                    seen_facts.add(record.id)
-                    ranked.append(record.id)
-            if level + 1 < depth and child_key not in visited:
-                visited.add(child_key)
-                frontier.append((edge.dst_type, edge.dst_id, level + 1))
+        by_node: dict[tuple[NodeType, str], list[RelationEdge]] = {node: [] for node in frontier}
+        for edge in edges:
+            for node in ((edge.src_type, edge.src_id), (edge.dst_type, edge.dst_id)):
+                if node in by_node:
+                    by_node[node].append(edge)
+        destinations: list[tuple[NodeType, str]] = []
+        next_frontier: list[tuple[NodeType, str]] = []
+        for node in frontier:
+            for edge in sorted(by_node[node], key=lambda e: -e.weight)[:fan_out_per_node]:
+                destinations.append((edge.dst_type, edge.dst_id))
+                child_key = node_key(edge.dst_type.value, edge.dst_id)
+                if level + 1 < depth and child_key not in visited:
+                    visited.add(child_key)
+                    next_frontier.append((edge.dst_type, edge.dst_id))
+        if not destinations:
+            break
+        linked = await store.links_for_nodes(
+            guild_id,
+            tuple(destinations),
+            limit_per_node=limit,
+        )
+        for _row, record in linked:
+            if record.id not in seen_facts:
+                seen_facts.add(record.id)
+                ranked.append(record.id)
+        frontier = next_frontier
 
     return ChannelOutput(channel=ChannelName.GRAPH_HOP, ranked_ids=tuple(ranked[:limit]))

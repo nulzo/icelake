@@ -212,6 +212,20 @@ class MemoryStore(Protocol):
 
     async def nodes_for_fact(self, guild_id: str, memory_id: str) -> tuple[LinkRow, ...]: ...
 
+    async def links_for_nodes(
+        self,
+        guild_id: str,
+        nodes: tuple[NodeRef, ...],
+        *,
+        active_only: bool = True,
+        limit_per_node: int = 50,
+    ) -> tuple[tuple[LinkRow, FactRecord], ...]:
+        """One-round-trip batch of ``links_for_node``; per-node caps applied.
+
+        Discovery paths (graph hop, pair recall) fan out over many nodes —
+        per-node queries are the N+1 this replaces.
+        """
+
     # -- relations (graph layer 3) ----------------------------------------------
     async def upsert_relation(self, edge: RelationEdge) -> RelationEdge:
         """Merge into the currently-active edge between the same pair+verb.
@@ -233,6 +247,24 @@ class MemoryStore(Protocol):
         *,
         limit: int = 50,
     ) -> tuple[RelationEdge, ...]: ...
+
+    async def incident_edges_many(
+        self,
+        guild_id: str,
+        nodes: tuple[NodeRef, ...],
+        *,
+        limit_per_node: int = 50,
+    ) -> tuple[RelationEdge, ...]:
+        """One-round-trip batch of ``incident_edges``; per-node caps applied."""
+
+    async def edges_to_nodes(
+        self,
+        guild_id: str,
+        nodes: tuple[NodeRef, ...],
+        *,
+        limit: int = 500,
+    ) -> tuple[RelationEdge, ...]:
+        """Active edges whose DESTINATION is any of ``nodes``, weight-ranked."""
 
     async def drop_evidence_from_edges(
         self,
@@ -329,6 +361,36 @@ class MemoryStore(Protocol):
 
     async def set_cursor(self, guild_id: str, key: str, value: str) -> None:
         """Persist a high-water mark."""
+
+    async def list_guild_ids(self) -> tuple[str, ...]:
+        """Guilds with any stored state (facts or queued messages).
+
+        Derived, not tracked: no hot-path writes, and maintenance survives
+        restarts because the source tables are the state.
+        """
+
+    async def charge_guild_tokens(
+        self,
+        guild_id: str,
+        *,
+        day_key: str,
+        month_key: str,
+        prompt_tokens: int,
+    ) -> tuple[int, int]:
+        """Atomically add prompt spend; returns (day_total, month_total).
+
+        Store-backed so budget enforcement is correct across N processes —
+        an in-process counter under-enforces by the worker count.
+        """
+
+    async def guild_token_usage(
+        self,
+        guild_id: str,
+        *,
+        day_key: str,
+        month_key: str,
+    ) -> tuple[int, int]:
+        """Current (day_total, month_total) prompt spend."""
 
     async def touch_facts(
         self,

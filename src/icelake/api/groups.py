@@ -168,7 +168,11 @@ class GraphApi:
         *,
         limit: int = 10,
     ) -> tuple[tuple[str, float], ...]:
-        """Members sharing entity traits with this user, Jaccard-ranked (capped)."""
+        """Members sharing entity traits with this user, Jaccard-ranked (capped).
+
+        Three round-trips total regardless of graph size: seed adjacency,
+        reverse lookup of who touches those entities, candidate adjacency.
+        """
         from icelake.graph.traversal import jaccard_similarity
 
         seed_edges = await self._store.incident_edges(
@@ -180,30 +184,33 @@ class GraphApi:
         if not seed_entities:
             return ()
 
-        candidates: set[str] = set()
-        for slug in list(seed_entities)[:50]:
-            for edge in await self._store.entity_stance_edges(guild_id, slug, limit=100):
-                if edge.src_type is NodeType.USER and edge.src_id != user_id:
-                    candidates.add(edge.src_id)
+        inbound = await self._store.edges_to_nodes(
+            guild_id,
+            tuple((NodeType.ENTITY, slug) for slug in list(seed_entities)[:50]),
+        )
+        candidates = {
+            edge.src_id
+            for edge in inbound
+            if edge.src_type is NodeType.USER and edge.src_id != user_id
+        }
+        if not candidates:
+            return ()
 
-        scored: list[tuple[str, float]] = []
-        for candidate in list(candidates)[:100]:
-            candidate_entities = {
-                edge.dst_id
-                for edge in await self._store.incident_edges(
-                    guild_id,
-                    (NodeType.USER, candidate),
-                    limit=200,
-                )
-                if edge.dst_type is NodeType.ENTITY
-            }
-            score = jaccard_similarity(
-                frozenset(seed_entities),
-                frozenset(candidate_entities),
-            )
-            if score > 0:
-                scored.append((candidate, round(score, 4)))
+        candidate_edges = await self._store.incident_edges_many(
+            guild_id,
+            tuple((NodeType.USER, c) for c in list(candidates)[:100]),
+            limit_per_node=200,
+        )
+        entities_by_user: dict[str, set[str]] = {}
+        for edge in candidate_edges:
+            if edge.src_type is NodeType.USER and edge.dst_type is NodeType.ENTITY:
+                entities_by_user.setdefault(edge.src_id, set()).add(edge.dst_id)
 
+        scored = [
+            (candidate, round(score, 4))
+            for candidate, entity_set in entities_by_user.items()
+            if (score := jaccard_similarity(frozenset(seed_entities), frozenset(entity_set))) > 0
+        ]
         scored.sort(key=lambda pair: -pair[1])
         return tuple(scored[:limit])
 

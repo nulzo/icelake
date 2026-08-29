@@ -124,25 +124,30 @@ class FactCommitter:
                 ),
             }
         )
-        await self._store.insert_fact(record)
-        if not skip_embedding:
-            await self._index_embedding(record)
-        await self._write_graph(
-            guild_id=guild_id,
-            record=record,
-            proposal=proposal,
-            roster=roster,
-            mentioned_ids=mentioned_ids,
-        )
-        await self._store.append_history(
-            guild_id,
-            record.id,
-            FactHistoryEntry(
-                at=now,
-                kind="created",
-                detail=f"extracted conf={proposal.confidence:.2f}",
-            ),
-        )
+        # Embed BEFORE the unit of work: network I/O never happens inside a
+        # database transaction (a held write lock on a single-writer store
+        # would stall every other guild's commits for the embed's latency).
+        embedding = await self._embed(record) if not skip_embedding else None
+        async with self._store.transaction():
+            await self._store.insert_fact(record)
+            if embedding is not None:
+                await self._upsert_embedding(record, embedding)
+            await self._write_graph(
+                guild_id=guild_id,
+                record=record,
+                proposal=proposal,
+                roster=roster,
+                mentioned_ids=mentioned_ids,
+            )
+            await self._store.append_history(
+                guild_id,
+                record.id,
+                FactHistoryEntry(
+                    at=now,
+                    kind="created",
+                    detail=f"extracted conf={proposal.confidence:.2f}",
+                ),
+            )
         return record
 
     async def commit_reinforce(self, existing: FactRecord, proposal: ProposedFact) -> FactRecord:
@@ -195,57 +200,67 @@ class FactCommitter:
             source_refs=source_refs,
         )
         now = self._clock.now()
-        await self._store.transition_fact(
-            guild_id,
-            old_record.id,
-            superseded_by_id=fresh.id,
-            valid_until=now,
-            updated_at=now,
-        )
-        # The old fact is dead knowledge; its evidence must stop holding
-        # relation edges alive (same treatment as commit_invalidate).
-        await self._store.drop_evidence_from_edges(guild_id, old_record.id, until=now)
-        await self._store.append_history(
-            guild_id,
-            old_record.id,
-            FactHistoryEntry(
-                at=now,
-                kind="superseded",
-                detail=reason or "refined",
-            ),
-        )
+        # Second unit of work: retire the old fact. Kept separate from the
+        # insert above so the embed never runs inside a transaction; a crash
+        # between the two leaves the old fact active, which reconcile will
+        # re-collide with the fresh one — self-healing, not corrupt.
+        async with self._store.transaction():
+            await self._store.transition_fact(
+                guild_id,
+                old_record.id,
+                superseded_by_id=fresh.id,
+                valid_until=now,
+                updated_at=now,
+            )
+            # The old fact is dead knowledge; its evidence must stop holding
+            # relation edges alive (same treatment as commit_invalidate).
+            await self._store.drop_evidence_from_edges(guild_id, old_record.id, until=now)
+            await self._store.append_history(
+                guild_id,
+                old_record.id,
+                FactHistoryEntry(
+                    at=now,
+                    kind="superseded",
+                    detail=reason or "refined",
+                ),
+            )
         return fresh, old_record
 
     async def commit_invalidate(self, *, old_record: FactRecord, reason: str) -> FactRecord | None:
         now = self._clock.now()
-        updated = await self._store.transition_fact(
-            old_record.guild_id,
-            old_record.id,
-            valid_until=now,
-            updated_at=now,
-        )
-        detached = await self._store.drop_evidence_from_edges(
-            old_record.guild_id,
-            old_record.id,
-            until=now,
-        )
-        logger.debug("Invalidated %s; detached %d edge evidences", old_record.id, detached)
-        if updated is not None:
-            await self._store.append_history(
+        async with self._store.transaction():
+            updated = await self._store.transition_fact(
                 old_record.guild_id,
                 old_record.id,
-                FactHistoryEntry(
-                    at=now,
-                    kind="invalidated",
-                    detail=reason or "contradicted",
-                ),
+                valid_until=now,
+                updated_at=now,
             )
+            detached = await self._store.drop_evidence_from_edges(
+                old_record.guild_id,
+                old_record.id,
+                until=now,
+            )
+            if updated is not None:
+                await self._store.append_history(
+                    old_record.guild_id,
+                    old_record.id,
+                    FactHistoryEntry(
+                        at=now,
+                        kind="invalidated",
+                        detail=reason or "contradicted",
+                    ),
+                )
+        logger.debug("Invalidated %s; detached %d edge evidences", old_record.id, detached)
         return updated
 
-    async def _index_embedding(self, record: FactRecord) -> None:
+    async def _embed(self, record: FactRecord) -> tuple[float, ...] | None:
         if self._vectors is None or self._embedder is None:
-            return
+            return None
         (embedding,) = await self._embedder.embed((record.text,))
+        return embedding
+
+    async def _upsert_embedding(self, record: FactRecord, embedding: tuple[float, ...]) -> None:
+        assert self._vectors is not None
         await self._vectors.upsert(
             (
                 VectorItem(

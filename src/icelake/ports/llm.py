@@ -93,11 +93,11 @@ class Meter(Protocol):
 
     def increment(self, name: str, value: float = 1.0) -> None: ...
 
-    def charge_guild(self, guild_id: str, *, prompt_tokens: int) -> None:
+    async def charge_guild(self, guild_id: str, *, prompt_tokens: int) -> None:
         """Attribute prompt spend to a guild for budget accounting."""
         ...
 
-    def check_budget(self, guild_id: str) -> BudgetStep:
+    async def check_budget(self, guild_id: str) -> BudgetStep:
         """Current degradation step for a guild's spend budget."""
 
     def snapshot(self) -> MeterSnapshot: ...

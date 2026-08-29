@@ -371,7 +371,7 @@ class IngestPipeline:
         ):
             return self._skip_batch(key, reason="noise", messages=messages)
 
-        step = self._meter.check_budget(guild_id)
+        step = await self._meter.check_budget(guild_id)
         if step is BudgetStep.SKIP_EXTRACTION:
             return self._skip_batch(key, reason="budget", messages=messages)
 

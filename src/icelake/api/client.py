@@ -204,9 +204,9 @@ class DiscordMemory:
 
         meter_override = overrides.get("meter", _MISSING)
         if meter_override is _MISSING:
-            from icelake.adapters.meter import InMemoryMeter
+            from icelake.adapters.meter import UsageMeter
 
-            self._meter: Meter = InMemoryMeter(config.budgets, self._clock)
+            self._meter: Meter = UsageMeter(config.budgets, self._clock, store=self._store)
         else:
             self._meter = meter_override  # type: ignore[assignment]
 
@@ -309,6 +309,9 @@ class DiscordMemory:
                 return
             await self._store.setup()
             self.started = True
+            # Maintenance must survive restarts: guilds that went quiet still
+            # have facts to expire. Derived from stored state, no hot-path cost.
+            self.active_guilds.update(await self._store.list_guild_ids())
             from icelake.adapters.embedders import HashingEmbedder
 
             if isinstance(self._embedder, HashingEmbedder):
