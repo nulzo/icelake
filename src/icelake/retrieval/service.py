@@ -229,35 +229,42 @@ class RecallService:
         return outputs, degraded
 
     async def _pair_intersection(self, query: RecallQuery) -> list[str]:
-        """Facts joined to BOTH users of ``pair_ids`` (Q3/Q2 link-intersect)."""
-        if query.pair_ids is None:
+        """Facts joined to BOTH users of each ``pair_ids`` pair (Q3/Q2 link-intersect).
+
+        All pairs resolve concurrently; each intersection is two indexed
+        ``links_for_node`` lookups, so cost stays O(pairs), not O(facts).
+        """
+        if not query.pair_ids:
             return []
         from icelake.models.graph import NodeType
 
-        a, b = query.pair_ids
-        by_a = {
-            record.id
-            for _row, record in await self._store.links_for_node(
-                query.guild_id,
-                NodeType.USER,
-                a,
-                active_only=True,
-                limit=self._config.recall_limit,
-            )
-        }
-        if not by_a:
-            return []
-        by_b = {
-            record.id
-            for _row, record in await self._store.links_for_node(
-                query.guild_id,
-                NodeType.USER,
-                b,
-                active_only=True,
-                limit=self._config.recall_limit,
-            )
-        }
-        return [fact_id for fact_id in by_a if fact_id in by_b]
+        async def linked_ids(user_id: str) -> set[str]:
+            return {
+                record.id
+                for _row, record in await self._store.links_for_node(
+                    query.guild_id,
+                    NodeType.USER,
+                    user_id,
+                    active_only=True,
+                    limit=self._config.recall_limit,
+                )
+            }
+
+        async def intersect(a: str, b: str) -> list[str]:
+            by_a, by_b = await asyncio.gather(linked_ids(a), linked_ids(b))
+            return [fact_id for fact_id in by_a if fact_id in by_b]
+
+        intersections = await asyncio.gather(
+            *(intersect(a, b) for a, b in query.pair_ids if a != b)
+        )
+        ranked: list[str] = []
+        seen: set[str] = set()
+        for fact_ids in intersections:
+            for fact_id in fact_ids:
+                if fact_id not in seen:
+                    seen.add(fact_id)
+                    ranked.append(fact_id)
+        return ranked
 
     async def _resolve_entity_hint(self, query: RecallQuery) -> str | None:
         """Resolve ``entity_hint`` surface name to a canonical slug (Q5)."""

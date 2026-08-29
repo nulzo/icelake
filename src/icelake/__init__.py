@@ -2,9 +2,9 @@
 
 Quickstart::
 
-    from icelake import DiscordMemory, MemoryConfig, MessageEvent
+    from icelake import Memory, MemoryConfig, MessageEvent
 
-    memory = DiscordMemory(MemoryConfig(
+    memory = Memory(MemoryConfig(
         storage="sqlite:///memory.db",
         llm="openai://$KEY@openrouter.ai/api/v1?model=google/gemini-2.5-flash",
     ))
@@ -25,7 +25,6 @@ from icelake.config import (
     LifecycleConfig,
     LlmConfig,
     MemoryConfig,
-    MeterConfig,
     ObserveConfig,
     PrivacyConfig,
     RetrievalConfig,
@@ -37,7 +36,6 @@ from icelake.errors import (
     ConfigError,
     DiscordMemoryError,
     FactNotFoundError,
-    IdentityAmbiguousError,
     LlmCapabilityError,
     SchemaValidationError,
     StorageUnavailableError,
@@ -87,14 +85,17 @@ from icelake.models import (
 )
 from icelake.models.events import (
     BatchCompleted,
-    BudgetWarning,
     ComponentDegraded,
     ExtractionFailed,
     FactCommitted,
     FactSupersededEvent,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
+
+# Public, transport-free name. ``DiscordMemory`` stays as the back-compat
+# alias; the class itself is store/LLM-agnostic and Discord is an extra.
+Memory = DiscordMemory
 
 __all__ = [
     "CHANNELS_ALL",
@@ -105,7 +106,6 @@ __all__ = [
     "BatchCompleted",
     "BatchingConfig",
     "BudgetExceededError",
-    "BudgetWarning",
     "BudgetsConfig",
     "ChannelName",
     "Citation",
@@ -127,16 +127,15 @@ __all__ = [
     "FactSupersededEvent",
     "GuildStats",
     "HealthReport",
-    "IdentityAmbiguousError",
     "IgnoreReason",
     "LifecycleConfig",
     "LlmCapabilityError",
     "LlmConfig",
+    "Memory",
     "MemoryConfig",
     "MemoryExport",
     "MemoryTier",
     "MessageEvent",
-    "MeterConfig",
     "NeighborInfo",
     "NodeType",
     "ObserveConfig",

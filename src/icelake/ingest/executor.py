@@ -202,6 +202,9 @@ class FactCommitter:
             valid_until=now,
             updated_at=now,
         )
+        # The old fact is dead knowledge; its evidence must stop holding
+        # relation edges alive (same treatment as commit_invalidate).
+        await self._store.drop_evidence_from_edges(guild_id, old_record.id, until=now)
         await self._store.append_history(
             guild_id,
             old_record.id,

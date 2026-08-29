@@ -281,12 +281,6 @@ class ObserveConfig(FrozenModel):
     max_queue_depth_per_guild: int | None = Field(default=10_000, ge=1)
 
 
-class MeterConfig(FrozenModel):
-    """Meter backend selection."""
-
-    backend: Literal["memory"] = "memory"
-
-
 class MemoryConfig(FrozenModel):
     """Root configuration object. See module docstring for URL forms."""
 
@@ -301,7 +295,6 @@ class MemoryConfig(FrozenModel):
     budgets: BudgetsConfig = Field(default_factory=BudgetsConfig)
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     workers: WorkersConfig = Field(default_factory=WorkersConfig)
-    meter_config: MeterConfig = Field(default_factory=MeterConfig)
 
     @field_validator("storage", mode="before")
     @classmethod

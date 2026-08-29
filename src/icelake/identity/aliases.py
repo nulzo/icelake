@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from icelake.models.identity import AliasSource
+from icelake.models.identity import AliasRecord, AliasSource
 
 _DIGIT_RUN = re.compile(r"^\d{9,}$")
 _INTERNAL_TOKEN = re.compile(r"^[a-z0-9._-]{2,32}$")
@@ -47,6 +47,13 @@ def weight_for_source(source: AliasSource, surface: str = "") -> float:
         if source is AliasSource.DISCORD_USERNAME and _INTERNAL_TOKEN.match(cleaned):
             return max(base, 0.95)
     return base
+
+
+def strongest_alias(records: tuple[AliasRecord, ...]) -> str | None:
+    """Best operator-facing label among a user's aliases: rank, then weight."""
+    if not records:
+        return None
+    return max(records, key=lambda r: (r.source.rank, r.weight)).alias_norm
 
 
 def combined_confidence(source_rank: int, weight: float, top_weight: float) -> float:

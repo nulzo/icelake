@@ -30,18 +30,6 @@ class FactNotFoundError(DiscordMemoryError):
     """Referenced fact id does not exist."""
 
 
-class IdentityAmbiguousError(DiscordMemoryError):
-    """Identifier matched multiple members and cannot be safely resolved."""
-
-    def __init__(self, identifier: str, candidate_ids: tuple[str, ...]) -> None:
-        self.identifier = identifier
-        self.candidate_ids = candidate_ids
-        super().__init__(
-            f"identifier {identifier!r} matches {len(candidate_ids)} members; "
-            "disambiguate before writing"
-        )
-
-
 class StorageUnavailableError(DiscordMemoryError):
     """Storage backend could not be reached or prepared."""
 
