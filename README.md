@@ -270,7 +270,7 @@ flowchart TB
   recon --> history["SUPERSEDE or INVALIDATE<br/>history kept"]
   add --> store["Fact store<br/>bitemporal, one subject anchor"]
   add --> vectors["Vector index"]
-  add --> graph["Knowledge graph<br/>incidence + typed edges"]
+  add --> kg["Knowledge graph<br/>incidence + typed edges"]
   add --> digest["Profile digest<br/>every N new facts"]
 ```
 

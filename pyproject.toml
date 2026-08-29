@@ -5,7 +5,7 @@ description = "Accurate, scalable, cost-effective agentic memory layer for Disco
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "icelake contributors" }]
+authors = [{ name = "Nolan Gregory" }]
 keywords = ["discord", "memory", "agents", "llm", "rag"]
 classifiers = [
     "Development Status :: 4 - Beta",
