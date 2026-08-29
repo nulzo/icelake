@@ -2,7 +2,7 @@
 
 Single-file cohesion note: the store is split into focused mixins (facts/graph) but
 composed here so consumers get one object implementing both ports. SQLite is the
-zero-dependency default backend (PLAN.md D1); the Postgres adapter implements the
+zero-dependency default backend; the Postgres adapter implements the
 identical ports.
 """
 

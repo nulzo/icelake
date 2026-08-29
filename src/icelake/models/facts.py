@@ -1,4 +1,4 @@
-"""Fact records: the atomic unit of memory (PLAN.md Part 4.7 anchoring invariant)."""
+"""Fact records: the atomic unit of memory."""
 
 from __future__ import annotations
 

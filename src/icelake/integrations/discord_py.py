@@ -1,7 +1,7 @@
 """Optional discord.py integration (extra: ``discord``).
 
 Wires listeners and provides a slash-command cog. Core library never imports this
-module — it exists purely as thin transport glue (PLAN.md §6.3).
+module — it exists purely as thin transport glue.
 """
 
 from __future__ import annotations

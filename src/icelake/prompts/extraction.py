@@ -1,6 +1,6 @@
 """Versioned prompt templates for extraction and reconciliation.
 
-Prompts are products tied to gate behavior (PLAN.md §0.2.5): they live here, versioned,
+Prompts are products tied to gate behavior: they live here, versioned,
 testable — never inlined in service code.
 """
 

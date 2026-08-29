@@ -1,6 +1,6 @@
 """Fact committer: turns vetted candidates and reconcile decisions into storage.
 
-Owns the transactional write rules of PLAN.md §4.3/§4.7: fact insert + embedding +
+Owns the transactional write rules: fact insert + embedding +
 incidence links + entity nodes + relation edges + history, with supersede/invalidate
 transitions that never hard-delete.
 """

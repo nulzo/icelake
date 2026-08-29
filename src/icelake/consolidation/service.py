@@ -1,4 +1,4 @@
-"""Profile/guild digest summarization — derived representations (PLAN.md Part 7).
+"""Profile/guild digest summarization — derived representations.
 
 Background-only: runs under the pipeline lease after batches, never on read paths.
 LLM output is validated against source facts via embedding-similarity sanity check;

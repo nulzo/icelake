@@ -1,5 +1,3 @@
-"""Executor unit tests: commit paths and graph writes (PLAN.md §4.3/§4.7)."""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime

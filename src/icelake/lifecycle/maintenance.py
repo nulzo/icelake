@@ -1,7 +1,6 @@
-"""Scheduled maintenance: expiry sweep, cap pruning, forgetting (PLAN.md §4.4/4.5).
+"""Scheduled maintenance: expiry sweep, cap pruning, forgetting.
 
 Runs exclusively in worker context, throttled per guild — never on read paths
-(fixes the bot's duplicated hot-path cleanup, B-class review finding).
 """
 
 from __future__ import annotations

@@ -100,7 +100,7 @@ async def write_fact_graph(
     """Materialize layer-2 incidence + layer-3 relations for a committed fact.
 
     Returns the touched entity slugs. Ownership never changes hands: linking is
-    additive around the fact's single anchor (PLAN.md §4.7).
+    additive around the fact's single anchor.
     """
     now = clock_now
     links: list[LinkRow] = []

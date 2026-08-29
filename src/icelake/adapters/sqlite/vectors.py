@@ -2,7 +2,7 @@
 
 O(candidates) per query with candidates capped by ``candidate_cap`` — appropriate for
 single-node deployments; swap the Postgres/pgvector adapter for ANN at scale. The port
-keeps this swap invisible (PLAN.md D1).
+keeps this swap invisible.
 """
 
 from __future__ import annotations

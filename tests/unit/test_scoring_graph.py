@@ -1,5 +1,3 @@
-"""Fusion and graph-logic tests (PLAN.md §5.3, §4.7)."""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta

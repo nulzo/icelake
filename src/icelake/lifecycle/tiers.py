@@ -1,4 +1,4 @@
-"""Tier assignment and TTL computation (PLAN.md §4.4, ported from the bot)."""
+"""Tier assignment and TTL computation."""
 
 from __future__ import annotations
 

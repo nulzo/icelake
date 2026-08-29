@@ -1,4 +1,4 @@
-"""Knowledge-graph boundary models (PLAN.md §4.7 layers 2-3)."""
+"""Knowledge-graph boundary models."""
 
 from __future__ import annotations
 

@@ -1,5 +1,3 @@
-"""Identity ladder, guards and alias validation tests (PLAN.md §3.2)."""
-
 from __future__ import annotations
 
 import pytest

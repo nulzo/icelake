@@ -387,7 +387,7 @@ class IngestPipeline:
         key: BatchKey,
         adds: int,
     ) -> None:
-        """Regenerate the profile digest after enough lifetime facts (PLAN.md Part 7)."""
+        """Regenerate the profile digest after enough lifetime facts."""
         if key.subject_key == SERVER_SUBJECT_KEY or self.consolidation is None:
             return
         try:
@@ -569,7 +569,7 @@ class IngestPipeline:
         guild_id: str,
         messages: tuple[StoredMessage, ...],
     ) -> None:
-        """Learn real-name aliases from raw messages (PLAN.md §3.2 write-time).
+        """Learn real-name aliases from raw messages.
 
         Runs on message text, not just extracted facts: a name mentioned in a
         noise-gated batch is still learned. First-person patterns only, bound

@@ -1,5 +1,3 @@
-"""Lifecycle math tests: tiers, retention, reinforcement, forgetting (PLAN.md §4.4/4.5)."""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta

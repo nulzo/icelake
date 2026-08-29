@@ -48,7 +48,7 @@ class ResolvedCandidate(FrozenModel):
 
 
 class Resolution(FrozenModel):
-    """Outcome of name→ID resolution. ``ambiguous`` never guesses (PLAN.md §3.2)."""
+    """Outcome of name→ID resolution. ``ambiguous`` never guesses."""
 
     identifier: str
     resolved: ResolvedCandidate | None = None

@@ -1,9 +1,3 @@
-"""MemoryStore conformance suite: every backend must pass identical scenarios.
-
-This is the port contract made executable (PLAN.md §10.2). Adding a new backend =
-parametrize another factory here.
-"""
-
 from __future__ import annotations
 
 import socket

@@ -1,5 +1,3 @@
-"""Quality-gate contract tests — the accuracy armor (PLAN.md §3.3)."""
-
 from __future__ import annotations
 
 import pytest

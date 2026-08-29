@@ -14,7 +14,7 @@ from icelake.models.identity import Resolution
 
 
 class Scope(StrEnum):
-    """Candidate-space restriction, enforced in store queries (PLAN.md §5.1)."""
+    """Candidate-space restriction, enforced in store queries."""
 
     SUBJECTS = "subjects"
     GUILD = "guild"

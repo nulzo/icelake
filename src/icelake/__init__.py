@@ -13,7 +13,6 @@ Quickstart::
         ctx = await memory.prompt_context(guild_id=g, asker_id=u, text=msg)
         system_prompt += ctx.injection_block
 
-See docs/API.md for the complete consumer contract and docs/PLAN.md for design.
 """
 
 from icelake.api.classify import CommandAction, UserMemoryCommand

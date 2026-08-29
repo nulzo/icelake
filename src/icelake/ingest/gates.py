@@ -1,5 +1,5 @@
 """Anti-fabrication gates: pure functions deciding whether a proposed fact may be
-stored (PLAN.md §3.3). Ported from the bot's memory_quality.py hardening.
+stored. Ported from the bot's memory_quality.py hardening.
 
 Every gate is side-effect-free and takes explicit context so it is trivially unit-
 testable and fuzzable. Gates are the second-to-last line of defense before storage;

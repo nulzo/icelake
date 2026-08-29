@@ -1,4 +1,4 @@
-"""Identity resolution ladder: identifier → hardened user ID (PLAN.md §3.2).
+"""Identity resolution ladder: identifier → hardened user ID.
 
 Order: snowflake passthrough → exact alias → prefix alias. Ambiguity never guesses:
 when the runner-up is within ``AMBIGUITY_RATIO`` of the leader the resolution is

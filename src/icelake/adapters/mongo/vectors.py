@@ -24,7 +24,7 @@ class MongoVectorIndex:
     """Embedding store + candidate-cap cosine scan sharing the Mongo database.
 
     Atlas deployments can swap in ``$vectorSearch`` behind the same port without
-    consumer changes (PLAN.md D1 swap test).
+    consumer changes.
     """
 
     def __init__(self, db: Any) -> None:

@@ -1,5 +1,3 @@
-"""Reciprocal Rank Fusion and calibrated hybrid reranking (PLAN.md §5.3)."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field

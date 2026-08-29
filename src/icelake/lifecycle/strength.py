@@ -1,4 +1,4 @@
-"""Ebbinghaus-style strength and forgetting math (PLAN.md §4.5, MemoryBank formula).
+"""Ebbinghaus-style strength and forgetting math.
 
 ``retention = exp(-Δdays / strength)``; reinforcement adds strength and resets the
 clock. Pure functions — property-tested for monotonicity and reset behavior.

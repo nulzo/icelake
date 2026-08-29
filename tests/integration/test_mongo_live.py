@@ -1,10 +1,3 @@
-"""Live MongoDB conformance: full port contract against a real server.
-
-Skipped automatically when MONGODB_URI is unset and localhost:27017 is closed.
-Runs the SAME scenario suite as test_store_conformance.py — the executable
-port-contract guarantee (PLAN.md §10.2).
-"""
-
 from __future__ import annotations
 
 import socket

@@ -1,4 +1,4 @@
-"""Alias normalization, validation, and weight derivation (PLAN.md §3.2)."""
+"""Alias normalization, validation, and weight derivation."""
 
 from __future__ import annotations
 

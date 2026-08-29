@@ -1,9 +1,3 @@
-"""Recall channels: independent ranked candidate producers (PLAN.md §5.2).
-
-Each channel returns ranked fact ids plus optional calibrated score components.
-Channels degrade independently — failures log and return empty, never raise.
-"""
-
 from __future__ import annotations
 
 import logging

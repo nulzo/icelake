@@ -1,4 +1,4 @@
-"""Relation edge derivation and weighting (PLAN.md §4.7 layer 3)."""
+"""Relation edge derivation and weighting."""
 
 from __future__ import annotations
 

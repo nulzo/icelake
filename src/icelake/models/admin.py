@@ -76,7 +76,7 @@ class HealthReport(FrozenModel):
 
 
 class BudgetStep(StrEnum):
-    """Graceful-degradation ladder when budgets bind (PLAN.md §8.5)."""
+    """Graceful-degradation ladder when budgets bind."""
 
     NONE = "none"
     SKIP_RECONCILE = "skip_reconcile"

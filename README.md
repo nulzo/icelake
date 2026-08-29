@@ -171,10 +171,6 @@ async def forgetme(ctx: commands.Context):
 await memory.admin.set_opt_out(guild_id, user_id, True)
 ```
 
-Full usage documentation: [`docs/USAGE.md`](docs/USAGE.md) · Complete API contract:
-[`docs/API.md`](docs/API.md) · Design: [`docs/PLAN.md`](docs/PLAN.md) · What ships next:
-[`docs/ROADMAP.md`](docs/ROADMAP.md).
-
 ---
 
 ## Full bot example (omni-style)
@@ -332,10 +328,6 @@ memory.classify_command(text)          # "remember that…" / "forget…" intent
 memory.regenerate_summaries(guild_id)  # force profile digests (else every N new facts)
 memory.stats(guild_id)                 # GuildStats snapshot
 ```
-
-
-Full contract with signatures and semantics: [`docs/API.md`](docs/API.md).
-Design: [`docs/PLAN.md`](docs/PLAN.md) · Roadmap: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## discord.py integration
 
