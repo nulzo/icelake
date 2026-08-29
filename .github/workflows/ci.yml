@@ -53,7 +53,7 @@ jobs:
       - run: uv sync --group dev
       - name: Wait for MongoDB
         run: |
-          python - <<'PY'
+          uv run python - <<'PY'
           import socket, time, sys
           for _ in range(30):
               try:
