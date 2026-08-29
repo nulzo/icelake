@@ -15,6 +15,8 @@ Quickstart::
 
 """
 
+from importlib.metadata import version
+
 from icelake.api.classify import CommandAction, UserMemoryCommand
 from icelake.api.client import DiscordMemory
 from icelake.config import (
@@ -91,7 +93,7 @@ from icelake.models.events import (
     FactSupersededEvent,
 )
 
-__version__ = "0.1.3"
+__version__ = version("icelake")
 
 # Public, transport-free name. ``DiscordMemory`` stays as the back-compat
 # alias; the class itself is store/LLM-agnostic and Discord is an extra.

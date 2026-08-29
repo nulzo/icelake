@@ -45,6 +45,7 @@ dev = [
     "discord-py>=2.4",
     "pymongo>=4.10",
     "pyyaml>=6.0",
+    "towncrier>=24.8",
 ]
 
 [build-system]
@@ -75,6 +76,32 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 ignore = ["SIM108"]  # ternaries are not always clearer
+
+[tool.towncrier]
+directory = "changelog.d"
+filename = "CHANGELOG.md"
+start_string = "<!-- towncrier release notes start -->\n"
+underlines = ["", "", ""]
+title_format = "## [{version}](https://github.com/nulzo/icelake/tree/v{version}) - {project_date}"
+issue_format = "[#{issue}](https://github.com/nulzo/icelake/issues/{issue})"
+
+[[tool.towncrier.type]]
+name = "Security"
+
+[[tool.towncrier.type]]
+name = "Removed"
+
+[[tool.towncrier.type]]
+name = "Deprecated"
+
+[[tool.towncrier.type]]
+name = "Added"
+
+[[tool.towncrier.type]]
+name = "Changed"
+
+[[tool.towncrier.type]]
+name = "Fixed"
 
 [tool.mypy]
 python_version = "3.12"

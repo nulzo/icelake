@@ -300,6 +300,10 @@ uv run mypy
 
 Coverage floor is 90%. mypy is strict.
 
+User-facing changes need a changelog fragment in `changelog.d/` — see
+[CHANGELOG.md](CHANGELOG.md). Releases are cut from the **Release** workflow;
+see [docs/RELEASE.md](docs/RELEASE.md).
+
 ## Status (v0.1.x)
 
 - Storage: SQLite (default), MongoDB (`[mongo]`), in-memory (tests). Postgres

@@ -41,3 +41,32 @@ jobs:
           name: dist
           path: dist/
       - run: uv publish
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract release notes
+        id: notes
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "See [CHANGELOG.md](CHANGELOG.md) for details." > release_notes.md
+          fi
+          case "$VERSION" in
+            *a[0-9]*|*b[0-9]*|*rc[0-9]*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: release_notes.md
+          prerelease: ${{ steps.notes.outputs.prerelease }}
