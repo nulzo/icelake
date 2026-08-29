@@ -120,7 +120,7 @@ class ConsolidationService:
                         ),
                     ),
                 ),
-                max_tokens=300,
+                max_tokens=1000,
                 purpose="summarize",
                 guild_id=guild_id,
             )
