@@ -32,12 +32,37 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.12", "3.13"]
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand({ ping: 1 })'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 20s
+    env:
+      MONGODB_URI: mongodb://127.0.0.1:27017/icelake_test
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --group dev
+      - name: Wait for MongoDB
+        run: |
+          python - <<'PY'
+          import socket, time, sys
+          for _ in range(30):
+              try:
+                  socket.create_connection(("127.0.0.1", 27017), 1).close()
+                  sys.exit(0)
+              except OSError:
+                  time.sleep(1)
+          sys.exit("MongoDB did not become ready")
+          PY
       - run: uv run pytest tests/ -q --cov=icelake --cov-report=xml
       - uses: codecov/codecov-action@v5
         if: matrix.python-version == '3.12'
