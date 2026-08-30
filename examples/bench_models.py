@@ -24,7 +24,13 @@ from typing import Any
 
 # Defaults all have entries in the meter's price table, so cost estimates are
 # meaningful. Any OpenRouter chat model id works; unknown models report cost 0.
-DEFAULT_MODELS = ("deepseek/deepseek-v4-flash-0731",)
+DEFAULT_MODELS = (
+    "inception/mercury-2",
+    "openai/gpt-5.6-luna",
+    "google/gemini-3.1-flash-lite",
+    "google/gemini-3.7-flash",
+    "deepseek/deepseek-v4-flash-0731",
+)
 
 COLUMNS = (
     "model",
