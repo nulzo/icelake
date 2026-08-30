@@ -74,6 +74,76 @@ Examples:
 - [`examples/e2e_simulation.py`](examples/e2e_simulation.py) - scripted-guild eval
 - [`examples/bench_models.py`](examples/bench_models.py) - model matrix
 
+The current recommended extractor is **`z-ai/glm-5.3-flash`**. See [Model benchmark](#model-benchmark) for the ranked table and how to add a new row.
+
+## Model benchmark
+
+One full run of [`examples/e2e_simulation.py`](examples/e2e_simulation.py) per model (suite A drain-mode + suite B worker-mode) against OpenRouter on 2026-08-29. Hard checks are library guarantees; expectations are model-decided extraction/reconcile/classify outcomes. Spend is the meter's provider-reported USD for that run. List prices are OpenRouter prompt / completion per 1M tokens as of 2026-08-29.
+
+**Pick `z-ai/glm-5.3-flash` unless you have a reason not to.** It is the only model that both retired contradictions (Omaha → Seattle, quit Red Bull) and stayed under a cent. Gemini 3.7 Flash is the quality runner-up at ~11× the spend. Mercury 2 is the speed pick if you can live with weaker updates.
+
+| Rank | Model | Score | Exp. | Hard | Spend | Time | In $/M | Out $/M |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `z-ai/glm-5.3-flash` | **93.6** | 46/47 | 83/83 | $0.0078 | 3:51 | $0.075 | $0.25 |
+| 2 | `openai/gpt-5.6-luna` | 81.4 | 37/46 | 83/83 | $0.0198 | 2:17 | $0.20 | $1.20 |
+| 3 | `google/gemini-3.7-flash` | 79.3 | 43/47 | 83/83 | $0.0854 | 2:10 | $0.75 | $3.75 |
+| 4 | `google/gemini-3.1-flash-lite` | 78.6 | 40/46 | 83/83 | $0.0611 | 2:21 | $0.25 | $1.50 |
+| 5 | `inception/mercury-2` | 78.3 | 32/46 | 83/83 | $0.0234 | 0:46 | $0.25 | $0.75 |
+| 6 | `deepseek/deepseek-v4-flash` | 77.0 | 33/46 | 83/83 | $0.0091 | 9:45 | $0.081 | $0.16 |
+| 7 | `minimax/minimax-m3` | 75.9 | 36/46 | 82/83 | $0.0184 | 1:32 | $0.30 | $1.20 |
+| 8 | `deepseek/deepseek-v4-flash-0731` | 69.1 | 28/45 | 83/83 | $0.0138 | 13:33 | $0.065 | $0.18 |
+| 9 | `x-ai/grok-4.3` | 66.5 | 33/46 | 83/83 | $0.1012 | 4:20 | $1.25 | $2.50 |
+| 10 | `~anthropic/claude-haiku-latest` | 66.4 | 37/46 | 83/83 | $0.2160 | 5:08 | $1.00 | $5.00 |
+| 11 | `tencent/hy4-preview` | 23.3 | 8/44 | 82/83 | $0.2871 | 23:18 | $0.83 | $2.50 |
+
+Score is `/100`. In/out are OpenRouter list prices, not the run. Expectation denominators differ slightly when a model never produced the fixture a later check needs.
+
+### Score
+
+Fixed anchors, so a new row does not rescale the others:
+
+```
+Exp   = 100 × (expectations met) / (expectations total)          # suites A+B
+Hard  = 100 if zero hard failures, else max(0, 100 − 30 × failures)
+Cost  = 100 × (1 − log10(spend / 0.007) / log10(0.30 / 0.007))   # clamp 0–100
+Speed = 100 × (1 − log10(seconds / 45)  / log10(1400 / 45))      # clamp 0–100
+
+Score = 0.50×Exp + 0.20×Hard + 0.20×Cost + 0.10×Speed
+```
+
+`$0.007` / `$0.30` and `45s` / `1400s` are this round's observed best/worst. Leave them unless a new run is clearly outside the band.
+
+To add a model: run `uv run python examples/bench_models.py --models <id> --out bench_runs/<date>`, plug hard / expectations / spend / duration from the JSON plus current OpenRouter in/out, compute Score, insert the row in rank order.
+
+### What actually differed
+
+The discriminating job is **reconcile**, not first-pass extraction. Almost every model stored "lives in Omaha" and "loves Red Bull". Only GLM and Gemini 3.7 Flash retired those rows when Alice moved to Seattle and quit the drink. The rest left the old claim live — which is how a bot would confidently say the wrong city.
+
+| Model | What it did well | What it missed |
+| --- | --- | --- |
+| GLM 5.3 Flash | Retired Omaha + Red Bull; Biscuit, purple, drums, game night, piano; cheapest tokens | Charge-nurse promotion never merged into the nursing fact |
+| GPT-5.6 Luna | Cheap, complete, 28 facts | Omaha still live; puppy restatement added a row; nursing versions piled up |
+| Gemini 3.7 Flash | Second-best extraction; retired contradictions | ~11× GLM's spend; Go split into two facts; `classify_command` missed a query |
+| Gemini 3.1 Flash Lite | Clean hard pass, cheaper than 3.7 | Seattle/Omaha not reconciled; purple + drums absent |
+| Mercury 2 | Fastest by far (46s) | Same reconcile misses as the pack; 18 facts |
+| DeepSeek V4 Flash | Near-GLM spend | 10 minutes; same reconcile misses. The `0731` snapshot is worse (missed name/Go/Omaha on first pass) and slower |
+| MiniMax M3 | Fast and cheap | **Hard fail:** stored "bobby believes nolan's last name is gregory" when Bob stated Nolan's surname. Omaha and Red Bull still live |
+| Grok 4.3 | — | Thin store (15 facts); expensive; reconcile misses |
+| Claude Haiku Latest | Same expectation rate as Luna | 28× GLM's spend; 401s and invalid JSON in the log |
+| Hy4 preview | — | Structured output kept failing. 5 rows, all curation probes — no chat extraction. 102k completion tokens, 23 minutes, failed `BatchCompleted` |
+
+### Did not finish
+
+| Model | In $/M | Out $/M | Why |
+| --- | ---: | ---: | --- |
+| `google/gemma-4-31b-it` | $0.09 | $0.34 | Still running; invalid structured output + 401s |
+| `openai/gpt-5-nano` | $0.05 | $0.40 | HTTP 404: no endpoint accepted `reasoning=low` / json_schema |
+| `openai/gpt-5.6-sol` | $2.00 | $10.00 | Same 404 |
+| `tencent/hy-mt2-1.8b` | $0.044 | $0.18 | Same 404 (translation model) |
+| `tencent/hy-mt2-30b-a3b` | $0.074 | $0.30 | Same 404 (translation model) |
+
+Most completed runs used `--reasoning low`. Luna also set `--temperature none`. Gemini 3.7 Flash is the later `aug29-gemini-fix` run (an earlier pass was 41/43 + 1/4 expectations at $0.074).
+
 ## Graph explorer
 
 A self-contained HTML canvas over the public API — users, entities, typed

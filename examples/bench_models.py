@@ -26,10 +26,16 @@ from typing import Any
 # meaningful. Any OpenRouter chat model id works; unknown models report cost 0.
 DEFAULT_MODELS = (
     "inception/mercury-2",
-    "openai/gpt-5.6-luna",
-    "google/gemini-3.1-flash-lite",
-    "google/gemini-3.7-flash",
-    "deepseek/deepseek-v4-flash-0731",
+    "tencent/hy4-preview",
+    "z-ai/glm-5.3-flash",
+    "tencent/hy-mt2-1.8b",
+    "tencent/hy-mt2-30b-a3b",
+    "openai/gpt-5.6-sol",
+    "openai/gpt-5-nano",
+    "minimax/minimax-m3",
+    "x-ai/grok-4.3",
+    "~anthropic/claude-haiku-latest",
+    "google/gemma-4-31b-it"
 )
 
 COLUMNS = (
