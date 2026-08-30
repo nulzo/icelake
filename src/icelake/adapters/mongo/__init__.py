@@ -1128,9 +1128,7 @@ class MongoStore:
         retention_floor: float,
         stability_days: float = 1.0,
     ) -> int:
-        docs = (
-            await self.db["dm_facts"].find({"guild_id": guild_id, **self._ACTIVE}).to_list(5000)
-        )
+        docs = await self.db["dm_facts"].find({"guild_id": guild_id, **self._ACTIVE}).to_list(5000)
         victims = select_forgotten_facts(
             tuple(fact_from_doc(doc) for doc in docs),
             now=now,

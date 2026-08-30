@@ -26,21 +26,24 @@ from icelake import DiscordMemory, MemoryConfig, MessageEvent
 
 
 async def main() -> None:
-    memory = DiscordMemory(MemoryConfig(
-        storage="sqlite:///memory.db",
-        llm="openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1"
-            "?model=google/gemini-3.7-flash",
-    ))
+    memory = DiscordMemory(
+        MemoryConfig(
+            storage="sqlite:///memory.db",
+            llm="openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=google/gemini-3.7-flash",
+        )
+    )
     async with memory:
-        await memory.observe(MessageEvent(
-            message_id="9001",
-            guild_id="555",
-            channel_id="777",
-            author_id="100000000000000001",
-            content="I've been learning Rust for about a year now!",
-            created_at=datetime.now(UTC),
-            author_display_name="alice",
-        ))
+        await memory.observe(
+            MessageEvent(
+                message_id="9001",
+                guild_id="555",
+                channel_id="777",
+                author_id="100000000000000001",
+                content="I've been learning Rust for about a year now!",
+                created_at=datetime.now(UTC),
+                author_display_name="alice",
+            )
+        )
 
         ctx = await memory.prompt_context(
             guild_id="555",
@@ -125,8 +128,10 @@ command = await memory.classify_command("hey bot remember that I hate pineapple"
 # UserMemoryCommand(action=CommandAction.REMEMBER, target_text="that I hate pineapple", ...)
 if command.action is CommandAction.REMEMBER:
     await memory.facts.remember(
-        guild_id=guild_id, subject_id=user_id,
-        text=command.target_text, actor_id=user_id,
+        guild_id=guild_id,
+        subject_id=user_id,
+        text=command.target_text,
+        actor_id=user_id,
     )
 ```
 
@@ -136,11 +141,14 @@ Third-party facts can carry a relation:
 from icelake import ProposedRelation, RelationVerb
 
 await memory.facts.remember(
-    guild_id=guild_id, subject_id=bob_id,
+    guild_id=guild_id,
+    subject_id=bob_id,
     text="carol called bob a sore loser during game night",
-    actor_id=carol_id, speaker_id=carol_id,
-    relations=(ProposedRelation(
-        verb=RelationVerb.CALLED_OUT, from_token=carol_id, to_token=bob_id),),
+    actor_id=carol_id,
+    speaker_id=carol_id,
+    relations=(
+        ProposedRelation(verb=RelationVerb.CALLED_OUT, from_token=carol_id, to_token=bob_id),
+    ),
 )
 ```
 
@@ -161,24 +169,28 @@ compare equal to and serialize as their values:
 
 ```python
 from icelake import (
-    AliasSource,       # identity.register_alias(source=...)
-    AttributionType,   # facts.remember(attribution=...)
-    ChannelName,       # RecallQuery.channels / channels(...)
-    CommandAction,     # classify_command results
-    EntityKind,        # ProposedEntity(kind=...)
-    FactCategory,      # facts.remember(category=...)
-    FactHistoryKind,   # facts.history() entries
-    FactScope,         # FactRecord.scope: USER vs SERVER facts
-    HealthStatus,      # ops.health() component states
-    IgnoreReason, RejectReason, ObserveStatus,  # observe receipts
-    MemoryTier,        # FactRecord.tier, GuildStats.by_tier keys
-    MeterPurpose,      # the library's own LLM call purposes
-    MessageRole,       # LlmMessage.role
-    NodeType, Polarity, RelationVerb,           # graph edges
-    RecallWarning,     # recall / prompt_context warnings
-    Scope,             # RecallQuery.scope (retrieval-side only)
-    SourceRole,        # citation roles
-    StorageBackend,    # config.storage.backend
+    AliasSource,  # identity.register_alias(source=...)
+    AttributionType,  # facts.remember(attribution=...)
+    ChannelName,  # RecallQuery.channels / channels(...)
+    CommandAction,  # classify_command results
+    EntityKind,  # ProposedEntity(kind=...)
+    FactCategory,  # facts.remember(category=...)
+    FactHistoryKind,  # facts.history() entries
+    FactScope,  # FactRecord.scope: USER vs SERVER facts
+    HealthStatus,  # ops.health() component states
+    IgnoreReason,
+    RejectReason,
+    ObserveStatus,  # observe receipts
+    MemoryTier,  # FactRecord.tier, GuildStats.by_tier keys
+    MeterPurpose,  # the library's own LLM call purposes
+    MessageRole,  # LlmMessage.role
+    NodeType,
+    Polarity,
+    RelationVerb,  # graph edges
+    RecallWarning,  # recall / prompt_context warnings
+    Scope,  # RecallQuery.scope (retrieval-side only)
+    SourceRole,  # citation roles
+    StorageBackend,  # config.storage.backend
 )
 ```
 
@@ -256,7 +268,7 @@ The rest are indexes over them.
 memory.observe(event)
 memory.observe_many(events)
 memory.flush(guild_id=...)
-memory.register_bot_id(bot_user_id)   # never stored as a subject
+memory.register_bot_id(bot_user_id)  # never stored as a subject
 
 memory.prompt_context(...)
 memory.recall(RecallQuery(...))
@@ -285,6 +297,7 @@ config = MemoryConfig(
     llm="openai://$KEY@openrouter.ai/api/v1?model=google/gemini-3.7-flash",
 )
 
+
 class MyBot(commands.Bot):
     async def setup_hook(self) -> None:
         self.memory = await setup_discord_memory(self, config)
@@ -298,9 +311,9 @@ This wires `on_message` to `observe`, refreshes aliases on
 
 ```python
 MemoryConfig(
-    storage="sqlite:///memory.db",          # or mongodb://... with [mongo]
+    storage="sqlite:///memory.db",  # or mongodb://... with [mongo]
     llm="openai://$KEY@openrouter.ai/api/v1?model=...",
-    embeddings="hashing",                   # default. see below
+    embeddings="hashing",  # default. see below
     # embeddings="local",
     # embeddings="openai://$KEY@openrouter.ai/api/v1?model=openai/text-embedding-3-small",
     batching={"batch_size_messages": 10, "max_age_seconds": 300},
@@ -353,9 +366,9 @@ from icelake import ChatLLM, DiscordMemory, Embedder, MemoryStore
 
 memory = DiscordMemory(
     config,
-    store=MyPostgresStore(),   # MemoryStore (+ optional .queue / .vectors)
-    llm=MyLLM(),               # ChatLLM
-    embedder=MyEmbedder(),     # Embedder
+    store=MyPostgresStore(),  # MemoryStore (+ optional .queue / .vectors)
+    llm=MyLLM(),  # ChatLLM
+    embedder=MyEmbedder(),  # Embedder
     clock=FakeClock(...),
 )
 ```

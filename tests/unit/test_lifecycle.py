@@ -164,9 +164,9 @@ class TestStrengthDecay:
 
         base = self.NOW
         later = base + timedelta(days=3)
-        assert retention(
-            last_reinforced_at=base, now=later, strength=1.0
-        ) == pytest.approx(math.exp(-3))
+        assert retention(last_reinforced_at=base, now=later, strength=1.0) == pytest.approx(
+            math.exp(-3)
+        )
 
     def test_reinforcement_adds_strength(self) -> None:
         assert reinforced_strength(2.0) > 2.0
@@ -281,9 +281,7 @@ class TestSelectForgottenFacts:
         )
 
     def test_stale_fact_forgotten_fresh_fact_kept(self) -> None:
-        victims = self._select(
-            (self._fact("stale", days_old=10), self._fact("fresh", days_old=1))
-        )
+        victims = self._select((self._fact("stale", days_old=10), self._fact("fresh", days_old=1)))
         assert tuple(v.id for v in victims) == ("stale",)
 
     def test_core_and_manual_facts_are_exempt(self) -> None:
@@ -296,9 +294,7 @@ class TestSelectForgottenFacts:
         assert victims == ()
 
     def test_inactive_facts_are_skipped(self) -> None:
-        victims = self._select(
-            (self._fact("gone", days_old=10, valid_until=self.NOW),)
-        )
+        victims = self._select((self._fact("gone", days_old=10, valid_until=self.NOW),))
         assert victims == ()
 
     def test_stability_days_extends_lifetime(self) -> None:

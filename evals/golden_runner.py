@@ -63,15 +63,17 @@ def load_scenarios(directory: Path | None = None) -> list[GoldenScenario]:
             ForbiddenFact(text_contains=ff["text_contains"])
             for ff in raw.get("forbidden_facts", [])
         )
-        scenarios.append(GoldenScenario(
-            name=path.stem,
-            messages=tuple(raw.get("messages", [])),
-            llm_operations=raw.get("llm_operations", []),
-            expected_facts=expected,
-            forbidden_facts=forbidden,
-            expected_skips=tuple(raw.get("expected_skips", [])),
-            guild_id=raw.get("guild_id", "555"),
-        ))
+        scenarios.append(
+            GoldenScenario(
+                name=path.stem,
+                messages=tuple(raw.get("messages", [])),
+                llm_operations=raw.get("llm_operations", []),
+                expected_facts=expected,
+                forbidden_facts=forbidden,
+                expected_skips=tuple(raw.get("expected_skips", [])),
+                guild_id=raw.get("guild_id", "555"),
+            )
+        )
     return scenarios
 
 
@@ -83,11 +85,14 @@ async def run_scenario(
     """Replay one golden scenario; return pass/fail details."""
     from tests.conftest import make_config
 
-    llm = ScriptedLLM({
-        "extraction": json.dumps({"operations": scenario.llm_operations}),
-    })
+    llm = ScriptedLLM(
+        {
+            "extraction": json.dumps({"operations": scenario.llm_operations}),
+        }
+    )
     memory = DiscordMemory(
-        make_config(**(config_overrides or {})), llm=llm,
+        make_config(**(config_overrides or {})),
+        llm=llm,
     )
     await memory.start()
 
@@ -127,21 +132,19 @@ async def run_scenario(
         m["author_id"] for m in scenario.messages
     }:
         page = await memory.facts.list_for_subject(
-            scenario.guild_id, subject_id, include_server=False,
+            scenario.guild_id,
+            subject_id,
+            include_server=False,
         )
         all_facts[subject_id] = [f.text.lower() for f in page.items]
 
     for ef in scenario.expected_facts:
         subject_texts = all_facts.get(ef.subject_id, [])
         if not any(ef.text_contains.lower() in t for t in subject_texts):
-            failures.append(
-                f"MISSING: '{ef.text_contains}' on subject {ef.subject_id}"
-            )
+            failures.append(f"MISSING: '{ef.text_contains}' on subject {ef.subject_id}")
 
     # Check forbidden facts absent everywhere.
-    all_text = " || ".join(
-        " || ".join(texts) for texts in all_facts.values()
-    )
+    all_text = " || ".join(" || ".join(texts) for texts in all_facts.values())
     for ff in scenario.forbidden_facts:
         if ff.text_contains.lower() in all_text:
             failures.append(f"FORBIDDEN PRESENT: '{ff.text_contains}'")

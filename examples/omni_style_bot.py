@@ -101,14 +101,17 @@ class OmniStyleBot(commands.Bot):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        if message.guild is None: return
+        if message.guild is None:
+            return
 
         event = to_event(message)
         # register our own id once. the bot should never be a subject.
         await self.memory.observe(event)
-        if message.author.bot: return
+        if message.author.bot:
+            return
 
-        if await self._is_addressed(message): await self._handle_turn(message)
+        if await self._is_addressed(message):
+            await self._handle_turn(message)
 
     # ------------------------------------------------------------------ #
     # Addressing: direct mention, <@id> token, or reply-to-our-message.   #
