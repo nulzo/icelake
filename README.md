@@ -78,25 +78,30 @@ The current recommended extractor is **`z-ai/glm-5.3-flash`**. See [Model benchm
 
 ## Model benchmark
 
-One full run of [`examples/e2e_simulation.py`](examples/e2e_simulation.py) per model (suite A drain-mode + suite B worker-mode) against OpenRouter on 2026-08-29. Hard checks are library guarantees; expectations are model-decided extraction/reconcile/classify outcomes. Spend is the meter's provider-reported USD for that run. List prices are OpenRouter prompt / completion per 1M tokens as of 2026-08-29.
+One full run of [`examples/e2e_simulation.py`](examples/e2e_simulation.py) per model (suite A drain-mode + suite B worker-mode) against OpenRouter on 2026-08-29 and 2026-08-30. Hard checks are library guarantees; expectations are model-decided extraction/reconcile/classify outcomes. Spend is the meter's provider-reported USD for that run. List prices are OpenRouter prompt / completion per 1M tokens as of 2026-08-30.
 
-**Pick `z-ai/glm-5.3-flash` unless you have a reason not to.** It is the only model that both retired contradictions (Omaha → Seattle, quit Red Bull) and stayed under a cent. Gemini 3.7 Flash is the quality runner-up at ~11× the spend. Mercury 2 is the speed pick if you can live with weaker updates.
+**Pick `z-ai/glm-5.3-flash` unless you have a reason not to.** It is still the only model that both retires contradictions (Omaha → Seattle, quit Red Bull) and stays around a cent. Gemini 2.5 Flash and 3.7 Flash also reconcile, at 7–11× the spend. GPT-4o-mini is the cheapest completed run but leaves the old city and drink live. Mercury 2 is the speed pick if you can live with weaker updates.
 
 | Rank | Model | Score | Exp. | Hard | Spend | Time | In $/M | Out $/M |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1 | `z-ai/glm-5.3-flash` | **93.6** | 46/47 | 83/83 | $0.0078 | 3:51 | $0.075 | $0.25 |
-| 2 | `openai/gpt-5.6-luna` | 81.4 | 37/46 | 83/83 | $0.0198 | 2:17 | $0.20 | $1.20 |
-| 3 | `google/gemini-3.7-flash` | 79.3 | 43/47 | 83/83 | $0.0854 | 2:10 | $0.75 | $3.75 |
-| 4 | `google/gemini-3.1-flash-lite` | 78.6 | 40/46 | 83/83 | $0.0611 | 2:21 | $0.25 | $1.50 |
-| 5 | `inception/mercury-2` | 78.3 | 32/46 | 83/83 | $0.0234 | 0:46 | $0.25 | $0.75 |
-| 6 | `deepseek/deepseek-v4-flash` | 77.0 | 33/46 | 83/83 | $0.0091 | 9:45 | $0.081 | $0.16 |
-| 7 | `minimax/minimax-m3` | 75.9 | 36/46 | 82/83 | $0.0184 | 1:32 | $0.30 | $1.20 |
-| 8 | `deepseek/deepseek-v4-flash-0731` | 69.1 | 28/45 | 83/83 | $0.0138 | 13:33 | $0.065 | $0.18 |
-| 9 | `x-ai/grok-4.3` | 66.5 | 33/46 | 83/83 | $0.1012 | 4:20 | $1.25 | $2.50 |
-| 10 | `~anthropic/claude-haiku-latest` | 66.4 | 37/46 | 83/83 | $0.2160 | 5:08 | $1.00 | $5.00 |
-| 11 | `tencent/hy4-preview` | 23.3 | 8/44 | 82/83 | $0.2871 | 23:18 | $0.83 | $2.50 |
+| 2 | `openai/gpt-4o-mini` | 84.8 | 33/46 | 83/83 | $0.0066 | 1:04 | $0.15 | $0.60 |
+| 3 | `openai/gpt-4.1-mini` | 83.1 | 38/47 | 83/83 | $0.0208 | 1:17 | $0.40 | $1.60 |
+| 4 | `openai/gpt-5.6-luna` | 81.4 | 37/46 | 83/83 | $0.0198 | 2:17 | $0.20 | $1.20 |
+| 5 | `google/gemini-3.7-flash` | 79.3 | 43/47 | 83/83 | $0.0854 | 2:10 | $0.75 | $3.75 |
+| 6 | `google/gemini-2.5-flash` | 79.1 | 40/47 | 83/83 | $0.0523 | 1:54 | $0.30 | $2.50 |
+| 7 | `google/gemini-3.1-flash-lite` | 78.6 | 40/46 | 83/83 | $0.0611 | 2:21 | $0.25 | $1.50 |
+| 8 | `inception/mercury-2` | 78.3 | 32/46 | 83/83 | $0.0234 | 0:46 | $0.25 | $0.75 |
+| 9 | `qwen/qwen3-32b` | 77.8 | 34/46 | 83/83 | $0.0077 | 14:42 | $0.08 | $0.28 |
+| 10 | `deepseek/deepseek-v4-flash` | 77.0 | 33/46 | 83/83 | $0.0091 | 9:45 | $0.081 | $0.16 |
+| 11 | `minimax/minimax-m3` | 75.9 | 36/46 | 82/83 | $0.0184 | 1:32 | $0.30 | $1.20 |
+| 12 | `deepseek/deepseek-v4-flash-0731` | 69.1 | 28/45 | 83/83 | $0.0138 | 13:33 | $0.065 | $0.18 |
+| 13 | `x-ai/grok-4.3` | 66.5 | 33/46 | 83/83 | $0.1012 | 4:20 | $1.25 | $2.50 |
+| 14 | `~anthropic/claude-haiku-latest` | 66.4 | 37/46 | 83/83 | $0.2160 | 5:08 | $1.00 | $5.00 |
+| 15 | `google/gemma-4-31b-it` | 64.9 | 28/45 | 83/83 | $0.0224 | 39:42 | $0.09 | $0.34 |
+| 16 | `tencent/hy4-preview` | 23.3 | 8/44 | 82/83 | $0.2871 | 23:18 | $0.83 | $2.50 |
 
-Score is `/100`. In/out are OpenRouter list prices, not the run. Expectation denominators differ slightly when a model never produced the fixture a later check needs.
+Score is `/100`. In/out are OpenRouter list prices, not the run. Expectation denominators differ slightly when a model never produced the fixture a later check needs. GPT-4o-mini's spend is under the $0.007 cost floor, so its cost component clips to 100.
 
 ### Score
 
@@ -117,32 +122,38 @@ To add a model: run `uv run python examples/bench_models.py --models <id> --out 
 
 ### What actually differed
 
-The discriminating job is **reconcile**, not first-pass extraction. Almost every model stored "lives in Omaha" and "loves Red Bull". Only GLM and Gemini 3.7 Flash retired those rows when Alice moved to Seattle and quit the drink. The rest left the old claim live — which is how a bot would confidently say the wrong city.
+The discriminating job is **reconcile**, not first-pass extraction. Almost every model stored "lives in Omaha" and "loves Red Bull". Only GLM 5.3 Flash, Gemini 2.5 Flash, and Gemini 3.7 Flash retired both when Alice moved to Seattle and quit the drink. GPT-4.1-mini retired Omaha but left Red Bull live. The rest left the old claim active — which is how a bot would confidently say the wrong city.
 
 | Model | What it did well | What it missed |
 | --- | --- | --- |
-| GLM 5.3 Flash | Retired Omaha + Red Bull; Biscuit, purple, drums, game night, piano; cheapest tokens | Charge-nurse promotion never merged into the nursing fact |
+| GLM 5.3 Flash | Retired Omaha + Red Bull; Biscuit, purple, drums, game night, piano; best quality at ~a cent | Charge-nurse promotion never merged into the nursing fact |
+| GPT-4o-mini | Cheapest completed run ($0.0066), 64s. Mem0/Cognee's old default | Omaha and Red Bull still live; no puppy / purple / drums |
+| GPT-4.1-mini | Graphiti's default. Retired Omaha; fast (77s) | Red Bull still live; no puppy / purple; missed piano age-flush |
 | GPT-5.6 Luna | Cheap, complete, 28 facts | Omaha still live; puppy restatement added a row; nursing versions piled up |
-| Gemini 3.7 Flash | Second-best extraction; retired contradictions | ~11× GLM's spend; Go split into two facts; `classify_command` missed a query |
+| Gemini 3.7 Flash | Best Gemini extraction; retired contradictions | ~11× GLM's spend; Go split into two facts; `classify_command` missed a query |
+| Gemini 2.5 Flash | Retired Omaha + Red Bull; 40/47 expectations | Verbose (38 facts, nursing piled up); ~7× GLM's spend; no puppy merge |
 | Gemini 3.1 Flash Lite | Clean hard pass, cheaper than 3.7 | Seattle/Omaha not reconciled; purple + drums absent |
 | Mercury 2 | Fastest by far (46s) | Same reconcile misses as the pack; 18 facts |
+| Qwen3 32B | GLM-level spend | 15 minutes; Omaha and Red Bull still live |
 | DeepSeek V4 Flash | Near-GLM spend | 10 minutes; same reconcile misses. The `0731` snapshot is worse (missed name/Go/Omaha on first pass) and slower |
 | MiniMax M3 | Fast and cheap | **Hard fail:** stored "bobby believes nolan's last name is gregory" when Bob stated Nolan's surname. Omaha and Red Bull still live |
 | Grok 4.3 | — | Thin store (15 facts); expensive; reconcile misses |
 | Claude Haiku Latest | Same expectation rate as Luna | 28× GLM's spend; 401s and invalid JSON in the log |
+| Gemma 4 31B | Clean hard pass | 40 minutes; missed name/Go/Omaha on first pass; invalid JSON + 401s in the log |
 | Hy4 preview | — | Structured output kept failing. 5 rows, all curation probes — no chat extraction. 102k completion tokens, 23 minutes, failed `BatchCompleted` |
 
 ### Did not finish
 
 | Model | In $/M | Out $/M | Why |
 | --- | ---: | ---: | --- |
-| `google/gemma-4-31b-it` | $0.09 | $0.34 | Still running; invalid structured output + 401s |
-| `openai/gpt-5-nano` | $0.05 | $0.40 | HTTP 404: no endpoint accepted `reasoning=low` / json_schema |
+| `qwen/qwen3.7-flash` | $0.03 | $0.13 | HTTP 404: no endpoint accepted `reasoning=low` / json_schema |
+| `z-ai/glm-4.5-air` | $0.13 | $0.85 | Same 404 |
+| `openai/gpt-5-nano` | $0.05 | $0.40 | Same 404 |
 | `openai/gpt-5.6-sol` | $2.00 | $10.00 | Same 404 |
 | `tencent/hy-mt2-1.8b` | $0.044 | $0.18 | Same 404 (translation model) |
 | `tencent/hy-mt2-30b-a3b` | $0.074 | $0.30 | Same 404 (translation model) |
 
-Most completed runs used `--reasoning low`. Luna also set `--temperature none`. Gemini 3.7 Flash is the later `aug29-gemini-fix` run (an earlier pass was 41/43 + 1/4 expectations at $0.074).
+Most completed runs used `--reasoning low`. Luna also set `--temperature none`. Gemini 3.7 Flash is the later `aug29-gemini-fix` run (an earlier pass was 41/43 + 1/4 expectations at $0.074). Challengers are `aug30-challengers`.
 
 ## Graph explorer
 
