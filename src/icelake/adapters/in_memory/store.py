@@ -10,11 +10,11 @@ import asyncio
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 
+from icelake.lifecycle.forget import select_forgotten_facts
 from icelake.lifecycle.prune import select_prune_victims_by_anchor
 from icelake.models.admin import GuildStats, PurgeReport
 from icelake.models.common import Page
 from icelake.models.facts import (
-    AttributionType,
     FactCategory,
     FactHistoryEntry,
     FactRecord,
@@ -846,31 +846,19 @@ class InMemoryStore:
         *,
         now: datetime,
         retention_floor: float,
+        stability_days: float = 1.0,
     ) -> int:
-        from icelake.lifecycle.strength import retention, should_forget
-
-        forgotten = 0
-        for key, record in list(self._facts.items()):
-            if record.guild_id != guild_id or not record.is_active:
-                continue
-            last = record.last_reinforced_at or record.created_at
-            if last is None:
-                continue
-            value = retention(
-                last_reinforced_at=last,
-                now=now,
-                strength=record.strength,
-            )
-            manual = record.attribution.type is AttributionType.MANUAL
-            if should_forget(
-                retention_value=value,
-                tier=record.tier,
-                manual=manual,
-                forget_retention_floor=retention_floor,
-            ):
-                self._facts[key] = record.model_copy(update={"valid_until": now})
-                forgotten += 1
-        return forgotten
+        records = tuple(r for r in self._facts.values() if r.guild_id == guild_id)
+        victims = select_forgotten_facts(
+            records,
+            now=now,
+            retention_floor=retention_floor,
+            stability_days=stability_days,
+        )
+        for victim in victims:
+            key = (victim.guild_id, victim.id)
+            self._facts[key] = victim.model_copy(update={"valid_until": now})
+        return len(victims)
 
     async def touch_facts(
         self,

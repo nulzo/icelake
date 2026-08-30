@@ -60,6 +60,7 @@ class MaintenanceService:
             guild_id,
             now=now,
             retention_floor=self._config.lifecycle.forget_retention_floor,
+            stability_days=self._config.lifecycle.decay_stability_days,
         )
         pruned = await self._store.prune_to_caps(
             guild_id,

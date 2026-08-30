@@ -236,6 +236,11 @@ class LifecycleConfig(FrozenModel):
     mid_term_days: int = Field(default=45, ge=1)
     long_term_days: int = Field(default=180, ge=1)
     forget_retention_floor: float = Field(default=0.05, ge=0.0, le=1.0)
+    #: Days of retention per strength point: retention = exp(-days /
+    #: (strength x stability)). A one-off fact (strength 1) is forgotten after
+    #: ~stability x ln(1/floor) days — 7.0 ≈ 3 weeks, which keeps the sweep
+    #: softer than the short-term TTL instead of undercutting it.
+    decay_stability_days: float = Field(default=7.0, gt=0)
     max_facts_per_user: int = Field(default=300, ge=10)
     max_server_facts: int = Field(default=500, ge=10)
 

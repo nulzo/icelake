@@ -506,6 +506,7 @@ class DiscordMemory:
             guard=self._guard,
             clock=self._clock,
             is_subject_blocked=_blocked,
+            stability_days=self.config.lifecycle.decay_stability_days,
             on_recalled=(
                 _reinforce_recalled if self.config.retrieval.reinforce_on_recall else None
             ),

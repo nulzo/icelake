@@ -55,6 +55,7 @@ class RecallService:
         is_subject_blocked: Any = None,
         on_recalled: Any = None,
         clock: Clock | None = None,
+        stability_days: float = 1.0,
     ) -> None:
         self._store = store
         self._vectors = vectors
@@ -64,6 +65,9 @@ class RecallService:
         self._is_subject_blocked = is_subject_blocked
         self._on_recalled = on_recalled
         self._clock = clock
+        # Must match the maintenance sweep's decay timescale — ranking and
+        # forgetting are two views of the same curve.
+        self._stability_days = stability_days
 
     async def recall(self, query: RecallQuery) -> RecallResult:
         selected = query.channels if query.channels else CHANNELS_DEFAULT
@@ -142,6 +146,7 @@ class RecallService:
                     last_reinforced_at=record.last_reinforced_at or record.created_at or now,
                     now=now,
                     strength=record.strength,
+                    stability_days=self._stability_days,
                 ),
             )
             for record in records

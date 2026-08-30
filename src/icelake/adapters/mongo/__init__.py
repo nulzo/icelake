@@ -31,6 +31,7 @@ from icelake.adapters.mongo.mapping import (
     summary_to_doc,
 )
 from icelake.adapters.mongo.queue import CLAIMED
+from icelake.lifecycle.forget import select_forgotten_facts
 from icelake.lifecycle.prune import select_prune_victims_by_anchor
 from icelake.models.admin import GuildStats, PurgeReport
 from icelake.models.common import Page
@@ -1125,44 +1126,27 @@ class MongoStore:
         *,
         now: datetime,
         retention_floor: float,
+        stability_days: float = 1.0,
     ) -> int:
-        import math
-
-        rows = (
-            await self.db["dm_facts"]
-            .find(
-                {"guild_id": guild_id, **self._ACTIVE},
-            )
-            .to_list(5000)
+        docs = (
+            await self.db["dm_facts"].find({"guild_id": guild_id, **self._ACTIVE}).to_list(5000)
         )
-        forgotten = 0
-        for doc in rows:
-            if doc.get("tier") == "core":
-                continue
-            attribution = doc.get("attribution") or {}
-            if attribution.get("type") == "manual":
-                continue
-            last = doc.get("last_reinforced_at") or doc.get("created_at")
-            if isinstance(last, str):
-                try:
-                    last = datetime.fromisoformat(last)
-                except ValueError:
-                    continue
-            if last is None:
-                continue
-            delta_days = max(0.0, (now - last).total_seconds() / 86_400.0)
-            strength = max(1.0, float(doc.get("strength", 1.0)))
-            if math.exp(-delta_days / strength) >= retention_floor:
-                continue
-            await self.db["dm_facts"].update_one(
-                {"_id": doc["_id"]},
-                {
-                    "$set": {"valid_until": _iso(now), "updated_at": _iso(now)},
-                    "$inc": {"version": 1},
-                },
-            )
-            forgotten += 1
-        return forgotten
+        victims = select_forgotten_facts(
+            tuple(fact_from_doc(doc) for doc in docs),
+            now=now,
+            retention_floor=retention_floor,
+            stability_days=stability_days,
+        )
+        if not victims:
+            return 0
+        result = await self.db["dm_facts"].update_many(
+            {"_id": {"$in": [victim.id for victim in victims]}},
+            {
+                "$set": {"valid_until": _iso(now), "updated_at": _iso(now)},
+                "$inc": {"version": 1},
+            },
+        )
+        return result.modified_count
 
     async def get_cursor(self, guild_id: str, key: str) -> str | None:
         doc = await self.db["dm_cursors"].find_one(

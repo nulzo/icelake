@@ -354,6 +354,7 @@ class MemoryStore(Protocol):
         *,
         now: datetime,
         retention_floor: float,
+        stability_days: float = 1.0,
     ) -> int:
         """Soft-invalidate non-core facts below the retention floor."""
 

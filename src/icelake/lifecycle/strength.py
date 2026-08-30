@@ -20,12 +20,18 @@ def retention(
     last_reinforced_at: datetime,
     now: datetime,
     strength: float,
+    stability_days: float = 1.0,
 ) -> float:
-    """Retention fraction in [0, 1] since the last reinforcement."""
+    """Retention fraction in [0, 1] since the last reinforcement.
+
+    ``stability_days`` is the decay timescale per strength point — the sweep
+    and the ranking path must pass the same configured value or they disagree
+    about which facts are fading.
+    """
     if strength < MIN_STRENGTH:
         strength = MIN_STRENGTH
     delta_days = max(0.0, (now - last_reinforced_at).total_seconds() / 86_400.0)
-    return math.exp(-delta_days / strength)
+    return math.exp(-delta_days / (strength * stability_days))
 
 
 def reinforced_strength(current_strength: float) -> float:

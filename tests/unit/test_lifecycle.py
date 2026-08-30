@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from icelake.config import LifecycleConfig
 from icelake.lifecycle.strength import (
     reinforced_strength,
@@ -10,7 +12,7 @@ from icelake.lifecycle.strength import (
     strength_signal,
 )
 from icelake.lifecycle.tiers import assign_tier
-from icelake.models.facts import FactCategory, MemoryTier
+from icelake.models.facts import FactCategory, FactRecord, MemoryTier
 
 
 class TestTierAssignment:
@@ -142,6 +144,30 @@ class TestStrengthDecay:
         strong = retention(last_reinforced_at=base, now=later, strength=8.0)
         assert strong > weak
 
+    def test_stability_days_slows_decay(self) -> None:
+        base = self.NOW
+        later = base + timedelta(days=10)
+        fast = retention(last_reinforced_at=base, now=later, strength=1.0)
+        slow = retention(last_reinforced_at=base, now=later, strength=1.0, stability_days=7.0)
+        assert slow > fast
+
+    def test_stability_days_scales_the_curve_exactly(self) -> None:
+        import math
+
+        base = self.NOW
+        later = base + timedelta(days=3)
+        value = retention(last_reinforced_at=base, now=later, strength=2.0, stability_days=7.0)
+        assert value == pytest.approx(math.exp(-3 / 14))
+
+    def test_default_stability_preserves_legacy_curve(self) -> None:
+        import math
+
+        base = self.NOW
+        later = base + timedelta(days=3)
+        assert retention(
+            last_reinforced_at=base, now=later, strength=1.0
+        ) == pytest.approx(math.exp(-3))
+
     def test_reinforcement_adds_strength(self) -> None:
         assert reinforced_strength(2.0) > 2.0
 
@@ -210,3 +236,72 @@ class TestPruneVictimSelection:
             cap=2,
         )
         assert tuple(v.id for v in victims) == ("weak",)
+
+
+class TestSelectForgottenFacts:
+    NOW = datetime(2026, 8, 28, tzinfo=UTC)
+
+    def _fact(
+        self,
+        fact_id: str,
+        *,
+        days_old: float,
+        tier: MemoryTier = MemoryTier.SHORT_TERM,
+        manual: bool = False,
+        valid_until: datetime | None = None,
+    ) -> FactRecord:
+        from icelake.models.facts import Attribution, AttributionType
+
+        at = self.NOW - timedelta(days=days_old)
+        return FactRecord(
+            id=fact_id,
+            guild_id="g1",
+            subject_id="u1",
+            text=f"fact {fact_id} with enough words to be real",
+            category=FactCategory.INTERESTS,
+            tier=tier,
+            strength=1.0,
+            confidence=0.8,
+            created_at=at,
+            last_reinforced_at=at,
+            valid_until=valid_until,
+            attribution=Attribution(
+                type=AttributionType.MANUAL if manual else AttributionType.SELF
+            ),
+        )
+
+    def _select(self, records, *, stability_days: float = 1.0):
+        from icelake.lifecycle.forget import select_forgotten_facts
+
+        return select_forgotten_facts(
+            records,
+            now=self.NOW,
+            retention_floor=0.05,
+            stability_days=stability_days,
+        )
+
+    def test_stale_fact_forgotten_fresh_fact_kept(self) -> None:
+        victims = self._select(
+            (self._fact("stale", days_old=10), self._fact("fresh", days_old=1))
+        )
+        assert tuple(v.id for v in victims) == ("stale",)
+
+    def test_core_and_manual_facts_are_exempt(self) -> None:
+        victims = self._select(
+            (
+                self._fact("core", days_old=365, tier=MemoryTier.CORE),
+                self._fact("pinned", days_old=365, manual=True),
+            )
+        )
+        assert victims == ()
+
+    def test_inactive_facts_are_skipped(self) -> None:
+        victims = self._select(
+            (self._fact("gone", days_old=10, valid_until=self.NOW),)
+        )
+        assert victims == ()
+
+    def test_stability_days_extends_lifetime(self) -> None:
+        records = (self._fact("borderline", days_old=10),)
+        assert len(self._select(records)) == 1
+        assert self._select(records, stability_days=7.0) == ()

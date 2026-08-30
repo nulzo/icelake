@@ -7,6 +7,7 @@ import sqlite3
 from datetime import datetime
 
 from icelake.adapters.sqlite.connection import SqliteConnection, dumps, iso
+from icelake.lifecycle.forget import select_forgotten_facts
 from icelake.lifecycle.prune import select_prune_victims_by_anchor
 from icelake.models.admin import GuildStats, PurgeReport
 from icelake.models.common import Page
@@ -763,43 +764,29 @@ class FactsMixin:
         *,
         now: datetime,
         retention_floor: float,
+        stability_days: float = 1.0,
     ) -> int:
-        import math
-
         rows = await self._db.query(
-            """SELECT id, tier, attribution, strength, last_reinforced_at,
-                      created_at FROM dm_facts
+            """SELECT * FROM dm_facts
                WHERE guild_id=? AND valid_until IS NULL
                  AND superseded_by_id IS NULL""",
             (guild_id,),
         )
-        forgotten = 0
-        for row in rows:
-            tier = row["tier"]
-            if tier == "core":
-                continue
-            attribution = json.loads(row["attribution"] or "{}")
-            if attribution.get("type") == "manual":
-                continue
-            last = parse_moment(row["last_reinforced_at"]) or parse_moment(
-                row["created_at"],
-            )
-            if last is None:
-                continue
-            delta_days = max(
-                0.0,
-                (now - last).total_seconds() / 86_400.0,
-            )
-            retention_value = math.exp(-delta_days / max(1.0, float(row["strength"])))
-            if retention_value >= retention_floor:
-                continue
-            await self._db.execute(
-                """UPDATE dm_facts SET valid_until=?, updated_at=?,
-                     version=version+1 WHERE id=?""",
-                (iso(now), iso(now), row["id"]),
-            )
-            forgotten += 1
-        return forgotten
+        victims = select_forgotten_facts(
+            tuple(record_from_row(row) for row in rows),
+            now=now,
+            retention_floor=retention_floor,
+            stability_days=stability_days,
+        )
+        if not victims:
+            return 0
+        placeholders = ",".join("?" for _ in victims)
+        await self._db.execute(
+            f"""UPDATE dm_facts SET valid_until=?, updated_at=?,
+                 version=version+1 WHERE id IN ({placeholders})""",
+            (iso(now), iso(now), *(victim.id for victim in victims)),
+        )
+        return len(victims)
 
     async def guild_stats(self, guild_id: str) -> GuildStats:
         total_row = await self._db.query_one(
