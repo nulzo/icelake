@@ -1,14 +1,14 @@
 """Benchmark matrix: run the e2e sim against several chat models, aggregate results.
 
 Each model runs in an isolated subprocess of e2e_simulation.py (fresh db per
-model; a crash in one run doesn't kill the matrix). Runs execute concurrently
-(--jobs to throttle, e.g. if your provider rate-limits); each run's full output
-lands in <out>/<model>.log. Writes <out>/report.json (full detail) and
-<out>/report.md (comparison table).
+model; a crash in one run doesn't kill the matrix). Per-model OpenRouter knobs
+live in MODELS — add a row there to keep testing it. Runs execute concurrently
+(--jobs to throttle); each run's full output lands in <out>/<model>.log.
+Writes <out>/report.json (full detail) and <out>/report.md (comparison table).
 
     uv run python examples/bench_models.py
-    uv run python examples/bench_models.py --models google/gemini-3.7-flash,openai/gpt-4o-mini
-    uv run python examples/bench_models.py --jobs 2 --out bench_runs/aug27
+    uv run python examples/bench_models.py --models z-ai/glm-5.3-flash,openai/gpt-4o-mini
+    uv run python examples/bench_models.py --jobs 2 --out bench_runs/aug30
 """
 
 from __future__ import annotations
@@ -20,23 +20,55 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
-# Defaults all have entries in the meter's price table, so cost estimates are
-# meaningful. Any OpenRouter chat model id works; unknown models report cost 0.
-DEFAULT_MODELS = (
-    "inception/mercury-2",
-    "tencent/hy4-preview",
-    "z-ai/glm-5.3-flash",
-    "tencent/hy-mt2-1.8b",
-    "tencent/hy-mt2-30b-a3b",
-    "openai/gpt-5.6-sol",
-    "openai/gpt-5-nano",
-    "minimax/minimax-m3",
-    "x-ai/grok-4.3",
-    "~anthropic/claude-haiku-latest",
-    "google/gemma-4-31b-it"
-)
+
+class ModelParams(TypedDict, total=False):
+    """OpenRouter knobs forwarded to e2e_simulation.py.
+
+    Omit a key to use the library default (temperature=0, no reasoning field,
+    structured_outputs=strict). ``temperature="none"`` omits sampling entirely.
+    ``reasoning="none"`` disables thinking — rejected when the model is mandatory.
+    """
+
+    reasoning: str
+    temperature: str
+    structured_outputs: str
+
+
+# Catalog: every id you want to keep re-testing. Empty {} = library defaults.
+# Mandatory-thinking models get the cheapest allowed effort (not none).
+# GPT-5.x endpoints reject temperature; 404-on-json_schema models use json_object.
+MODELS: dict[str, ModelParams] = {
+    "z-ai/glm-5.3-flash": {"reasoning": "low"},
+    # "z-ai/glm-4.6": {"reasoning": "low"},
+    "z-ai/glm-4.5-air": {"reasoning": "low", "structured_outputs": "json_object"},
+    "openai/gpt-4o-mini": {},
+    "openai/gpt-4.1-mini": {},
+    "openai/gpt-4.1-nano": {},
+    "openai/gpt-5-mini": {"reasoning": "minimal", "temperature": "none"},
+    "openai/gpt-5-nano": {"reasoning": "minimal", "temperature": "none"},
+    "openai/gpt-5.6-luna": {"reasoning": "none", "temperature": "none"},
+    # "openai/gpt-5.6-sol": {"reasoning": "minimal", "temperature": "none"},
+    "openai/gpt-oss-120b": {},
+    "google/gemini-3.7-flash": {"reasoning": "low"},
+    "google/gemini-2.5-flash": {"reasoning": "low"},
+    "google/gemini-3.1-flash-lite": {"reasoning": "low"},
+    "google/gemini-3-flash-preview": {"reasoning": "low"},
+    # "google/gemma-4-31b-it": {"reasoning": "low", "structured_outputs": "json_object"},
+    # "inception/mercury-2": {},
+    # "minimax/minimax-m3": {},
+    "mistralai/mistral-small-3.2-24b-instruct": {},
+    "qwen/qwen3-32b": {"reasoning": "low"},
+    "qwen/qwen3.7-flash": {"structured_outputs": "json_object"},
+    "qwen/qwen3-30b-a3b-instruct-2507": {},
+    "deepseek/deepseek-v4-flash": {"reasoning": "low"},
+    "deepseek/deepseek-v4-flash-0731": {"reasoning": "low"},
+    # "x-ai/grok-4.3": {"reasoning": "low"},
+    # "~anthropic/claude-haiku-latest": {},
+    # "moonshotai/kimi-k2.5": {"reasoning": "low"},
+    # "tencent/hy4-preview": {"reasoning": "low", "structured_outputs": "json_object"},
+}
 
 COLUMNS = (
     "model",
@@ -51,6 +83,23 @@ COLUMNS = (
 
 def _slug(model: str) -> str:
     return model.replace("/", "_").replace(":", "_")
+
+
+def _cli_flags(params: ModelParams) -> list[str]:
+    extra: list[str] = []
+    if reasoning := params.get("reasoning"):
+        extra += ["--reasoning", reasoning]
+    if temperature := params.get("temperature"):
+        extra += ["--temperature", temperature]
+    if structured := params.get("structured_outputs"):
+        extra += ["--structured-outputs", structured]
+    return extra
+
+
+def _params_label(params: ModelParams) -> str:
+    if not params:
+        return "defaults"
+    return " ".join(f"{key}={value}" for key, value in params.items())
 
 
 def _counts(raw: dict[str, Any]) -> tuple[str, str, str]:
@@ -103,11 +152,12 @@ def _report_markdown(raws: list[dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _run_one(model: str, out: Path, sim: Path, extra: list[str]) -> dict[str, Any]:
+def _run_one(model: str, params: ModelParams, out: Path, sim: Path) -> dict[str, Any]:
     """One full sim run for one model, output captured to <out>/<model>.log."""
     name = _slug(model)
     raw_path = out / f"{name}.json"
-    print(f"[start] {model}", flush=True)
+    extra = _cli_flags(params)
+    print(f"[start] {model} ({_params_label(params)})", flush=True)
     with (out / f"{name}.log").open("w") as log:
         proc = subprocess.run(
             [
@@ -127,14 +177,21 @@ def _run_one(model: str, out: Path, sim: Path, extra: list[str]) -> dict[str, An
     if raw_path.exists():
         raw = json.loads(raw_path.read_text())
         raw["exit_code"] = proc.returncode
+        raw["params"] = dict(params)
         return raw
-    return {"model": model, "error": f"run crashed, exit {proc.returncode} (see {name}.log)"}
+    return {
+        "model": model,
+        "params": dict(params),
+        "error": f"run crashed, exit {proc.returncode} (see {name}.log)",
+    }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "--models", default=",".join(DEFAULT_MODELS), help="comma-separated model ids"
+        "--models",
+        default=",".join(MODELS),
+        help="comma-separated model ids (default: every key in MODELS)",
     )
     parser.add_argument("--out", default=".bench", help="output directory (default .bench)")
     parser.add_argument(
@@ -145,29 +202,46 @@ def main() -> None:
     )
     parser.add_argument(
         "--reasoning",
-        choices=("minimal", "low", "medium", "high"),
+        choices=("none", "minimal", "low", "medium", "high"),
         default=None,
-        help="forwarded to every run, e.g. --reasoning low for reasoning models",
+        help="override MODELS[id].reasoning for every selected run",
     )
     parser.add_argument(
         "--temperature",
         default=None,
-        help="forwarded to every run; 'none' omits the parameter (reasoning-model endpoints)",
+        help="override MODELS[id].temperature for every selected run; 'none' omits sampling",
+    )
+    parser.add_argument(
+        "--structured-outputs",
+        choices=("strict", "json_object"),
+        default=None,
+        help="override MODELS[id].structured_outputs for every selected run",
     )
     args = parser.parse_args()
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     jobs = args.jobs or len(models)
-    extra = ["--reasoning", args.reasoning] if args.reasoning else []
-    extra += ["--temperature", args.temperature] if args.temperature else []
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     sim = Path(__file__).resolve().parent / "e2e_simulation.py"
+    overrides: ModelParams = {}
+    if args.reasoning:
+        overrides["reasoning"] = args.reasoning
+    if args.temperature is not None:
+        overrides["temperature"] = args.temperature
+    if args.structured_outputs:
+        overrides["structured_outputs"] = args.structured_outputs
 
     started = time.monotonic()
     raws: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=jobs) as pool:
-        futures = {pool.submit(_run_one, model, out, sim, extra): model for model in models}
+        futures = {}
+        for model in models:
+            params: ModelParams = {**MODELS.get(model, {}), **overrides}
+            if model not in MODELS:
+                label = _params_label(params)
+                print(f"[warn] {model} is not in MODELS; running with {label}", flush=True)
+            futures[pool.submit(_run_one, model, params, out, sim)] = model
         for future in as_completed(futures):
             raw = future.result()
             raws.append(raw)

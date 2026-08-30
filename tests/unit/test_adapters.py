@@ -352,6 +352,11 @@ class TestOpenRouterLLM:
         assert "reasoning" not in bodies[1]
         await plain.aclose()
 
+        off = self._client(httpx.MockTransport(handler), reasoning_effort="none")
+        await off.complete(ChatRequest(messages=(LlmMessage(role="user", content="hi"),)))
+        assert bodies[2]["reasoning"] == {"effort": "none"}
+        await off.aclose()
+
     async def test_schema_requests_require_parameters(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             body = json.loads(request.content)

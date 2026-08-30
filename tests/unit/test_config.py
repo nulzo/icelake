@@ -51,6 +51,8 @@ def test_llm_url_parses_reasoning_effort() -> None:
     config = MemoryConfig(llm="openai://k@host/v1?model=big&reasoning=low")
     assert config.llm.reasoning_effort == "low"
     assert MemoryConfig(llm="openai://k@host/v1?model=big").llm.reasoning_effort is None
+    off = MemoryConfig(llm="openai://k@host/v1?model=big&reasoning=none")
+    assert off.llm.reasoning_effort == "none"
 
 
 def test_llm_url_parses_capability_knobs() -> None:

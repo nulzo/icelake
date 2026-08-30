@@ -71,8 +71,10 @@ class LlmConfig(FrozenModel):
     summaries) to a smaller tier; ``None`` uses ``model`` for everything.
     ``reasoning_effort`` forwards OpenRouter's ``reasoning.effort`` — extraction,
     reconcile, and classify are structured tasks that gain little from long
-    reasoning, so ``low`` cuts latency and completion-token cost sharply on
-    reasoning models. ``None`` sends nothing (provider default).
+    reasoning, so ``low`` / ``minimal`` cuts latency and completion-token cost
+    on reasoning models. ``"none"`` disables thinking on models that allow it
+    (OpenRouter rejects this when the model lists ``reasoning.mandatory``).
+    ``None`` (Python) sends nothing (provider default).
 
     Capability declarations — set these to match what the model's endpoints
     actually accept; mismatches fail loudly (``LlmCapabilityError``) instead of
@@ -99,7 +101,7 @@ class LlmConfig(FrozenModel):
     api_key: str | None = None
     model: str | None = None
     small_model: str | None = None
-    reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = None
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
     temperature: float | None = Field(default=0.0, ge=0.0, le=2.0)
     structured_outputs: Literal["strict", "json_object"] = "strict"
     params: dict[str, object] = Field(default_factory=dict)

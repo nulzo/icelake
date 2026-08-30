@@ -1326,15 +1326,21 @@ def main() -> None:
     )
     parser.add_argument(
         "--reasoning",
-        choices=("minimal", "low", "medium", "high"),
+        choices=("none", "minimal", "low", "medium", "high"),
         default=None,
-        help="reasoning effort passthrough (OpenRouter); 'low' tames reasoning models",
+        help="OpenRouter reasoning.effort; 'none' disables thinking when the model allows it",
     )
     parser.add_argument(
         "--temperature",
         default=None,
         help="sampling temperature, or 'none' to omit the parameter entirely "
         "(required by reasoning-model endpoints that reject it, e.g. gpt-5.6-luna)",
+    )
+    parser.add_argument(
+        "--structured-outputs",
+        choices=("strict", "json_object"),
+        default=None,
+        help="strict json_schema (default) or json_object if the endpoint cannot enforce a schema",
     )
     parser.add_argument(
         "--report",
@@ -1357,6 +1363,8 @@ def main() -> None:
         llm_url += f"&reasoning={args.reasoning}"
     if args.temperature is not None:
         llm_url += f"&temperature={args.temperature}"
+    if args.structured_outputs:
+        llm_url += f"&structured_outputs={args.structured_outputs}"
     db_path = Path(args.db)
     if db_path.exists():
         db_path.unlink()  # deterministic starting state

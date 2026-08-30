@@ -99,7 +99,8 @@ One full run of [`examples/e2e_simulation.py`](examples/e2e_simulation.py) per m
 | 13 | `x-ai/grok-4.3` | 66.5 | 33/46 | 83/83 | $0.1012 | 4:20 | $1.25 | $2.50 |
 | 14 | `~anthropic/claude-haiku-latest` | 66.4 | 37/46 | 83/83 | $0.2160 | 5:08 | $1.00 | $5.00 |
 | 15 | `google/gemma-4-31b-it` | 64.9 | 28/45 | 83/83 | $0.0224 | 39:42 | $0.09 | $0.34 |
-| 16 | `tencent/hy4-preview` | 23.3 | 8/44 | 82/83 | $0.2871 | 23:18 | $0.83 | $2.50 |
+| 16 | `openai/gpt-5-mini` | 60.4 | 29/46 | 83/83 | $0.1093 | 6:58 | $0.25 | $2.00 |
+| 17 | `tencent/hy4-preview` | 23.3 | 8/44 | 82/83 | $0.2871 | 23:18 | $0.83 | $2.50 |
 
 Score is `/100`. In/out are OpenRouter list prices, not the run. Expectation denominators differ slightly when a model never produced the fixture a later check needs. GPT-4o-mini's spend is under the $0.007 cost floor, so its cost component clips to 100.
 
@@ -140,6 +141,7 @@ The discriminating job is **reconcile**, not first-pass extraction. Almost every
 | Grok 4.3 | — | Thin store (15 facts); expensive; reconcile misses |
 | Claude Haiku Latest | Same expectation rate as Luna | 28× GLM's spend; 401s and invalid JSON in the log |
 | Gemma 4 31B | Clean hard pass | 40 minutes; missed name/Go/Omaha on first pass; invalid JSON + 401s in the log |
+| GPT-5 mini | Mem0/Cognee default. Clean hard pass. `--temperature none` | Dropped Alice's opening batch (invalid JSON after one repair): no name, Omaha, Red Bull, or nursing. 49k completion tokens, $0.11, 7 minutes |
 | Hy4 preview | — | Structured output kept failing. 5 rows, all curation probes — no chat extraction. 102k completion tokens, 23 minutes, failed `BatchCompleted` |
 
 ### Did not finish
@@ -153,7 +155,7 @@ The discriminating job is **reconcile**, not first-pass extraction. Almost every
 | `tencent/hy-mt2-1.8b` | $0.044 | $0.18 | Same 404 (translation model) |
 | `tencent/hy-mt2-30b-a3b` | $0.074 | $0.30 | Same 404 (translation model) |
 
-Most completed runs used `--reasoning low`. Luna also set `--temperature none`. Gemini 3.7 Flash is the later `aug29-gemini-fix` run (an earlier pass was 41/43 + 1/4 expectations at $0.074). Challengers are `aug30-challengers`.
+Most completed runs used `--reasoning low`. Luna and GPT-5 mini used `--temperature none` (`aug30-temp-none`). Gemini 3.7 Flash is the later `aug29-gemini-fix` run (an earlier pass was 41/43 + 1/4 expectations at $0.074). Challengers are `aug30-challengers`.
 
 ## Graph explorer
 
