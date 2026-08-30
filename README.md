@@ -73,6 +73,25 @@ Examples:
 - [`examples/e2e_simulation.py`](examples/e2e_simulation.py) - scripted-guild eval
 - [`examples/bench_models.py`](examples/bench_models.py) - model matrix
 
+## Graph explorer
+
+A self-contained HTML canvas over the public API — users, entities, typed
+relations, identity links (`entity is this member`), and server facts.
+Incidence links (`dm_links`) are an index, not a relationship, and are not drawn.
+
+```bash
+python -m icelake.visualizer \
+  --storage "mongodb://127.0.0.1:27017/icelake" \
+  --guild YOUR_GUILD_ID \
+  --out icelake-graph.html \
+  --serve --open
+```
+
+`--center klim --depth 2` limits the canvas to that neighborhood (`server` /
+`the server` works). `--list-guilds` prints guilds in storage. Serve over HTTP
+(`--serve`) so the layout worker can run; opening the file directly still works
+with a one-shot layout.
+
 ## A reply turn
 
 ```python
