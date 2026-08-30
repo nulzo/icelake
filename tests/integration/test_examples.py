@@ -24,6 +24,24 @@ def test_relationship_queries_example_runs_end_to_end(
     assert "active memories" in out
 
 
+def test_name_lookup_tool_example_runs_end_to_end(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = importlib.import_module("examples.name_lookup_tool")
+    asyncio = pytest.importorskip("asyncio")
+    asyncio.run(module.main())
+    out = capsys.readouterr().out
+    # strict profile: bob's own facts, and NOT carol's claim about him
+    profile = out.split("CONTRAST")[0]
+    assert "minecraft" in profile
+    assert "argued over the game night loss" not in profile
+    # ambiguity never guesses; unknown names get the mention fallback
+    assert "more than one member" in out
+    assert "don't recognize" in out
+    # contrast section proves recall IS cross-subject by design
+    assert "[subject=carol] carol and bob argued over the game night loss" in out
+
+
 def test_ping_reply_bot_module_imports() -> None:
     pytest.importorskip("discord")
     module = importlib.import_module("examples.ping_reply_bot")

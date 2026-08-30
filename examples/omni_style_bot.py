@@ -9,11 +9,14 @@ Mirrors the architecture of a production memory-native bot:
   two-verb seam         observe()/recall()/prompt_context(); nothing else touches storage
   identity truth        Discord user IDs; names resolve through the alias ladder
                         (UNIQUE / AMBIGUOUS / UNKNOWN — ambiguity never guesses)
+  name-in-prose lookup  "what do you know about klim?" (no @mention) resolves
+                        via the alias ladder into a strict subject-only fetch —
+                        from /memory lookup (zero LLM) or one router call
   coreference           multi-name members get an explicit "one person" line
   unfakeable citations  [mem:N] tags resolved to jump links; strays stripped
   governance            opt-out, purge, budgets, health — first-class
 
-Slash commands mirror a /memory group: show, related, shared, edit, alias.
+Slash commands mirror a /memory group: show, lookup, related, shared, edit, alias.
 
 Run:
     DISCORD_TOKEN=... OPENROUTER_API_KEY=... python examples/omni_style_bot.py
@@ -21,6 +24,7 @@ Run:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -53,6 +57,29 @@ LLM_URL = "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=google/gemini
 EMBEDDINGS_URL = (
     "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=openai/text-embedding-3-small"
 )
+
+# prompt_context scopes people from structured mentions and reply targets
+# only — it never scans prose for names (recall is zero-LLM by design). For
+# "what do you know about klim?" typed as prose, one cheap structured-output
+# call decides whether a strict profile lookup is needed and extracts the
+# name. response_schema is enforced server-side on capable providers; on
+# others it degrades to JSON mode (LlmConfig.structured_outputs).
+_ROUTER_PROMPT = (
+    "Decide what this message needs. If it asks what you know about a specific "
+    "server member who is NOT @mentioned in the message, answer action="
+    '"memory_show" with user set to their name exactly as written. For '
+    'anything else, action="answer".'
+)
+_ROUTER_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["answer", "memory_show"]},
+        "user": {"type": "string", "description": "the member's name exactly as written"},
+    },
+    "required": ["action"],
+    "additionalProperties": False,
+}
+_USER_REF_RE = re.compile(r"<@!?(?P<snowflake>\d+)>")
 
 
 # =-------------------------------------------------------------------------= #
@@ -152,12 +179,18 @@ class OmniStyleBot(commands.Bot):
         for warning in ctx.warnings:
             log.info("turn warning: %s", warning.value)
 
+        # Names typed as prose are invisible to prompt_context — route those
+        # to a strict lookup (one extra small call per addressed turn).
+        profile = await self._route_name_lookup(guild_id, question)
+
         system_prompt = (
             "You are a memory-native community bot. Ground every claim about a "
             "member in the labeled MEMORY CONTEXT. Facts belong ONLY to the "
             "person named in their header; coreference lines tell you which "
             f"names are the same person.\n\n{ctx.injection_block}"
         )
+        if profile:
+            system_prompt += f"\n\n{profile}"
         history = await recent_history(message, limit=6)
         reply = await generate(system_prompt, history, question)
 
@@ -179,6 +212,83 @@ class OmniStyleBot(commands.Bot):
             if not other.bot and str(other.id) not in subjects:
                 subjects.append(str(other.id))
         return subjects[:MAX_CONTEXT_SUBJECTS]
+
+    # ------------------------------------------------------------------ #
+    # Name-in-prose lookup: "what do you know about klim?" (no @mention). #
+    # Every entry point — /memory lookup (zero LLM), the structured-      #
+    # output router below, or a native tool call — converges on           #
+    # _resolve_lookup plus a STRICT subject-only fetch, so a claim        #
+    # stored on someone else cannot be attributed to the person asked     #
+    # about.                                                              #
+    # ------------------------------------------------------------------ #
+
+    async def _route_name_lookup(self, guild_id: str, question: str) -> str | None:
+        """One structured-output call: answer directly, or look someone up by name."""
+        response = await _reply_llm_client().complete(
+            ChatRequest(
+                messages=(
+                    LlmMessage(role=MessageRole.SYSTEM, content=_ROUTER_PROMPT),
+                    LlmMessage(role=MessageRole.USER, content=question),
+                ),
+                response_schema=_ROUTER_SCHEMA,
+                max_tokens=60,
+                purpose="reply_router",
+            )
+        )
+        try:
+            route = json.loads(response.text)
+        except ValueError:
+            return None  # non-JSON reply: fall through to a plain answer
+        if route.get("action") != "memory_show":
+            return None
+        name = str(route.get("user") or "").strip()
+        if not name:
+            return None
+        return await self._profile_block(guild_id, name)
+
+    async def _resolve_lookup(self, guild_id: str, name: str) -> tuple[str, str] | str:
+        """Resolve a typed name to ``(user_id, display)``; an error string otherwise.
+
+        Shared by every lookup entry point (slash command, router, tool call)
+        so the ambiguity contract lives in exactly one place.
+        """
+        ref = name.strip()
+        if match := _USER_REF_RE.fullmatch(ref):
+            ref = match.group("snowflake")
+        resolution = await self.memory.identity.resolve(guild_id, ref)
+        if resolution.ambiguous:
+            choices = ", ".join(
+                f"{await self.memory.identity.display_name(guild_id, c.user_id) or c.user_id}"
+                f" (ID {c.user_id})"
+                for c in resolution.candidates
+            )
+            return f'"{name}" matches more than one member ({choices}); no guess made'
+        if resolution.resolved is None:
+            return f'no member named "{name}"'
+        user_id = resolution.resolved.user_id
+        display = await self.memory.identity.display_name(guild_id, user_id) or ref
+        return (user_id, display)
+
+    async def _profile_block(self, guild_id: str, name: str) -> str:
+        """Strict subject-only profile for a name typed in prose (LLM-facing)."""
+        result = await self._resolve_lookup(guild_id, name)
+        if isinstance(result, str):
+            return f"LOOKUP RESULT: {result}. Say so plainly rather than guessing."
+        user_id, display = result
+        page = await self.memory.facts.list_for_subject(
+            guild_id,
+            user_id,
+            include_server=False,  # strict: only facts where they are the subject
+            limit=8,
+        )
+        if not page.items:
+            return f"LOOKUP RESULT: {display} is a member, but nothing is stored about them yet."
+        lines = "\n".join(f"- {fact.text}" for fact in page.items)
+        return (
+            f"LOOKUP RESULT — STRICT PROFILE: {display}\n"
+            f"Facts about {display} ONLY. Do NOT attribute these to the asker, and do "
+            f"not attribute other members' claims to {display}.\n{lines}"
+        )
 
     # ------------------------------------------------------------------ #
     # /memory group — mirrors omni's five ops on this library's APIs.     #
@@ -206,6 +316,27 @@ class OmniStyleBot(commands.Bot):
             alias_line = f"\nAlso known as: {', '.join(names)}"
         await interaction.response.send_message(
             f"**Memories for {member.display_name}**{alias_line}\n" + "\n".join(lines),
+            ephemeral=True,
+        )
+
+    @group_memory.command(name="lookup")  # type: ignore[arg-type]
+    async def memory_lookup(self, interaction: discord.Interaction, name: str) -> None:
+        """Look someone up by a typed name — no member picker, no LLM."""
+        guild_id = str(interaction.guild_id)
+        result = await self._resolve_lookup(guild_id, name)
+        if isinstance(result, str):
+            await interaction.response.send_message(f"{result}.", ephemeral=True)
+            return
+        user_id, display = result
+        page = await self.memory.facts.list_for_subject(
+            guild_id,
+            user_id,
+            include_server=False,  # strict: only facts where they are the subject
+            limit=15,
+        )
+        lines = [f"• {fact.text}" for fact in page.items] or ["Nothing yet."]
+        await interaction.response.send_message(
+            f"**Memories for {display}**\n" + "\n".join(lines),
             ephemeral=True,
         )
 

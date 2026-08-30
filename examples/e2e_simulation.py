@@ -87,7 +87,7 @@ PROBE = "100000000000000010"  # deterministic curation probes; never speaks
 PEOPLE = ((ALICE, "nulzo"), (BOB, "bobby"), (CAROL, "carol"))
 
 # Same provider URLs as examples/omni_style_bot.py.
-DEFAULT_MODEL = "google/gemini-3.7-flash"
+DEFAULT_MODEL = "deepseek/deepseek-v4-flash-0731"
 LLM_URL_TEMPLATE = "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model={model}"
 EMBEDDINGS_URL = (
     "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=openai/text-embedding-3-small"

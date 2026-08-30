@@ -67,8 +67,9 @@ reply, then run `ctx.apply_citations` so `[mem:N]` tags become jump links.
 
 Examples:
 
-- [`examples/omni_style_bot.py`](examples/omni_style_bot.py) - full bot: learns from everyone, replies when pinged or replied to, `/memory` slash commands
+- [`examples/omni_style_bot.py`](examples/omni_style_bot.py) - full bot: learns from everyone, replies when pinged or replied to, `/memory` slash commands, name-in-prose lookups
 - [`examples/ping_reply_bot.py`](examples/ping_reply_bot.py) - smaller ping-reply bot
+- [`examples/name_lookup_tool.py`](examples/name_lookup_tool.py) - "what do you know about X?" tool handler, no Discord or LLM
 - [`examples/relationship_queries.py`](examples/relationship_queries.py) - graph queries with no Discord or LLM
 - [`examples/e2e_simulation.py`](examples/e2e_simulation.py) - scripted-guild eval
 - [`examples/bench_models.py`](examples/bench_models.py) - model matrix
@@ -123,6 +124,58 @@ ctx = await memory.prompt_context(
 reply = await generate(system_prompt + "\n\n" + ctx.injection_block, question)
 await message.reply(ctx.apply_citations(reply), mention_author=False)
 ```
+
+## "What do you know about X?" — names in prose
+
+`prompt_context` is mention-keyed: it scopes sections from `asker_id`,
+`mentioned_ids`, and reply targets. It never scans the question text for
+names — recall makes no LLM calls, by design. So when someone asks "what do
+you know about klim?" and `klim` is typed rather than @mentioned, no klim
+section exists unless you resolve the name yourself.
+
+The library side is two calls — resolve, then a strict subject fetch:
+
+```python
+resolution = await memory.identity.resolve(guild_id, name)
+if resolution.ambiguous:
+    ...  # ask which member. do not guess
+if resolution.resolved is not None:
+    page = await memory.facts.list_for_subject(
+        guild_id, resolution.resolved.user_id, include_server=False
+    )
+```
+
+Getting `name` out of the conversation is your side, and no tool runtime is
+required — use whatever your bot already has:
+
+- **A slash command with a free-text option (zero LLM).** `/memory lookup
+  klim` hands you the name directly. See `memory_lookup` in
+  [`examples/omni_style_bot.py`](examples/omni_style_bot.py).
+- **One structured-output call.** A tiny JSON router via
+  `ChatRequest.response_schema` classifies the turn and extracts the name —
+  no function-calling machinery. See `_route_name_lookup` in the same file.
+- **Native function calling.** If your LLM client already speaks tools, hand
+  it a schema and dispatch to the same handler.
+
+Two details matter for accuracy:
+
+- **Never guess on ambiguity.** `Resolution.ambiguous` means more than one
+  member matches; ask which one. The ladder ranks mention ID > username >
+  real name > display name > nicknames, and only auto-resolves a clear
+  winner.
+- **Fetch strict when answering "about X".** Recall channels deliberately
+  surface facts that *touch* a person, not just facts they are the subject
+  of: a claim like "carol and bob argued over game night" is stored on
+  carol, but bob sits on its incidence links (as actor or @mention), so
+  `recall(subject_ids=(bob,))` returns it under bob. That is right for
+  passive context (the injection block labels who each fact is about), but
+  for a direct profile answer `list_for_subject` returns only facts where X
+  is the subject, so the model cannot attribute someone else's claim to X.
+
+Full handler with mention stripping, ambiguity wording, and an unknown-name
+fallback: [`examples/name_lookup_tool.py`](examples/name_lookup_tool.py).
+Wired into a live reply loop and a slash command:
+[`examples/omni_style_bot.py`](examples/omni_style_bot.py).
 
 ## Names, relationships, commands
 
@@ -240,7 +293,7 @@ Recall does not call the LLM. Typical queries:
 
 | Question | Call |
 |---|---|
-| what do you know about X | `recall(subject_ids=(x,))` |
+| what do you know about X | `identity.resolve("X")` → `facts.list_for_subject(x)` |
 | what does X think about Y | `graph.between(x, y)` |
 | who likes movies | `graph.entity_stances("movies")` |
 | people connected to X | `graph.neighbors(x, depth=2)` |
