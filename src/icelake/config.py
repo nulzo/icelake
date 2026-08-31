@@ -253,6 +253,10 @@ class RetrievalConfig(FrozenModel):
     rerank_pool_size: int = Field(default=100, ge=10)
     candidate_cap: int = Field(default=500, ge=50)
     default_token_budget: int = Field(default=600, ge=64)
+    #: Final materialization caps for the hot path (``prompt_context``):
+    #: total facts returned, and per-subject. ``recall_limit`` stays the
+    #: per-channel over-fetch; these decide what survives the merge.
+    top_k: int = Field(default=8, ge=1)
     max_per_subject: int = Field(default=4, ge=1)
     hop_depth: int = Field(default=2, ge=1, le=2)
     fan_out_per_node: int = Field(default=24, ge=1)

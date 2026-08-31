@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from icelake.models.events import ObserveStatus
 from icelake.models.retrieval import RecallQuery, Scope
-from tests.conftest import ScriptedLLM, extraction_response
+from tests.conftest import ScriptedLLM, extraction_response, make_config
 
 GUILD = "500000000000000001"
 ALICE = "100000000000000001"
@@ -181,6 +181,37 @@ class TestPromptContext:
             assert citation.url in resolved
         usage = ctx.usage
         assert usage.prompt_tokens > 0
+        await client.close()
+
+    async def test_subject_caps_default_to_four(self, make_client, event_factory):
+        client, _ = make_client()
+        await client.start()
+        for index in range(1, 8):
+            await client.facts.remember(
+                guild_id=GUILD,
+                subject_id=ALICE,
+                text=f"alice hobby number {index} is collecting retro consoles",
+                actor_id="admin",
+            )
+        ctx = await client.prompt_context(guild_id=GUILD, asker_id=ALICE, text="hobbies")
+        alice_facts = [sf for sf in ctx.facts if sf.fact.subject_id == ALICE]
+        assert len(alice_facts) == 4
+        await client.close()
+
+    async def test_configured_caps_widen_subject_recall(self, make_client, event_factory):
+        config = make_config(retrieval={"top_k": 12, "max_per_subject": 6})
+        client, _ = make_client(config=config)
+        await client.start()
+        for index in range(1, 8):
+            await client.facts.remember(
+                guild_id=GUILD,
+                subject_id=ALICE,
+                text=f"alice hobby number {index} is collecting retro consoles",
+                actor_id="admin",
+            )
+        ctx = await client.prompt_context(guild_id=GUILD, asker_id=ALICE, text="hobbies")
+        alice_facts = [sf for sf in ctx.facts if sf.fact.subject_id == ALICE]
+        assert len(alice_facts) == 6
         await client.close()
 
     async def test_budget_trims_and_warns(self, make_client, event_factory):

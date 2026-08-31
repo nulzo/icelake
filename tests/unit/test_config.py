@@ -167,6 +167,15 @@ def test_public_capability_types_are_exported() -> None:
     assert ObserveConfig is not None
 
 
+def test_retrieval_caps_default_and_override() -> None:
+    retrieval = MemoryConfig().retrieval
+    assert retrieval.top_k == 8
+    assert retrieval.max_per_subject == 4
+    widened = MemoryConfig(retrieval={"top_k": 30, "max_per_subject": 12}).retrieval
+    assert widened.top_k == 30
+    assert widened.max_per_subject == 12
+
+
 def test_unknown_top_level_key_rejected() -> None:
     with pytest.raises(ValueError):
         MemoryConfig(**{"storag": "sqlite://:memory:"})  # type: ignore[arg-type]

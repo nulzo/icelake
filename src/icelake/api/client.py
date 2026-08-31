@@ -543,6 +543,8 @@ class DiscordMemory:
                 subject_ids=tuple(subjects),
                 scope=Scope.SUBJECTS,
                 pair_ids=tuple((asker_id, m) for m in mentioned_ids if m != asker_id),
+                top_k=self.config.retrieval.top_k,
+                max_per_subject=self.config.retrieval.max_per_subject,
                 # Mentions make this a relationship-shaped question: hop facts
                 # earn their cost here, so widen to the discovery channel set.
                 channels=CHANNELS_DISCOVERY if mentioned_ids else None,
