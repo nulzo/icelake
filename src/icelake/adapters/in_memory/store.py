@@ -652,6 +652,18 @@ class InMemoryStore:
     async def resolve_entity_alias(self, guild_id: str, alias_norm: str) -> str | None:
         return self._entity_aliases.get((guild_id, alias_norm.lower()))
 
+    async def entities_linked_to_users(self, guild_id: str) -> dict[str, str]:
+        return {
+            slug: record.linked_user_id
+            for (gid, slug), record in self._entities.items()
+            if gid == guild_id and record.linked_user_id is not None
+        }
+
+    async def link_entity_to_user(self, guild_id: str, slug: str, user_id: str) -> None:
+        record = self._entities.get((guild_id, slug))
+        if record is not None:
+            self._entities[(guild_id, slug)] = record.model_copy(update={"linked_user_id": user_id})
+
     async def merge_entities(
         self,
         guild_id: str,

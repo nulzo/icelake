@@ -100,6 +100,51 @@ class GraphApi:
         self._store = store
         self._gate = startup_gate or _noop_gate
 
+    async def _collapse(
+        self, guild_id: str, edges: tuple[RelationEdge, ...]
+    ) -> tuple[RelationEdge, ...]:
+        """Rewrite entity endpoints that are bridged members into user nodes.
+
+        ``linked_user_id`` is the identity bridge: an entity named after a
+        guild member is that member for every person-facing query. Ambiguous
+        or unlinked entities stay entities. Dedupes edges that become
+        identical after the rewrite (same pair + verb).
+        """
+        if not edges:
+            return edges
+        linked = await self._store.entities_linked_to_users(guild_id)
+        if not linked:
+            return edges
+        seen: set[tuple[str, str, str, str, str]] = set()
+        out: list[RelationEdge] = []
+        for edge in edges:
+            src_type, src_id = edge.src_type, edge.src_id
+            dst_type, dst_id = edge.dst_type, edge.dst_id
+            if src_type is NodeType.ENTITY and src_id in linked:
+                src_type, src_id = NodeType.USER, linked[src_id]
+            if dst_type is NodeType.ENTITY and dst_id in linked:
+                dst_type, dst_id = NodeType.USER, linked[dst_id]
+            if (src_type, src_id) == (dst_type, dst_id):
+                continue  # self-loop created by collapsing both ends
+            key = (src_type.value, src_id, dst_type.value, dst_id, edge.verb)
+            if key in seen:
+                continue
+            seen.add(key)
+            if (src_type, src_id) != (edge.src_type, edge.src_id) or (dst_type, dst_id) != (
+                edge.dst_type,
+                edge.dst_id,
+            ):
+                edge = edge.model_copy(
+                    update={
+                        "src_type": src_type,
+                        "src_id": src_id,
+                        "dst_type": dst_type,
+                        "dst_id": dst_id,
+                    }
+                )
+            out.append(edge)
+        return tuple(out)
+
     async def between(
         self,
         guild_id: str,
@@ -110,21 +155,28 @@ class GraphApi:
 
         Relationships are asymmetric in storage (a→b and b→a are distinct
         edges) but symmetric in user expectation: "between alice and bob"
-        means everything connecting them.
+        means everything connecting them. Entity twins collapse to their
+        linked member before the pair filter, so a stored user→entity edge
+        counts when the entity is the other person.
         """
-        forward, backward = await asyncio.gather(
-            self._store.edges_between(
-                guild_id,
-                (NodeType.USER, src_user_id),
-                (NodeType.USER, dst_user_id),
-            ),
-            self._store.edges_between(
-                guild_id,
-                (NodeType.USER, dst_user_id),
-                (NodeType.USER, src_user_id),
-            ),
+        left, right = await asyncio.gather(
+            self.relations_of(guild_id, src_user_id, limit=200),
+            self.relations_of(guild_id, dst_user_id, limit=200),
         )
-        return tuple(sorted((*forward, *backward), key=lambda e: -e.weight))
+        pair = {src_user_id, dst_user_id}
+        seen: set[tuple[str, str, str]] = set()
+        edges: list[RelationEdge] = []
+        for e in (*left, *right):
+            if (
+                e.src_type is NodeType.USER
+                and e.dst_type is NodeType.USER
+                and {e.src_id, e.dst_id} == pair
+            ):
+                key = (e.src_id, e.dst_id, e.verb)
+                if key not in seen:
+                    seen.add(key)
+                    edges.append(e)
+        return tuple(sorted(edges, key=lambda e: -e.weight))
 
     async def relations_of(
         self,
@@ -133,11 +185,12 @@ class GraphApi:
         *,
         limit: int = 50,
     ) -> tuple[RelationEdge, ...]:
-        return await self._store.incident_edges(
+        raw = await self._store.incident_edges(
             guild_id,
             (NodeType.USER, user_id),
             limit=limit,
         )
+        return await self._collapse(guild_id, raw)
 
     async def entity_stances(
         self,
@@ -153,6 +206,7 @@ class GraphApi:
         if slug is None:
             slug = alias_slug(entity_name_or_slug)
         edges = await self._store.entity_stance_edges(guild_id, slug, limit=100)
+        edges = await self._collapse(guild_id, edges)
         entity = await self._store.get_entity(guild_id, slug)
         return StanceSummary(
             entity_slug=slug,
@@ -162,6 +216,29 @@ class GraphApi:
             other=tuple(e for e in edges if e.polarity is Polarity.NEUTRAL),
             total_evidence=sum(e.occurrences for e in edges),
         )
+
+    async def shared(
+        self,
+        guild_id: str,
+        left_user_id: str,
+        right_user_id: str,
+        *,
+        limit: int = 10,
+    ) -> tuple[RelationEdge, ...]:
+        """Entity edges both members touch, identity-collapsed and weight-ranked.
+
+        This is the "what do X and Y have in common" primitive: outgoing
+        user→entity edges intersected on the collapsed graph, so a member
+        named as an entity counts as that member, not a shared hobby.
+        Polarity is preserved on each edge so callers can show disagreement.
+        """
+        left, right = await asyncio.gather(
+            self.relations_of(guild_id, left_user_id, limit=200),
+            self.relations_of(guild_id, right_user_id, limit=200),
+        )
+        right_entities = {e.dst_id for e in right if e.dst_type is NodeType.ENTITY}
+        shared = [e for e in left if e.dst_type is NodeType.ENTITY and e.dst_id in right_entities]
+        return tuple(shared[:limit])
 
     async def similar_users(
         self,
@@ -182,6 +259,7 @@ class GraphApi:
             (NodeType.USER, user_id),
             limit=200,
         )
+        seed_edges = await self._collapse(guild_id, seed_edges)
         seed_entities = {edge.dst_id for edge in seed_edges if edge.dst_type is NodeType.ENTITY}
         if not seed_entities:
             return ()
@@ -190,6 +268,7 @@ class GraphApi:
             guild_id,
             tuple((NodeType.ENTITY, slug) for slug in list(seed_entities)[:50]),
         )
+        inbound = await self._collapse(guild_id, inbound)
         candidates = {
             edge.src_id
             for edge in inbound
@@ -203,6 +282,7 @@ class GraphApi:
             tuple((NodeType.USER, c) for c in list(candidates)[:100]),
             limit_per_node=200,
         )
+        candidate_edges = await self._collapse(guild_id, candidate_edges)
         entities_by_user: dict[str, set[str]] = {}
         for edge in candidate_edges:
             if edge.src_type is NodeType.USER and edge.dst_type is NodeType.ENTITY:
@@ -234,6 +314,7 @@ class GraphApi:
             next_frontier: list[NodeRef] = []
             for node in frontier:
                 edges = list(await self._store.incident_edges(guild_id, node, limit=limit_per_hop))
+                edges = list(await self._collapse(guild_id, tuple(edges)))
                 key = node_key(node[0].value, node[1])
                 adjacency[key] = sorted(edges, key=lambda e: -e.weight)
                 for edge in edges[:limit_per_hop]:

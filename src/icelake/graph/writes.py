@@ -29,6 +29,20 @@ class TokenRoster(Protocol):
     def user_id_for(self, token: str) -> str | None: ...
 
 
+async def _resolve_member_alias(store: MemoryStore, guild_id: str, name: str) -> str | None:
+    """Unique guild member this surface name resolves to, else None.
+
+    Ambiguity never collapses: when the identity ladder cannot pick one
+    member, the name stays an entity (grounded-or-silent).
+    """
+    from icelake.identity.resolver import IdentityResolver
+
+    resolution = await IdentityResolver(store).resolve(guild_id, name)
+    if resolution.ambiguous or resolution.resolved is None:
+        return None
+    return resolution.resolved.user_id
+
+
 class DirectRoster:
     """Trivial roster over explicit user ids (for manual API writes).
 
@@ -159,6 +173,13 @@ async def _write_relation(
                 endpoints.append((NodeType.USER, user_id))
                 resolved = True
         if not resolved and name:
+            # A name that uniquely identifies a guild member is that member,
+            # not a new entity twin. This is the identity-collapse rule that
+            # keeps person-to-person edges on user nodes.
+            member_id = await _resolve_member_alias(store, guild_id, name)
+            if member_id is not None:
+                endpoints.append((NodeType.USER, member_id))
+                continue
             slug = await resolve_entity_slug(store, guild_id, name)
             endpoints.append((NodeType.ENTITY, slug))
     if len(endpoints) < 2 or endpoints[0] == endpoints[1]:

@@ -302,6 +302,16 @@ class MemoryStore(Protocol):
     async def resolve_entity_alias(self, guild_id: str, alias_norm: str) -> str | None:
         """Map a normalized surface name to a canonical entity slug."""
 
+    async def entities_linked_to_users(self, guild_id: str) -> dict[str, str]:
+        """Entity slug → Discord user id for every entity bridged to a member.
+
+        The identity-collapse map: read paths use it to treat an entity twin
+        as its member, write paths use it to stop minting new twins.
+        """
+
+    async def link_entity_to_user(self, guild_id: str, slug: str, user_id: str) -> None:
+        """Record that this entity node is the guild member ``user_id``."""
+
     async def merge_entities(
         self,
         guild_id: str,

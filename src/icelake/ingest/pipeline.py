@@ -153,6 +153,7 @@ class IngestPipeline:
             clock=clock,
             id_gen=id_gen,
             config=config,
+            bot_guard=subject_gate._guard if subject_gate else None,
         )
         self.owner = f"pipeline-{id(self):x}"
         self.event_bus: EventBus | None = None

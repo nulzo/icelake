@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from icelake.config import MemoryConfig
 from icelake.ingest.gates import normalize_text
@@ -55,6 +55,7 @@ class FactCommitter:
         clock: Clock,
         id_gen: IdGen,
         config: MemoryConfig,
+        bot_guard: Any = None,
     ) -> None:
         self._store = store
         self._vectors = vectors
@@ -62,6 +63,7 @@ class FactCommitter:
         self._clock = clock
         self._id_gen = id_gen
         self._config = config
+        self._bot_guard = bot_guard
 
     async def commit_add(
         self,
@@ -121,6 +123,7 @@ class FactCommitter:
                         uid
                         for uid in (*record.related_user_ids, *mentioned_ids)
                         if uid != record.subject_id
+                        and not (self._bot_guard and self._bot_guard.is_bot(uid))
                     )
                 ),
             }

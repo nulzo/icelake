@@ -534,6 +534,20 @@ class IdentityGraphMixin:
         )
         return row["slug"] if row else None
 
+    async def entities_linked_to_users(self, guild_id: str) -> dict[str, str]:
+        rows = await self._db.query(
+            "SELECT slug, linked_user_id FROM dm_entities"
+            " WHERE guild_id=? AND linked_user_id IS NOT NULL",
+            (guild_id,),
+        )
+        return {row["slug"]: row["linked_user_id"] for row in rows}
+
+    async def link_entity_to_user(self, guild_id: str, slug: str, user_id: str) -> None:
+        await self._db.execute(
+            "UPDATE dm_entities SET linked_user_id=? WHERE guild_id=? AND slug=?",
+            (user_id, guild_id, slug),
+        )
+
     async def merge_entities(
         self,
         guild_id: str,

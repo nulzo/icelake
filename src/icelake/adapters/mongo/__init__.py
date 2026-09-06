@@ -865,6 +865,19 @@ class MongoStore:
         )
         return doc["slug"] if doc else None
 
+    async def entities_linked_to_users(self, guild_id: str) -> dict[str, str]:
+        cursor = self.db["dm_entities"].find(
+            {"guild_id": guild_id, "linked_user_id": {"$ne": None}},
+            {"slug": True, "linked_user_id": True},
+        )
+        return {doc["slug"]: doc["linked_user_id"] async for doc in cursor}
+
+    async def link_entity_to_user(self, guild_id: str, slug: str, user_id: str) -> None:
+        await self.db["dm_entities"].update_one(
+            {"guild_id": guild_id, "slug": slug},
+            {"$set": {"linked_user_id": user_id}},
+        )
+
     async def merge_entities(
         self,
         guild_id: str,
