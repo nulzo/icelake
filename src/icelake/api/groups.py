@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable, Coroutine
 from typing import Any
 
+from icelake.graph.collapse import collapse_edges, twin_refs
 from icelake.identity.aliases import normalize_alias, weight_for_source
 from icelake.identity.resolver import IdentityResolver
 from icelake.models.admin import MemoryExport, PurgeReport
@@ -103,47 +104,25 @@ class GraphApi:
     async def _collapse(
         self, guild_id: str, edges: tuple[RelationEdge, ...]
     ) -> tuple[RelationEdge, ...]:
-        """Rewrite entity endpoints that are bridged members into user nodes.
+        """Rewrite entity endpoints that are bridged members into user nodes."""
+        return collapse_edges(edges, await self._store.entities_linked_to_users(guild_id))
 
-        ``linked_user_id`` is the identity bridge: an entity named after a
-        guild member is that member for every person-facing query. Ambiguous
-        or unlinked entities stay entities. Dedupes edges that become
-        identical after the rewrite (same pair + verb).
+    async def _incident(
+        self, guild_id: str, user_id: str, *, limit: int
+    ) -> tuple[RelationEdge, ...]:
+        """All edges touching a member: their user node plus every entity twin.
+
+        This is the single read seam that makes person queries complete — a
+        member mentioned by name before they spoke lives as an entity twin,
+        and those edges count too.
         """
-        if not edges:
-            return edges
         linked = await self._store.entities_linked_to_users(guild_id)
-        if not linked:
-            return edges
-        seen: set[tuple[str, str, str, str, str]] = set()
-        out: list[RelationEdge] = []
-        for edge in edges:
-            src_type, src_id = edge.src_type, edge.src_id
-            dst_type, dst_id = edge.dst_type, edge.dst_id
-            if src_type is NodeType.ENTITY and src_id in linked:
-                src_type, src_id = NodeType.USER, linked[src_id]
-            if dst_type is NodeType.ENTITY and dst_id in linked:
-                dst_type, dst_id = NodeType.USER, linked[dst_id]
-            if (src_type, src_id) == (dst_type, dst_id):
-                continue  # self-loop created by collapsing both ends
-            key = (src_type.value, src_id, dst_type.value, dst_id, edge.verb)
-            if key in seen:
-                continue
-            seen.add(key)
-            if (src_type, src_id) != (edge.src_type, edge.src_id) or (dst_type, dst_id) != (
-                edge.dst_type,
-                edge.dst_id,
-            ):
-                edge = edge.model_copy(
-                    update={
-                        "src_type": src_type,
-                        "src_id": src_id,
-                        "dst_type": dst_type,
-                        "dst_id": dst_id,
-                    }
-                )
-            out.append(edge)
-        return tuple(out)
+        refs = twin_refs(user_id, linked)
+        if len(refs) == 1:
+            raw = await self._store.incident_edges(guild_id, refs[0], limit=limit)
+        else:
+            raw = await self._store.incident_edges_many(guild_id, refs, limit_per_node=limit)
+        return collapse_edges(raw, linked)
 
     async def between(
         self,
@@ -160,8 +139,8 @@ class GraphApi:
         counts when the entity is the other person.
         """
         left, right = await asyncio.gather(
-            self.relations_of(guild_id, src_user_id, limit=200),
-            self.relations_of(guild_id, dst_user_id, limit=200),
+            self._incident(guild_id, src_user_id, limit=200),
+            self._incident(guild_id, dst_user_id, limit=200),
         )
         pair = {src_user_id, dst_user_id}
         seen: set[tuple[str, str, str]] = set()
@@ -185,12 +164,7 @@ class GraphApi:
         *,
         limit: int = 50,
     ) -> tuple[RelationEdge, ...]:
-        raw = await self._store.incident_edges(
-            guild_id,
-            (NodeType.USER, user_id),
-            limit=limit,
-        )
-        return await self._collapse(guild_id, raw)
+        return await self._incident(guild_id, user_id, limit=limit)
 
     async def entity_stances(
         self,
@@ -233,8 +207,8 @@ class GraphApi:
         Polarity is preserved on each edge so callers can show disagreement.
         """
         left, right = await asyncio.gather(
-            self.relations_of(guild_id, left_user_id, limit=200),
-            self.relations_of(guild_id, right_user_id, limit=200),
+            self._incident(guild_id, left_user_id, limit=200),
+            self._incident(guild_id, right_user_id, limit=200),
         )
         right_entities = {e.dst_id for e in right if e.dst_type is NodeType.ENTITY}
         shared = [e for e in left if e.dst_type is NodeType.ENTITY and e.dst_id in right_entities]
@@ -254,12 +228,7 @@ class GraphApi:
         """
         from icelake.graph.traversal import jaccard_similarity
 
-        seed_edges = await self._store.incident_edges(
-            guild_id,
-            (NodeType.USER, user_id),
-            limit=200,
-        )
-        seed_edges = await self._collapse(guild_id, seed_edges)
+        seed_edges = await self._incident(guild_id, user_id, limit=200)
         seed_entities = {edge.dst_id for edge in seed_edges if edge.dst_type is NodeType.ENTITY}
         if not seed_entities:
             return ()
@@ -313,8 +282,11 @@ class GraphApi:
         for _ in range(max(1, depth)):
             next_frontier: list[NodeRef] = []
             for node in frontier:
-                edges = list(await self._store.incident_edges(guild_id, node, limit=limit_per_hop))
-                edges = list(await self._collapse(guild_id, tuple(edges)))
+                if node[0] is NodeType.USER:
+                    edges = list(await self._incident(guild_id, node[1], limit=limit_per_hop))
+                else:
+                    raw = await self._store.incident_edges(guild_id, node, limit=limit_per_hop)
+                    edges = list(await self._collapse(guild_id, raw))
                 key = node_key(node[0].value, node[1])
                 adjacency[key] = sorted(edges, key=lambda e: -e.weight)
                 for edge in edges[:limit_per_hop]:

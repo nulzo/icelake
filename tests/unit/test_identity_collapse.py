@@ -145,6 +145,35 @@ class TestReadCollapse:
         assert edges[0].dst_type is NodeType.USER
         assert edges[0].dst_id == BOB
 
+    async def test_relations_of_reads_edges_on_the_twin(self, store) -> None:
+        """Edges stored against the entity twin surface on the member's star.
+
+        This is the live-DB case: klim spoke little, so most edges about him
+        point at ENTITY:klim. relations_of(klim) must include them.
+        """
+        await store.upsert_entity(GUILD, "bob", "bob", "person")
+        await store.link_entity_to_user(GUILD, "bob", BOB)
+        from icelake.models.graph import RelationEdge
+
+        # Edge whose only handle on bob is the entity twin.
+        await store.upsert_relation(
+            RelationEdge(
+                guild_id=GUILD,
+                src_type=NodeType.USER,
+                src_id=ALICE,
+                dst_type=NodeType.ENTITY,
+                dst_id="bob",
+                verb="roasts",
+                weight=0.9,
+            )
+        )
+        graph = GraphApi(store=store)
+        edges = await graph.relations_of(GUILD, BOB)
+        assert [(e.verb, e.src_id) for e in edges] == [("roasts", ALICE)]
+        # And it collapses to the user node, not the twin.
+        assert edges[0].dst_type is NodeType.USER
+        assert edges[0].dst_id == BOB
+
     async def test_between_collapses_both_directions(self, store) -> None:
         await store.upsert_entity(GUILD, "bob", "bob", "person")
         await store.link_entity_to_user(GUILD, "bob", BOB)
