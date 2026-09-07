@@ -222,7 +222,9 @@ class PromptContext(FrozenModel):
                 return ""
             return f"[[{used.ref}]](<{used.url}>)"
 
-        return re.sub(r"\[(mem:\d+)\]", replace, text)
+        # Lookbehind so a second pass cannot eat the inner [mem:N] of [[mem:N]](<url>).
+        woven = re.sub(r"(?<!\[)\[(mem:\d+)\]", replace, text)
+        return re.sub(r"(?<!\[) ?\[mem:[^\]]+\]", "", woven)
 
     def _citation_by_ref(self, ref: str) -> Citation | None:
         key = ref.removeprefix("mem:")

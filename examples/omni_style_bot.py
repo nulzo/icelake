@@ -52,7 +52,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("omni-style")
 
 MAX_CONTEXT_SUBJECTS = 4
-TURN_TOKEN_BUDGET = 800
+TURN_TOKEN_BUDGET = 2400
 LLM_URL = "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=google/gemini-3.7-flash"
 EMBEDDINGS_URL = (
     "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=openai/text-embedding-3-small"

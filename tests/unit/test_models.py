@@ -150,6 +150,18 @@ def test_apply_citations_leaves_non_mem_brackets() -> None:
     assert ctx.apply_citations(text) == text
 
 
+def test_apply_citations_strips_invented_mem_labels() -> None:
+    ctx = _prompt_context()
+    out = ctx.apply_citations("YOUR man [mem: facts]. also [mem:1]")
+    assert out == "YOUR man. also [[mem:1]](<https://discord.com/channels/g/c/m1>)"
+
+
+def test_apply_citations_does_not_rewave_existing_links() -> None:
+    ctx = _prompt_context()
+    text = "klim [[mem:1]](<https://discord.com/channels/g/c/m1>) leftover"
+    assert ctx.apply_citations(text) == text
+
+
 def test_resolve_used_returns_rich_objects() -> None:
     ctx = _prompt_context()
     used = ctx.resolve_used("they game [mem:1] a lot")
