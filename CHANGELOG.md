@@ -11,6 +11,17 @@ of `security`, `removed`, `deprecated`, `added`, `changed`, `fixed`.
 
 <!-- towncrier release notes start -->
 
+## [0.5.1](https://github.com/nulzo/icelake/tree/v0.5.1) - 2026-09-07
+
+### Removed
+
+- Removed `MeterPurpose.ATTRIBUTION` — attribution no longer performs an LLM call, so there is nothing to meter. ([#attribution-meter](https://github.com/nulzo/icelake/issues/attribution-meter))
+
+### Changed
+
+- Replaced the LLM-based attribution call with deterministic embedder scoring. `DiscordMemory.attribute_citations()` is gone; `DiscordMemory.cite(reply, ctx_or_citations, weave=True)` attributes and weaves in one call — reply segments and source texts are embedded in a single batched call and matched by cosine similarity against `retrieval.citation_min_score` (new, default 0.55), following the ALCE `POSTCITE` pattern. No chat completion, no metered tokens, no parsing of model output; persona paraphrase is absorbed by the same dense embeddings retrieval uses. Added `AttributedReply` (woven `text` plus structured `claims` and used-only `sources`); `icelake.attribute()` now takes an `Embedder` instead of a `ChatLLM`. Migrate: `cited = await memory.cite(reply, ctx)` — `cited.text` replaces `set_.apply(reply, attribution)`. ([#cite-facade](https://github.com/nulzo/icelake/issues/cite-facade))
+
+
 ## [0.5.0](https://github.com/nulzo/icelake/tree/v0.5.0) - 2026-09-07
 
 ### Removed
