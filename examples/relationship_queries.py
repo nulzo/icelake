@@ -201,6 +201,15 @@ async def what_x_thinks_of_y(memory: DiscordMemory, x_name: str, y_name: str) ->
         lines.append(
             f"  edge  {_who(x_id)} -{edge.verb}-> {_who(y_id)}  (weight {edge.weight:.2f})"
         )
+    left, right = await memory.graph.shared_attributions(GUILD, x_id, y_id)
+    by_hub = {edge.dst_id: edge for edge in right}
+    for edge in left:
+        other = by_hub.get(edge.dst_id)
+        if other is None:
+            continue
+        lines.append(
+            f"  share {edge.dst_id}: {_who(x_id)} {edge.verb} / {_who(y_id)} {other.verb}"
+        )
     result = await memory.recall(
         RecallQuery(
             guild_id=GUILD,

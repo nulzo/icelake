@@ -50,10 +50,14 @@ async def main() -> None:
             asker_id="100000000000000001",
             text="what am I learning these days?",
             mentioned_ids=("200000000000000002",),
+            thread_participant_ids=(),  # other humans in the reply chain / channel
         )
         print(ctx.injection_block)
 
+        # Closed ID set: only advertised [mem:N] tags count. Banter => ().
+        used = ctx.resolve_used("You're learning Rust [mem:1]!")
         reply = ctx.apply_citations("You're learning Rust [mem:1]!")
+        # reply is Discord-safe: [[mem:1]](<https://discord.com/channels/...>)
 
 
 asyncio.run(main())
@@ -61,9 +65,15 @@ asyncio.run(main())
 
 `observe` returns immediately. Extraction runs in the background.
 
-`prompt_context` builds a block with separate sections for the asker, anyone
-they mentioned, and the server. Stick it on your system prompt, generate a
-reply, then run `ctx.apply_citations` so `[mem:N]` tags become jump links.
+`prompt_context` builds a labeled block for the asker, anyone they
+mentioned, thread participants, and the server. Mentions plus thread
+participants turn on graph-hop recall and pair-intersect **every** combination
+of those people (not just asker–other), so shared entities surface in one
+call. Stick the block on your system prompt, generate a reply, then run
+`ctx.resolve_used(reply)` for the closed citation objects the model actually
+used, or `ctx.apply_citations(reply)` to weave Discord-safe
+`[[mem:N]](<url>)` jump links. Banter with no echoed tags returns `()` /
+unchanged text — the library never invents links.
 
 Examples:
 
@@ -203,6 +213,7 @@ ctx = await memory.prompt_context(
     asker_id=str(message.author.id),
     text=question,
     mentioned_ids=("alice_id", "bob_id"),
+    thread_participant_ids=("carol_id",),
 )
 
 # ctx.injection_block looks like:
@@ -224,16 +235,19 @@ ctx = await memory.prompt_context(
 #   When you use a fact above in your reply, echo its [mem:N] tag ...
 
 reply = await generate(system_prompt + "\n\n" + ctx.injection_block, question)
+used = ctx.resolve_used(reply)  # () on banter; never invents ids
 await message.reply(ctx.apply_citations(reply), mention_author=False)
+# apply_citations weaves [[mem:N]](<url>) and strips unknown tags
 ```
 
 ## "What do you know about X?" — names in prose
 
-`prompt_context` is mention-keyed: it scopes sections from `asker_id`,
-`mentioned_ids`, and reply targets. It never scans the question text for
-names — recall makes no LLM calls, by design. So when someone asks "what do
-you know about klim?" and `klim` is typed rather than @mentioned, no klim
-section exists unless you resolve the name yourself.
+`prompt_context` is mention-and-thread keyed: it scopes sections from
+`asker_id`, `mentioned_ids`, and `thread_participant_ids`. It never scans
+the question text for names — recall makes no LLM calls, by design. So when
+someone asks "what do you know about klim?" and `klim` is typed rather than
+@mentioned (and isn't in the thread), no klim section exists unless you
+resolve the name yourself.
 
 The library side is two calls — resolve, then a strict subject fetch:
 
@@ -287,6 +301,8 @@ if resolution.ambiguous:
     ...  # ask which member. do not guess
 
 edges = await memory.graph.between(guild_id, x_id, y_id)
+shared = await memory.graph.shared(guild_id, x_id, y_id)
+left, right = await memory.graph.shared_attributions(guild_id, x_id, y_id)
 stances = await memory.graph.entity_stances(guild_id, "movies")
 neighbors = await memory.graph.neighbors(guild_id, x_id, depth=2)
 similar = await memory.graph.similar_users(guild_id, x_id)
@@ -362,6 +378,7 @@ from icelake import (
     Polarity,
     RelationVerb,  # graph edges
     RecallWarning,  # recall / prompt_context warnings
+    RerankerProvider,  # retrieval.reranker
     Scope,  # RecallQuery.scope (retrieval-side only)
     SourceRole,  # citation roles
     StorageBackend,  # config.storage.backend
@@ -397,6 +414,7 @@ Recall does not call the LLM. Typical queries:
 |---|---|
 | what do you know about X | `identity.resolve("X")` → `facts.list_for_subject(x)` |
 | what does X think about Y | `graph.between(x, y)` |
+| what do X and Y share / disagree on | `graph.shared_attributions(x, y)` |
 | who likes movies | `graph.entity_stances("movies")` |
 | people connected to X | `graph.neighbors(x, depth=2)` |
 
@@ -449,7 +467,7 @@ memory.recall(RecallQuery(...))
 
 memory.facts.remember / update / forget / reinforce / history / list_for_subject / search
 memory.identity.resolve / register_alias / handle_member_rename / aliases_of
-memory.graph.between / entity_stances / neighbors / relations_of / similar_users
+memory.graph.between / entity_stances / neighbors / relations_of / similar_users / shared / shared_attributions
 memory.admin.set_opt_out / purge_user / export_guild / get_opt_out
 memory.ops.run_pending / retry_dead_letters / meter_snapshot / health
 memory.events.subscribe(BatchCompleted, handler)
@@ -491,7 +509,14 @@ MemoryConfig(
     # embeddings="local",
     # embeddings="openai://$KEY@openrouter.ai/api/v1?model=openai/text-embedding-3-small",
     batching={"batch_size_messages": 10, "max_age_seconds": 300},
-    extraction={"auto_consolidate_after_adds": 5},  # 0 disables digests
+    retrieval={
+        "default_token_budget": 2400,
+        # Optional L2 after hybrid RRF. Default is "none" (zero-LLM hot path).
+        # "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=qwen/qwen3-reranker-8b"
+        # "local" needs icelake[local-embeddings]. Failure degrades to hybrid order.
+        "reranker": "none",
+        "hop_depth": 2,  # user → entity → other attributions
+    },
     budgets={"guild_daily_prompt_tokens": 200_000},
     privacy={"store_raw_messages": True},
     workers={"enabled": True, "count": 2},
@@ -548,10 +573,11 @@ memory = DiscordMemory(
 ```
 
 The override kwargs are typed (`MemoryOverrides`): your editor will
-autocomplete `store`, `queue`, `vectors`, `embedder`, `meter`, `llm`,
-`small_llm`, `clock`, and `id_gen`, all checked against the port protocols
-exported from the package root. Passing `llm=None` or `embedder=None`
-explicitly disables that capability (degraded mode).
+autocomplete `store`, `queue`, `vectors`, `embedder`, `reranker`, `meter`,
+`llm`, `small_llm`, `clock`, and `id_gen`, all checked against the port
+protocols exported from the package root. Passing `llm=None`,
+`embedder=None`, or `reranker=None` explicitly disables that capability
+(degraded mode).
 
 A new store has to pass `tests/integration/test_store_conformance.py`.
 
@@ -570,7 +596,7 @@ User-facing changes need a changelog fragment in `changelog.d/` — see
 [CHANGELOG.md](CHANGELOG.md). Releases are cut from the **Release** workflow;
 see [docs/RELEASE.md](docs/RELEASE.md).
 
-## Status (v0.1.x)
+## Status (v0.3.x)
 
 - Storage: SQLite (default), MongoDB (`[mongo]`), in-memory (tests). Postgres
   is not implemented, `postgresql://` fails with a clear error.

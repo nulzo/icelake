@@ -63,14 +63,25 @@ async def prompt_from_message(
     """Reply-path hot call: map the message and build the injection block.
 
     Pair recall and discovery channels engage automatically when the message
-    mentions other members.
+    mentions other members or is a reply (reply author is a thread participant).
     """
     event = _event_from_message(message)
+    thread: tuple[str, ...] = ()
+    if (
+        message.reference is not None
+        and getattr(message.reference, "resolved", None) is not None
+    ):
+        author = getattr(message.reference.resolved, "author", None)
+        if author is not None and not getattr(author, "bot", False):
+            uid = str(author.id)
+            if uid != event.author_id and uid not in event.mention_ids:
+                thread = (uid,)
     return await memory.prompt_context(
         guild_id=event.guild_id,
         asker_id=event.author_id,
         text=event.content,
         mentioned_ids=event.mention_ids,
+        thread_participant_ids=thread,
         token_budget_tokens=token_budget_tokens,
     )
 

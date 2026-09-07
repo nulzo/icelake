@@ -215,6 +215,31 @@ class TestReadCollapse:
         shared = await graph.shared(GUILD, ALICE, BOB)
         assert [e.dst_id for e in shared] == ["rust"]
 
+    async def test_shared_attributions_preserves_both_stances(self, store) -> None:
+        from icelake.models.graph import Polarity, RelationEdge
+
+        for uid, verb, polarity in (
+            (ALICE, "likes", Polarity.POSITIVE),
+            (BOB, "dislikes", Polarity.NEGATIVE),
+        ):
+            await store.upsert_entity(GUILD, "avocado", "avocado", "concept")
+            await store.upsert_relation(
+                RelationEdge(
+                    guild_id=GUILD,
+                    src_type=NodeType.USER,
+                    src_id=uid,
+                    dst_type=NodeType.ENTITY,
+                    dst_id="avocado",
+                    verb=verb,
+                    polarity=polarity,
+                    weight=0.8,
+                )
+            )
+        graph = GraphApi(store=store)
+        left, right = await graph.shared_attributions(GUILD, ALICE, BOB)
+        assert left[0].verb == "likes" and left[0].polarity is Polarity.POSITIVE
+        assert right[0].verb == "dislikes" and right[0].polarity is Polarity.NEGATIVE
+
     async def test_shared_ignores_member_entities(self, store) -> None:
         # "bob" as an entity twin must not count as a shared interest.
         await store.upsert_entity(GUILD, "bob", "bob", "person")

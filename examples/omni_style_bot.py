@@ -167,13 +167,14 @@ class OmniStyleBot(commands.Bot):
             return
 
         guild_id = str(message.guild.id) if message.guild else "0"
-        subject_ids = await self._collect_subjects(message)
+        mentioned, thread = self._collect_subjects(message)
 
         ctx = await self.memory.prompt_context(
             guild_id=guild_id,
             asker_id=str(message.author.id),
             text=question,
-            mentioned_ids=tuple(subject_ids),
+            mentioned_ids=tuple(mentioned),
+            thread_participant_ids=tuple(thread),
             token_budget_tokens=TURN_TOKEN_BUDGET,
         )
         for warning in ctx.warnings:
@@ -199,19 +200,22 @@ class OmniStyleBot(commands.Bot):
             reply = "I don't know enough about that yet."
         await message.reply(reply[:1900], mention_author=False)
 
-    async def _collect_subjects(self, message: discord.Message) -> list[str]:
-        """Requester-first participant collection, capped (omni pattern)."""
-        subjects: list[str] = []
+    def _collect_subjects(self, message: discord.Message) -> tuple[list[str], list[str]]:
+        """Mentions vs reply-chain participants — icelake pair-intersects both."""
+        mentioned: list[str] = []
         for member in message.mentions:
             if member.bot or member.id == self.user:
                 continue
-            subjects.append(str(member.id))
-        # Reply target counts as a referenced person too.
+            mentioned.append(str(member.id))
+        thread: list[str] = []
         if message.reference and isinstance(message.reference.resolved, discord.Message):
             other = message.reference.resolved.author
-            if not other.bot and str(other.id) not in subjects:
-                subjects.append(str(other.id))
-        return subjects[:MAX_CONTEXT_SUBJECTS]
+            if not other.bot and str(other.id) not in mentioned:
+                thread.append(str(other.id))
+        cap = MAX_CONTEXT_SUBJECTS
+        mentioned = mentioned[:cap]
+        thread = thread[: max(0, cap - len(mentioned))]
+        return mentioned, thread
 
     # ------------------------------------------------------------------ #
     # Name-in-prose lookup: "what do you know about klim?" (no @mention). #
@@ -373,16 +377,20 @@ class OmniStyleBot(commands.Bot):
     ) -> None:
         """What two members share (entities both touch)."""
         guild_id = str(interaction.guild_id)
-        a_entities = {
-            edge.dst_id
-            for edge in await self.memory.graph.relations_of(guild_id, str(a.id), limit=200)
-            if edge.dst_type is NodeType.ENTITY
-        }
-        b_edges = await self.memory.graph.relations_of(guild_id, str(b.id), limit=200)
-        shared = sorted(
-            {edge.dst_id for edge in b_edges if edge.dst_type is NodeType.ENTITY} & a_entities
+        left, right = await self.memory.graph.shared_attributions(
+            guild_id, str(a.id), str(b.id), limit=10
         )
-        body = ", ".join(shared) if shared else "nothing notable yet"
+        if not left:
+            body = "nothing notable yet"
+        else:
+            lines = []
+            by_slug = {e.dst_id: e for e in right}
+            for edge in left:
+                other = by_slug.get(edge.dst_id)
+                if other is None:
+                    continue
+                lines.append(f"{edge.dst_id}: {a.display_name} {edge.verb} / {b.display_name} {other.verb}")
+            body = "\n".join(lines) or "nothing notable yet"
         await interaction.response.send_message(
             f"{a.display_name} and {b.display_name} share: {body}",
             ephemeral=True,

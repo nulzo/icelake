@@ -199,20 +199,45 @@ class GraphApi:
         *,
         limit: int = 10,
     ) -> tuple[RelationEdge, ...]:
-        """Entity edges both members touch, identity-collapsed and weight-ranked.
+        """Left member's entity edges that the right member also touches.
 
-        This is the "what do X and Y have in common" primitive: outgoing
-        user→entity edges intersected on the collapsed graph, so a member
-        named as an entity counts as that member, not a shared hobby.
-        Polarity is preserved on each edge so callers can show disagreement.
+        Identity-collapsed and weight-ranked. Prefer ``shared_attributions``
+        when the consumer needs both stances (agreement vs disagreement).
+        """
+        left, _right = await self.shared_attributions(
+            guild_id, left_user_id, right_user_id, limit=limit
+        )
+        return left
+
+    async def shared_attributions(
+        self,
+        guild_id: str,
+        left_user_id: str,
+        right_user_id: str,
+        *,
+        limit: int = 10,
+    ) -> tuple[tuple[RelationEdge, ...], tuple[RelationEdge, ...]]:
+        """Both members' edges over the entities they share.
+
+        One incident fetch per side. Identity-collapsed so a member named as
+        an entity never counts as a shared hobby. Polarity is preserved on
+        each edge so callers can show \"likes avocado / dislikes avocado\".
         """
         left, right = await asyncio.gather(
             self._incident(guild_id, left_user_id, limit=200),
             self._incident(guild_id, right_user_id, limit=200),
         )
-        right_entities = {e.dst_id for e in right if e.dst_type is NodeType.ENTITY}
-        shared = [e for e in left if e.dst_type is NodeType.ENTITY and e.dst_id in right_entities]
-        return tuple(shared[:limit])
+        keep = {e.dst_id for e in left if e.dst_type is NodeType.ENTITY} & {
+            e.dst_id for e in right if e.dst_type is NodeType.ENTITY
+        }
+        if not keep:
+            return (), ()
+        ranked = tuple(dict.fromkeys(e.dst_id for e in left if e.dst_id in keep))[:limit]
+        keep = set(ranked)
+        return (
+            tuple(e for e in left if e.dst_type is NodeType.ENTITY and e.dst_id in keep),
+            tuple(e for e in right if e.dst_type is NodeType.ENTITY and e.dst_id in keep),
+        )
 
     async def similar_users(
         self,

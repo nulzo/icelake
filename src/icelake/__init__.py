@@ -103,6 +103,7 @@ from icelake.models import (
     StanceSummary,
     UsedCitation,
     channels,
+    discovery_pairs,
 )
 from icelake.models.events import (
     BatchCompleted,
@@ -230,4 +231,5 @@ __all__ = [
     "WorkerNotRunningError",
     "WorkersConfig",
     "channels",
+    "discovery_pairs",
 ]
