@@ -75,6 +75,33 @@ used, or `ctx.apply_citations(reply)` to weave Discord-safe
 `[[mem:N]](<url>)` jump links. Banter with no echoed tags returns `()` /
 unchanged text — the library never invents links.
 
+### Citation registry: reliable citations for any source
+
+`icelake.citations.CitationRegistry` generalizes the closed-set discipline
+beyond memory facts — the same approach production assistants use. Code
+registers every citable source (memory citations, web results, referenced
+messages); the model echoes `[mem:N]` / `[src:N]` refs or provider-anchored
+offsets; `apply()` is the single rendering boundary. It splices anchored
+sources at their offsets, weaves echoed refs into Discord-safe links,
+canonicalizes mangled-but-known references, and deletes every citation-shaped
+token outside the set — invented `[5]`, unknown `[mem:99]`, self-written
+`[1](url)` links, `【…】` artifacts. URLs only ever leave the library from
+registered sources.
+
+```python
+from icelake.citations import CitationRegistry
+
+registry = CitationRegistry.from_prompt_context(ctx)     # memory set included
+registry.add_source("https://example.com/docs", title="Docs")      # [src:1]
+registry.add_message(guild_id, channel_id, message_id)             # [src:2]
+
+system_prompt += registry.prompt_contract   # exact rules for the model
+prompt += registry.source_list()            # refs the model may echo
+
+reply = registry.apply(model_output)        # validate + weave + strip, once
+footer = registry.sources_footer()          # "**Sources:** [[1]]… [[2]]…"
+```
+
 Examples:
 
 - [`examples/omni_style_bot.py`](examples/omni_style_bot.py) - full bot: learns from everyone, replies when pinged or replied to, `/memory` slash commands, name-in-prose lookups

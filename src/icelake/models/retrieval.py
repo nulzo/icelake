@@ -121,8 +121,8 @@ class RecallQuery(FrozenModel):
 class Citation(FrozenModel):
     """Citation binding for an injected fact (``mem:N`` → jump link).
 
-    Rich object: the consumer weaves used citations into the reply. The library
-    resolves a closed ID set; it does not decide Discord markdown for the bot.
+    Rich object resolved from a closed ID set; rendering is owned by
+    :class:`icelake.citations.CitationRegistry` (or ``PromptContext.apply_citations``).
     """
 
     ref: str
@@ -210,21 +210,14 @@ class PromptContext(FrozenModel):
     def apply_citations(self, text: str) -> str:
         """Discord helper: weave used citations into markdown; strip residue.
 
-        Resolves the closed ID set first, then replaces each echoed tag with a
-        jump link. Unknown or unresolved tags are removed — internal refs never
-        leak into user-visible text.
+        Delegates to :class:`icelake.citations.CitationRegistry` — the single
+        rendering boundary. Echoed ``[mem:N]`` tags become jump links; unknown
+        or citation-shaped tokens the model invented (``[mem:99]``, bare
+        ``[5]``, self-written ``[1](url)`` links) are removed.
         """
-        used_by_ref = {used.ref: used for used in self.resolve_used(text)}
+        from icelake.citations import CitationRegistry
 
-        def replace(match: re.Match[str]) -> str:
-            used = used_by_ref.get(match.group(1))
-            if used is None or not used.url:
-                return ""
-            return f"[[{used.ref}]](<{used.url}>)"
-
-        # Lookbehind so a second pass cannot eat the inner [mem:N] of [[mem:N]](<url>).
-        woven = re.sub(r"(?<!\[)\[(mem:\d+)\]", replace, text)
-        return re.sub(r"(?<!\[) ?\[mem:[^\]]+\]", "", woven)
+        return CitationRegistry(self.citations).apply(text)
 
     def _citation_by_ref(self, ref: str) -> Citation | None:
         key = ref.removeprefix("mem:")

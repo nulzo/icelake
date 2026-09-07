@@ -19,6 +19,7 @@ from importlib.metadata import version
 
 from icelake.api.classify import CommandAction, UserMemoryCommand
 from icelake.api.client import DiscordMemory, MemoryOverrides
+from icelake.citations import CitationRegistry, CitationSource, message_url, render_fact_list
 from icelake.config import (
     BatchingConfig,
     BudgetsConfig,
@@ -149,6 +150,8 @@ __all__ = [
     "ChatRequest",
     "ChatResponse",
     "Citation",
+    "CitationRegistry",
+    "CitationSource",
     "CommandAction",
     "ComponentDegraded",
     "ConfigError",
@@ -232,4 +235,6 @@ __all__ = [
     "WorkersConfig",
     "channels",
     "discovery_pairs",
+    "message_url",
+    "render_fact_list",
 ]
