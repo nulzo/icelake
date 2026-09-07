@@ -375,28 +375,30 @@ class OmniStyleBot(commands.Bot):
     async def memory_shared(
         self, interaction: discord.Interaction, a: discord.Member, b: discord.Member
     ) -> None:
-        """What two members share (entities both touch)."""
+        """What two members share, with each side's stance preserved."""
         guild_id = str(interaction.guild_id)
         left, right = await self.memory.graph.shared_attributions(
-            guild_id, str(a.id), str(b.id), limit=10
+            guild_id, str(a.id), str(b.id), limit=20
         )
         if not left:
-            body = "nothing notable yet"
-        else:
-            lines = []
-            by_slug = {e.dst_id: e for e in right}
-            for edge in left:
-                other = by_slug.get(edge.dst_id)
-                if other is None:
-                    continue
-                lines.append(
-                    f"{edge.dst_id}: {a.display_name} {edge.verb} / {b.display_name} {other.verb}"
-                )
-            body = "\n".join(lines) or "nothing notable yet"
-        await interaction.response.send_message(
-            f"{a.display_name} and {b.display_name} share: {body}",
-            ephemeral=True,
-        )
+            await interaction.response.send_message(
+                f"{a.display_name} and {b.display_name} share: nothing notable yet",
+                ephemeral=True,
+            )
+            return
+        lines: list[str] = []
+        seen: set[str] = set()
+        for edge in left:
+            if edge.dst_id in seen:
+                continue
+            seen.add(edge.dst_id)
+            left_verbs = {e.verb for e in left if e.dst_id == edge.dst_id}
+            right_verbs = {e.verb for e in right if e.dst_id == edge.dst_id}
+            lines.append(
+                f"{a.display_name} *{'/'.join(sorted(left_verbs))}* → {edge.dst_id} "
+                f"← *{'/'.join(sorted(right_verbs))}* {b.display_name}"
+            )
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     @group_memory.command(name="edit")  # type: ignore[arg-type]
     async def memory_edit(self, interaction: discord.Interaction, correction: str) -> None:

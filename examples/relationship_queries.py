@@ -9,6 +9,7 @@ query shapes that are zero-LLM by design:
 3. Typed relation edges and 2-hop neighborhood
 4. Entity stance aggregation (who likes / dislikes movies, coffee, …)
 5. Shared-entity discovery (Jaccard — overlap, not "same taste")
+6. Shared attributions (both stances over the same entities)
 
 Extraction, reconcile, and profile digests are not exercised here. Pass
 ``llm=`` / ``embeddings=`` on ``MemoryConfig`` only if you change the seed to
@@ -269,6 +270,17 @@ async def main() -> None:
             similar = await memory.graph.similar_users(GUILD, MEMBERS[seed], limit=4)
             shown = ", ".join(f"{_who(hit.user_id)} {hit.score:.2f}" for hit in similar) or "(none)"
             print(f"  like {seed}: {shown}")
+        print()
+
+        print("=== 6. Shared attributions (agreement and disagreement) ===")
+        left, right = await memory.graph.shared_attributions(
+            GUILD, MEMBERS["alice"], MEMBERS["bob"]
+        )
+        hubs = tuple(dict.fromkeys(e.dst_id for e in left))
+        for slug in hubs:
+            a_verbs = ", ".join(e.verb for e in left if e.dst_id == slug)
+            b_verbs = ", ".join(e.verb for e in right if e.dst_id == slug)
+            print(f"  alice *{a_verbs}* → {slug} ← *{b_verbs}* bob")
 
         stats = await memory.stats(GUILD)
         print(f"\nserver holds {stats.active_facts} active memories")

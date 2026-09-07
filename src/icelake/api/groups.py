@@ -221,7 +221,7 @@ class GraphApi:
 
         One incident fetch per side. Identity-collapsed so a member named as
         an entity never counts as a shared hobby. Polarity is preserved on
-        each edge so callers can show \"likes avocado / dislikes avocado\".
+        each edge so callers can show agreement vs disagreement.
         """
         left, right = await asyncio.gather(
             self._incident(guild_id, left_user_id, limit=200),

@@ -112,8 +112,17 @@ class PingReplyBot(commands.Bot):
 
         guild_id = str(message.guild.id) if message.guild else "0"
         mentioned_ids = tuple(
-            str(member.id) for member in message.mentions if member.id != self.user.id
+            str(member.id)
+            for member in message.mentions
+            if not member.bot and member.id != self.user.id
         )
+        thread: tuple[str, ...] = ()
+        if message.reference is not None and isinstance(
+            message.reference.resolved, discord.Message
+        ):
+            other = message.reference.resolved.author
+            if not other.bot and str(other.id) not in mentioned_ids:
+                thread = (str(other.id),)
 
         # ONE CALL resolves: asker profile, referenced-user profiles, server facts.
         ctx = await self.memory.prompt_context(
@@ -121,6 +130,7 @@ class PingReplyBot(commands.Bot):
             asker_id=str(message.author.id),
             text=question,
             mentioned_ids=mentioned_ids,
+            thread_participant_ids=thread,
             token_budget_tokens=700,
         )
         if ctx.warnings:

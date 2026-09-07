@@ -17,7 +17,7 @@ from icelake.api.groups import GraphApi
 from icelake.config import MemoryConfig
 from icelake.ingest.executor import FactCommitter
 from icelake.ingest.roster import Roster
-from icelake.models.graph import NodeType
+from icelake.models.graph import NodeType, Polarity
 from icelake.models.identity import AliasSource
 from icelake.models.operations import ProposedFact, ProposedRelation
 from icelake.ports.clock import FixedClock, UlidIdGen
@@ -216,29 +216,62 @@ class TestReadCollapse:
         assert [e.dst_id for e in shared] == ["rust"]
 
     async def test_shared_attributions_preserves_both_stances(self, store) -> None:
-        from icelake.models.graph import Polarity, RelationEdge
+        from icelake.models.graph import RelationEdge
 
-        for uid, verb, polarity in (
-            (ALICE, "likes", Polarity.POSITIVE),
-            (BOB, "dislikes", Polarity.NEGATIVE),
-        ):
-            await store.upsert_entity(GUILD, "avocado", "avocado", "concept")
-            await store.upsert_relation(
-                RelationEdge(
-                    guild_id=GUILD,
-                    src_type=NodeType.USER,
-                    src_id=uid,
-                    dst_type=NodeType.ENTITY,
-                    dst_id="avocado",
-                    verb=verb,
-                    polarity=polarity,
-                    weight=0.8,
-                )
+        await store.upsert_entity(GUILD, "avocado", "avocado", "concept")
+        await store.upsert_entity(GUILD, "basketball", "basketball", "concept")
+        await store.upsert_relation(
+            RelationEdge(
+                guild_id=GUILD,
+                src_type=NodeType.USER,
+                src_id=ALICE,
+                dst_type=NodeType.ENTITY,
+                dst_id="avocado",
+                verb="likes",
+                polarity=Polarity.POSITIVE,
+                weight=0.8,
             )
+        )
+        await store.upsert_relation(
+            RelationEdge(
+                guild_id=GUILD,
+                src_type=NodeType.USER,
+                src_id=BOB,
+                dst_type=NodeType.ENTITY,
+                dst_id="avocado",
+                verb="dislikes",
+                polarity=Polarity.NEGATIVE,
+                weight=0.8,
+            )
+        )
+        await store.upsert_relation(
+            RelationEdge(
+                guild_id=GUILD,
+                src_type=NodeType.USER,
+                src_id=ALICE,
+                dst_type=NodeType.ENTITY,
+                dst_id="basketball",
+                verb="likes",
+                polarity=Polarity.POSITIVE,
+                weight=0.7,
+            )
+        )
+        await store.upsert_relation(
+            RelationEdge(
+                guild_id=GUILD,
+                src_type=NodeType.USER,
+                src_id=BOB,
+                dst_type=NodeType.ENTITY,
+                dst_id="basketball",
+                verb="likes",
+                polarity=Polarity.POSITIVE,
+                weight=0.7,
+            )
+        )
         graph = GraphApi(store=store)
         left, right = await graph.shared_attributions(GUILD, ALICE, BOB)
-        assert left[0].verb == "likes" and left[0].polarity is Polarity.POSITIVE
-        assert right[0].verb == "dislikes" and right[0].polarity is Polarity.NEGATIVE
+        assert {e.dst_id: e.verb for e in left} == {"avocado": "likes", "basketball": "likes"}
+        assert {e.dst_id: e.verb for e in right} == {"avocado": "dislikes", "basketball": "likes"}
 
     async def test_shared_ignores_member_entities(self, store) -> None:
         # "bob" as an entity twin must not count as a shared interest.

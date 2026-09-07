@@ -50,7 +50,7 @@ async def main() -> None:
             asker_id="100000000000000001",
             text="what am I learning these days?",
             mentioned_ids=("200000000000000002",),
-            thread_participant_ids=(),  # other humans in the reply chain / channel
+            thread_participant_ids=(),  # other humans in the reply chain / channel tail
         )
         print(ctx.injection_block)
 
@@ -68,7 +68,7 @@ asyncio.run(main())
 `prompt_context` builds a labeled block for the asker, anyone they
 mentioned, thread participants, and the server. Mentions plus thread
 participants turn on graph-hop recall and pair-intersect **every** combination
-of those people (not just asker–other), so shared entities surface in one
+of those people (not just asker-other), so shared entities surface in one
 call. Stick the block on your system prompt, generate a reply, then run
 `ctx.resolve_used(reply)` for the closed citation objects the model actually
 used, or `ctx.apply_citations(reply)` to weave Discord-safe
@@ -239,6 +239,16 @@ used = ctx.resolve_used(reply)  # () on banter; never invents ids
 await message.reply(ctx.apply_citations(reply), mention_author=False)
 # apply_citations weaves [[mem:N]](<url>) and strips unknown tags
 ```
+
+`prompt_context` pair-intersects **every** combination of the asker, mentions,
+and thread participants (not just asker-other) and turns on graph-hop recall
+whenever anyone else is in the turn. The pairing helper is
+`discovery_pairs(asker_id, mentioned_ids, thread_participant_ids)` (exported
+from `icelake`) if you need the same pairs without a recall.
+
+Identity is always `memory.identity.resolve(guild, name_or_mention_or_id)` —
+ambiguous matches never auto-pick. `identity.display_name` is the reverse
+map so replies can attribute by the name the guild actually uses.
 
 ## "What do you know about X?" — names in prose
 
@@ -515,7 +525,7 @@ MemoryConfig(
         # "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=qwen/qwen3-reranker-8b"
         # "local" needs icelake[local-embeddings]. Failure degrades to hybrid order.
         "reranker": "none",
-        "hop_depth": 2,  # user → entity → other attributions
+        "hop_depth": 2,  # user -> entity -> other attributions
     },
     budgets={"guild_daily_prompt_tokens": 200_000},
     privacy={"store_raw_messages": True},
@@ -573,11 +583,10 @@ memory = DiscordMemory(
 ```
 
 The override kwargs are typed (`MemoryOverrides`): your editor will
-autocomplete `store`, `queue`, `vectors`, `embedder`, `reranker`, `meter`,
-`llm`, `small_llm`, `clock`, and `id_gen`, all checked against the port
-protocols exported from the package root. Passing `llm=None`,
-`embedder=None`, or `reranker=None` explicitly disables that capability
-(degraded mode).
+autocomplete `store`, `queue`, `vectors`, `embedder`, `reranker`, `meter`, `llm`,
+`small_llm`, `clock`, and `id_gen`, all checked against the port protocols
+exported from the package root. Passing `llm=None`, `embedder=None`, or
+`reranker=None` explicitly disables that capability (degraded mode).
 
 A new store has to pass `tests/integration/test_store_conformance.py`.
 
