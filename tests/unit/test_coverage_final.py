@@ -190,7 +190,8 @@ class TestInjectionCitations:
             token_budget=5_000,
             guild_id=GUILD,
         )
-        assert "[mem:1]" in block
+        assert "[mem:1]" not in block  # plain facts; tags never reach the model
+        assert "likes building mechanical keyboards on weekends" in block
         assert len(citations) == 1
         assert "/555.../".strip() or citations[0].url.startswith("https://discord.com")
 

@@ -1,16 +1,16 @@
-"""Injection block builder: budgeted, labeled, cite-tagged prompt section (§5.3)."""
+"""Injection block builder: budgeted, labeled prompt section (§5.3).
+
+Facts render as plain prose — the answer model never sees citation tags or
+URLs. Provenance is bound as data (``Citation`` objects on the returned
+context) and reattached post-generation by the attribution stage.
+"""
 
 from __future__ import annotations
 
 from icelake.models.facts import SourceRole
-from icelake.models.retrieval import Citation, ScoredFact, render_citation_tag
+from icelake.models.retrieval import Citation, ScoredFact
 
 CHARS_PER_TOKEN = 4
-
-CITATION_INSTRUCTION = (
-    "When you use a fact above in your reply, echo its [mem:N] tag so the user "
-    "can see the source. Do not invent tags for facts that were not listed."
-)
 
 MEMORY_VS_CONVERSATION = (
     "CRITICAL: this block is LONG-TERM MEMORY accumulated over time — background "
@@ -120,7 +120,7 @@ class InjectionBuilder:
             emitted = 0
             for scored in facts:
                 ref_number = len(citations) + 1
-                fact_line = f"{render_citation_tag(ref_number)} {snippet(scored.fact.text)}"
+                fact_line = f"- {snippet(scored.fact.text)}"
                 cost = estimate_tokens(fact_line)
                 if used_tokens + section_tokens + cost > token_budget:
                     trimmed = True
@@ -143,7 +143,6 @@ class InjectionBuilder:
 
         if citations:
             lines.append("")
-            lines.append(CITATION_INSTRUCTION)
             lines.append(USAGE_GUIDELINES)
         block = "\n".join(lines).rstrip() + "\n"
         return block, tuple(citations), trimmed

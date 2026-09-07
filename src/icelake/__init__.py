@@ -19,12 +19,11 @@ from importlib.metadata import version
 
 from icelake.api.classify import CommandAction, UserMemoryCommand
 from icelake.api.client import DiscordMemory, MemoryOverrides
+from icelake.attribution import AttributedClaim, ReplyAttribution, attribute
 from icelake.citations import (
     Citations,
     CitationSource,
-    MarkerMode,
-    ParsedReply,
-    UsedSource,
+    fact_source_urls,
     message_url,
     render_fact_list,
 )
@@ -110,7 +109,6 @@ from icelake.models import (
     SourceRef,
     SourceRole,
     StanceSummary,
-    UsedCitation,
     channels,
     discovery_pairs,
 )
@@ -145,6 +143,7 @@ __all__ = [
     "CHANNELS_DISCOVERY",
     "AliasRecord",
     "AliasSource",
+    "AttributedClaim",
     "Attribution",
     "AttributionType",
     "BatchCompleted",
@@ -189,7 +188,6 @@ __all__ = [
     "LlmCapabilityError",
     "LlmConfig",
     "LlmMessage",
-    "MarkerMode",
     "Memory",
     "MemoryConfig",
     "MemoryExport",
@@ -206,7 +204,6 @@ __all__ = [
     "ObserveReceipt",
     "ObserveStatus",
     "Page",
-    "ParsedReply",
     "Polarity",
     "PrivacyConfig",
     "PromptContext",
@@ -220,6 +217,7 @@ __all__ = [
     "RejectReason",
     "RelationEdge",
     "RelationVerb",
+    "ReplyAttribution",
     "Reranker",
     "RerankerConfig",
     "RerankerProvider",
@@ -239,13 +237,13 @@ __all__ = [
     "StorageUnavailableError",
     "StructuredOutputError",
     "SubjectNotAllowedError",
-    "UsedCitation",
-    "UsedSource",
     "UserMemoryCommand",
     "WorkerNotRunningError",
     "WorkersConfig",
+    "attribute",
     "channels",
     "discovery_pairs",
+    "fact_source_urls",
     "message_url",
     "render_fact_list",
 ]

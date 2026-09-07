@@ -18,6 +18,8 @@ from icelake.api.classify import CommandClassifier, UserMemoryCommand
 from icelake.api.events import EventBus
 from icelake.api.facts_api import FactsApi
 from icelake.api.groups import AdminApi, GraphApi, IdentityApi
+from icelake.attribution import ReplyAttribution, attribute
+from icelake.citations import Citations
 from icelake.config import MemoryConfig, StorageBackend
 from icelake.consolidation.service import ConsolidationService
 from icelake.errors import ConfigError, StorageUnavailableError
@@ -637,6 +639,28 @@ class DiscordMemory:
     def register_bot_id(self, user_id: int | str) -> None:
         """Teach the bot-guard its own id (never a memory subject)."""
         self._guard.register(str(user_id))
+
+    async def attribute_citations(
+        self,
+        text: str,
+        citations: Citations,
+        *,
+        guild_id: str | None = None,
+    ) -> ReplyAttribution:
+        """Map claims in a generated reply to the closed citation set.
+
+        One cheap structured LLM call (the small-model tier, metered as
+        ``attribution``). The answer model never sees tags or URLs; this stage
+        reattaches provenance post-generation, so only claims a registered
+        source actually supports get cited. Returns an empty attribution —
+        never raises, never guesses — when there is nothing to cite, no LLM is
+        configured, or the call fails validation. Weave with
+        :meth:`Citations.apply`.
+        """
+        await self.ensure_started()
+        if self._small_llm is None:
+            return ReplyAttribution()
+        return await attribute(text, citations, self._small_llm, guild_id=guild_id)
 
     # -- misc surface -------------------------------------------------------------
 

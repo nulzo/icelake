@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
 
@@ -121,8 +119,10 @@ class RecallQuery(FrozenModel):
 class Citation(FrozenModel):
     """Citation binding for an injected fact (``mem:N`` → jump link).
 
-    Rich object resolved from a closed ID set; parsing/validation is owned by
-    :class:`icelake.citations.Citations` (or ``PromptContext.apply_citations``).
+    Pure provenance data — the closed set a reply may cite. Registration and
+    rendering are owned by :class:`icelake.citations.Citations`; claim mapping
+    is owned by :func:`icelake.attribution.attribute`. The answer model never
+    sees or writes these refs.
     """
 
     ref: str
@@ -138,16 +138,6 @@ class Citation(FrozenModel):
     score: float | None = None
     #: L2 cross-encoder score when a reranker ran.
     rerank_score: float | None = None
-
-
-class UsedCitation(Citation):
-    """A citation the generator actually used, resolved from a closed ID set.
-
-    ``claim`` is the matched text span (echoed tag or structured claim) that
-    motivated the citation; empty when the consumer only passed an ID.
-    """
-
-    claim: str = ""
 
 
 class RecallWarning(StrEnum):
@@ -179,88 +169,6 @@ class PromptContext(FrozenModel):
     usage: TokenUsage = TokenUsage()
     warnings: tuple[RecallWarning, ...] = ()
 
-    def resolve_used(self, text: str) -> tuple[UsedCitation, ...]:
-        """Resolve generator output to the used subset of the closed citation set.
-
-        Accepts echoed ``[mem:N]`` tags and a structured ``{"claims": [{"fact_id":
-        ...}]}`` JSON block. Unknown IDs are dropped (never invented). Order is
-        first-appearance in the text; duplicates collapse to one used citation.
-        """
-        used: list[UsedCitation] = []
-        seen: set[str] = set()
-
-        def add(citation: Citation, claim: str = "") -> None:
-            if citation.ref in seen:
-                return
-            seen.add(citation.ref)
-            used.append(UsedCitation(**citation.model_dump(), claim=claim))
-
-        for match in re.finditer(r"\[(?:mem:)?(\d+)\]", text):
-            citation = self._citation_by_ref(match.group(1))
-            if citation is not None:
-                add(citation, claim=match.group(0))
-
-        for fact_id in _structured_claims(text):
-            citation = self._citation_by_fact_id(fact_id)
-            if citation is not None:
-                add(citation, claim=fact_id)
-
-        return tuple(used)
-
-    def apply_citations(self, text: str) -> str:
-        """Discord helper: weave used citations into markdown; strip residue.
-
-        Delegates to :class:`icelake.citations.Citations` — the single parsing
-        boundary. Echoed ``[mem:N]`` tags become jump links; unknown or
-        citation-shaped tokens the model invented (``[mem:99]``, bare ``[5]``,
-        self-written ``[1](url)`` links) are removed.
-        """
-        from icelake.citations import Citations
-
-        return Citations(self.citations).apply(text)
-
-    def _citation_by_ref(self, ref: str) -> Citation | None:
-        key = ref.removeprefix("mem:")
-        for citation in self.citations:
-            if citation.ref.removeprefix("mem:") == key:
-                return citation
-        return None
-
-    def _citation_by_fact_id(self, fact_id: str) -> Citation | None:
-        for citation in self.citations:
-            if citation.fact_id == fact_id:
-                return citation
-        return None
-
-
-def _structured_claims(text: str) -> tuple[str, ...]:
-    """Extract ``fact_id`` values from a structured claims JSON block, if any."""
-    import json
-
-    match = re.search(r"\{[^{}]*\"claims\"[^{}]*\[[^\]]*\][^{}]*\}", text, re.DOTALL)
-    if match is None:
-        return ()
-    try:
-        payload = json.loads(match.group(0))
-    except (ValueError, TypeError):
-        return ()
-    claims = payload.get("claims")
-    if not isinstance(claims, list):
-        return ()
-    out: list[str] = []
-    for item in claims:
-        if isinstance(item, dict) and isinstance(item.get("fact_id"), str):
-            out.append(item["fact_id"])
-    return tuple(out)
-
-
-CitationResolver = Callable[[str], Citation | None]
-
-
-def render_citation_tag(index: int) -> str:
-    """Prompt-facing tag for the fact injected at position ``index`` (1-based)."""
-    return f"[mem:{index}]"
-
 
 __all__ = [
     "CHANNELS_ALL",
@@ -277,8 +185,6 @@ __all__ = [
     "Scope",
     "ScoreComponents",
     "ScoredFact",
-    "UsedCitation",
     "channels",
     "discovery_pairs",
-    "render_citation_tag",
 ]

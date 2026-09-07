@@ -22,7 +22,7 @@ pip install "icelake[local-embeddings]"  # sentence-transformers
 import asyncio
 from datetime import UTC, datetime
 
-from icelake import DiscordMemory, MemoryConfig, MessageEvent
+from icelake import Citations, DiscordMemory, MemoryConfig, MessageEvent
 
 
 async def main() -> None:
@@ -54,10 +54,14 @@ async def main() -> None:
         )
         print(ctx.injection_block)
 
-        # Closed ID set: only advertised [mem:N] tags count. Banter => ().
-        used = ctx.resolve_used("You're learning Rust [mem:1]!")
-        reply = ctx.apply_citations("You're learning Rust [mem:1]!")
-        # reply is Discord-safe: [[mem:1]](<https://discord.com/channels/...>)
+        # Grounding is post-generation: the answer model writes plain prose
+        # (it never sees tags or URLs), then one cheap structured call maps
+        # reply claims to the closed citation set.
+        reply = "You're learning Rust!"
+        citations = Citations.from_prompt_context(ctx)
+        attribution = await memory.attribute_citations(reply, citations, guild_id="555")
+        reply = citations.apply(reply, attribution)
+        # reply is Discord-safe: "You're learning Rust [[1]](<https://discord.com/channels/...>)"
 
 
 asyncio.run(main())
@@ -69,52 +73,48 @@ asyncio.run(main())
 mentioned, thread participants, and the server. Mentions plus thread
 participants turn on graph-hop recall and pair-intersect **every** combination
 of those people (not just asker-other), so shared entities surface in one
-call. Stick the block on your system prompt, generate a reply, then run
-`ctx.resolve_used(reply)` for the closed citation objects the model actually
-used, or `ctx.apply_citations(reply)` to weave Discord-safe
-`[[mem:N]](<url>)` jump links. Banter with no echoed tags returns `()` /
-unchanged text — the library never invents links.
+call. Stick the block on your system prompt and generate a reply — the model
+sees plain facts, never citation syntax. Then `memory.attribute_citations`
+maps the reply's claims to the closed set (one cheap structured call on the
+small-model tier) and `Citations.apply` weaves Discord-safe `[[N]](<url>)`
+jump links at the verified spans. Banter with no supported claims is left
+untouched — the library never invents links, and a retrieved-but-unused
+source is never cited.
 
-### Citations: a closed set with deny-by-default parsing
+### Citations: a closed set with structured attribution
 
 `icelake.citations.Citations` generalizes the closed-set discipline beyond
-memory facts — the same approach production assistants (ChatGPT, Claude,
-Perplexity) use. Code registers every citable source (memory citations, web
-results, referenced messages); the model echoes namespaced `[mem:N]` /
-`src:N` refs or provider-anchored offsets; `parse()` is the single validation
-boundary. It splices anchored sources at their offsets, resolves echoed refs,
-canonicalizes mangled-but-known references, and deletes every citation-shaped
-token outside the set — invented `[src:9]`, self-written `[1](url)` links,
-`【…】` artifacts. URLs only ever leave the library from registered sources.
+memory facts — the same approach production grounded systems (ChatGPT, Claude,
+Perplexity, Graphiti/Zep) use. Code registers every citable source (memory
+citations, web results, referenced messages); **citations are data, never
+model-written text**. The answer model sees no tags and no URLs, so invented
+refs, mangled links, and source-list dumps have no way to exist. Attribution
+is a separate stage — `icelake.attribute` maps verbatim reply spans to set
+members via one structured LLM call; a claim with no supporting source is
+omitted, never force-cited. Provider web annotations arrive as character
+offsets and splice deterministically. URLs only ever leave the library from
+registered sources.
 
-`parse()` returns structured data — cleaned `text` plus the resolved
-`citations` — so **presentation is the consumer's**: weave inline links, build
-a footer, or strip markers entirely. A `apply()` convenience weaves Discord
-jump links for the common bot path.
+Rendering is deterministic splicing, not parsing: `apply()` inserts
+`[[N]](<url>)` at validated offsets, where `N` is the source's position among
+citable sources. **Presentation beyond the inline weave is the consumer's** —
+`ReplyAttribution.used` carries the sources that actually supported a claim
+(first-use order) for footers, logging, or analytics.
 
 ```python
-from icelake import Citations, MarkerMode
+from icelake import Citations
 
 citations = Citations.from_prompt_context(ctx)  # memory set included
-citations.add_source("https://example.com/docs", title="Docs")  # [src:1]
-citations.add_message(guild_id, channel_id, message_id)  # [src:2]
+citations.add_source("https://example.com/docs", title="Docs")
+citations.add_message(guild_id, channel_id, message_id)
 
-system_prompt += citations.instructions  # exact rules for the model
-prompt += citations.source_list()  # refs the model may echo
+# One structured call maps reply claims to the closed set (used-only).
+attribution = await memory.attribute_citations(model_output, citations, guild_id=guild_id)
 
-# Structured parse: cleaned text + resolved sources, presentation-agnostic.
-parsed = citations.parse(model_output, markers=MarkerMode.STRIP)
-reply_text = parsed.text  # clean prose, markers removed
-used = parsed.citations  # tuple[UsedSource] the model actually used
-
-# Or the Discord convenience: weave inline jump links in one call.
-reply_text = citations.apply(model_output)
+# Deterministic weave: inline jump links at the verified claim spans.
+reply_text = citations.apply(model_output, attribution)
+used = attribution.used  # tuple[CitationSource] that supported a claim
 ```
-
-The consumer owns rendering. `MarkerMode.KEEP` leaves `[src:N]` in place so a
-renderer can weave links itself; `MarkerMode.STRIP` returns clean prose. Either
-way `parsed.citations` carries the resolved sources (with memory provenance —
-`fact_id`, `message_id`) for footers, logging, or analytics.
 
 Examples:
 
@@ -263,22 +263,24 @@ ctx = await memory.prompt_context(
 #
 #   WHAT I KNOW ABOUT THE CURRENT ASKER
 #   Facts about the asker ONLY:
-#   - [mem:1] alice mains support in every ranked game she plays
+#   - alice mains support in every ranked game she plays
 #
 #   REFERENCED USER: bob
 #   Facts about bob ONLY. Do NOT attribute these to the asker.
-#   - [mem:2] bob was called a hacker by alice during the ranked match
+#   - bob was called a hacker by alice during the ranked match
 #
 #   SERVER COMMUNITY FACTS
 #   Community-wide traits:
-#   - [mem:3] the community bonds over late night gaming sessions
+#   - the community bonds over late night gaming sessions
 #
-#   When you use a fact above in your reply, echo its [mem:N] tag ...
+#   (usage guidelines follow — no citation syntax anywhere)
 
 reply = await generate(system_prompt + "\n\n" + ctx.injection_block, question)
-used = ctx.resolve_used(reply)  # () on banter; never invents ids
-await message.reply(ctx.apply_citations(reply), mention_author=False)
-# apply_citations weaves [[mem:N]](<url>) and strips unknown tags
+citations = Citations.from_prompt_context(ctx)
+attribution = await memory.attribute_citations(reply, citations, guild_id=guild_id)
+await message.reply(citations.apply(reply, attribution), mention_author=False)
+# apply weaves [[N]](<url>) at attributed claim spans; unsupported claims
+# stay uncited, and sources the reply never used never render.
 ```
 
 `prompt_context` pair-intersects **every** combination of the asker, mentions,

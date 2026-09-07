@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+
+from icelake.citations import Citations
 from icelake.models.events import ObserveStatus
 from icelake.models.retrieval import RecallQuery, Scope
 from tests.conftest import ScriptedLLM, extraction_response, make_config
@@ -152,7 +155,14 @@ class TestPromptContext:
                 "relations": [{"verb": "called_out", "from_token": "p0", "to_token": "p1"}],
             },
         ]
-        llm = ScriptedLLM({"extraction": extraction_response(facts)})
+        llm = ScriptedLLM(
+            {
+                "extraction": extraction_response(facts),
+                "attribution": json.dumps(
+                    {"attributions": [{"claim": "people have strong opinions", "sources": [1]}]}
+                ),
+            }
+        )
         client, _ = make_client(llm=llm)
         await client.start()
         for spec in (
@@ -177,7 +187,10 @@ class TestPromptContext:
         if ctx.citations:
             citation = ctx.citations[0]
             assert citation.url.startswith("https://discord.com/channels/")
-            resolved = ctx.apply_citations(f"see [{citation.ref}] ok")
+            reply = "people have strong opinions about hackers"
+            set_ = Citations.from_prompt_context(ctx)
+            attribution = await client.attribute_citations(reply, set_, guild_id=GUILD)
+            resolved = set_.apply(reply, attribution)
             assert citation.url in resolved
         usage = ctx.usage
         assert usage.prompt_tokens > 0

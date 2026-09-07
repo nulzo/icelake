@@ -59,8 +59,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from icelake import (
+    AttributedClaim,
     BatchCompleted,
     ChannelName,
+    Citations,
     CommandAction,
     DiscordMemory,
     ExtractionFailed,
@@ -72,6 +74,7 @@ from icelake import (
     MessageEvent,
     MeterSnapshot,
     RecallQuery,
+    ReplyAttribution,
     Scope,
 )
 
@@ -225,6 +228,26 @@ async def all_facts(memory: DiscordMemory, user_id: str, guild: str = GUILD):
 
 def mentions(facts: list[str], pattern: str) -> list[str]:
     return [text for text in facts if re.search(pattern, text, re.IGNORECASE)]
+
+
+def _weave_probe(ctx) -> str:
+    """Hand-build an attribution over the first citable source and weave it."""
+    set_ = Citations.from_prompt_context(ctx)
+    if not set_.citable:
+        return ""
+    text = "nolan likes go"
+    attribution = ReplyAttribution(
+        claims=(AttributedClaim(claim=text, start=0, end=len(text), sources=(set_.citable[0],)),)
+    )
+    return set_.apply(text, attribution)
+
+
+def _woven_has_link(ctx) -> bool:
+    return "discord.com/channels/" in _weave_probe(ctx)
+
+
+def _woven_has_link_detail(ctx) -> str:
+    return _weave_probe(ctx) or "no citable sources"
 
 
 async def print_state(memory: DiscordMemory) -> None:
@@ -889,9 +912,9 @@ async def phase_retrieval(suite: Suite, memory: DiscordMemory, pre_move_wall: da
         str(len(ctx.citations)),
     )
     suite.check(
-        "apply_citations strips unknown mem refs",
-        ctx.apply_citations("see [mem:999]") == "see ",
-        repr(ctx.apply_citations("see [mem:999]")),
+        "apply weaves attributed claims into jump links",
+        _woven_has_link(ctx),
+        _woven_has_link_detail(ctx),
     )
     suite.expect(
         "profile summary generated for the asker",

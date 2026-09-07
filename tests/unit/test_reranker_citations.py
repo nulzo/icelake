@@ -321,4 +321,4 @@ class TestCitationEnrichment:
         assert citations[0].score == 0.77
         assert citations[0].rerank_score == 0.88
         assert citations[0].subject_name == "alice"
-        assert "[mem:1]" in _block
+        assert "[mem:1]" not in _block  # plain facts; tags never reach the model

@@ -36,6 +36,7 @@ from discord.ext import commands
 
 from icelake import (
     ChatRequest,
+    Citations,
     DiscordMemory,
     LlmMessage,
     MemoryConfig,
@@ -195,7 +196,12 @@ class OmniStyleBot(commands.Bot):
         history = await recent_history(message, limit=6)
         reply = await generate(system_prompt, history, question)
 
-        reply = ctx.apply_citations(reply)  # echo tags -> jump links
+        # Reattach provenance post-generation: attribute claims to the closed
+        # set (one cheap structured call), then weave jump links. The answer
+        # model never sees tags or URLs.
+        citations = Citations.from_prompt_context(ctx)
+        attribution = await self.memory.attribute_citations(reply, citations, guild_id=guild_id)
+        reply = citations.apply(reply, attribution)
         if not reply.strip():
             reply = "I don't know enough about that yet."
         await message.reply(reply[:1900], mention_author=False)

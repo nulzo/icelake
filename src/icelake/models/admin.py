@@ -97,6 +97,7 @@ class MeterPurpose(StrEnum):
     RECONCILE = "reconcile"
     SUMMARIZE = "summarize"
     CLASSIFY_COMMAND = "classify_command"
+    ATTRIBUTION = "attribution"
 
 
 class MeterSnapshot(FrozenModel):

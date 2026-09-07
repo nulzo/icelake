@@ -127,9 +127,10 @@ def test_omni_style_turn_with_coreference_and_citations(
     """omni's signature behaviors: multi-person context, coreference,
     server facts, and working citation links."""
     import asyncio
+    import json
     from datetime import UTC, datetime
 
-    from icelake import DiscordMemory, MemoryConfig, MessageEvent
+    from icelake import Citations, DiscordMemory, MemoryConfig, MessageEvent
     from tests.conftest import ScriptedLLM, extraction_response
 
     llm = ScriptedLLM(
@@ -155,7 +156,10 @@ def test_omni_style_turn_with_coreference_and_citations(
                         "source_message_indexes": [1],
                     },
                 ]
-            )
+            ),
+            "attribution": json.dumps(
+                {"attributions": [{"claim": "Bob was accused of hacking", "sources": [1]}]}
+            ),
         }
     )
     memory = DiscordMemory(
@@ -195,7 +199,10 @@ def test_omni_style_turn_with_coreference_and_citations(
                 text="what happened between alice and bob?",
                 mentioned_ids=("alice_id", "bob_id"),
             )
-            linkified = ctx.apply_citations("Bob was accused of hacking [mem:1] during the match.")
+            reply = "Bob was accused of hacking during the match."
+            set_ = Citations.from_prompt_context(ctx)
+            attribution = await memory.attribute_citations(reply, set_, guild_id="g1")
+            linkified = set_.apply(reply, attribution)
             return ctx.injection_block, len(linkified)
 
     block, link_len = asyncio.run(flow())
@@ -203,5 +210,5 @@ def test_omni_style_turn_with_coreference_and_citations(
     assert "SERVER COMMUNITY FACTS" in block
     # server fact deduped across both batches (regression guard)
     assert block.count("bonds over late night") == 1
-    # citation resolved to a jump link
-    assert link_len > len("[mem:1]")
+    # attribution wove a jump link into the plain reply
+    assert link_len > len("Bob was accused of hacking during the match.")

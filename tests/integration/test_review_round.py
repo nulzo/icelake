@@ -3,9 +3,12 @@ mention links, summary refresh, pair/entity-hint recall, cite instructions."""
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from icelake._json import parse_json_object
+from icelake.citations import Citations
 from icelake.identity.aliases import (
     extract_self_name_aliases,
     is_third_party_name_reference,
@@ -398,15 +401,12 @@ class TestPairAndEntityHintRecall:
 
 
 class TestCiteInstructions:
-    def test_instruction_appended_when_citations_exist(self) -> None:
+    def test_block_has_plain_facts_and_binds_citations_as_data(self) -> None:
         from datetime import UTC, datetime
 
         from icelake.models.facts import FactRecord, SourceRef, SourceRole
         from icelake.models.retrieval import ScoredFact
-        from icelake.retrieval.injection import (
-            CITATION_INSTRUCTION,
-            InjectionBuilder,
-        )
+        from icelake.retrieval.injection import InjectionBuilder
 
         record = FactRecord(
             id="fct_ci",
@@ -432,8 +432,11 @@ class TestCiteInstructions:
             token_budget=5_000,
             guild_id=GUILD,
         )
-        assert CITATION_INSTRUCTION.split("\n")[0][:20] in block
+        # Plain facts only — citation tags never reach the answer model.
+        assert "- likes chess" in block
+        assert "[mem:" not in block
         assert len(citations) == 1
+        assert citations[0].ref == "mem:1"
 
 
 class TestServerFactDedupAndCitations:
@@ -499,7 +502,10 @@ class TestServerFactDedupAndCitations:
                             "source_message_indexes": [1],
                         },
                     ]
-                )
+                ),
+                "attribution": json.dumps(
+                    {"attributions": [{"claim": "she mains support", "sources": [1]}]}
+                ),
             }
         )
         client, _ = make_client(llm=llm)
@@ -519,6 +525,9 @@ class TestServerFactDedupAndCitations:
         assert primary.guild_id == GUILD
         assert primary.role.value in {"primary", "supporting"}
         ctx = await client.prompt_context(guild_id=GUILD, asker_id=ALICE, text="ranked games")
-        linkified = ctx.apply_citations("she mains support [mem:1]")
-        assert "discord.com/channels/" in linkified or "[mem:1]" in linkified
+        reply = "she mains support"
+        set_ = Citations.from_prompt_context(ctx)
+        attribution = await client.attribute_citations(reply, set_, guild_id=GUILD)
+        linkified = set_.apply(reply, attribution)
+        assert "discord.com/channels/" in linkified
         await client.close()
