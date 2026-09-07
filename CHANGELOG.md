@@ -11,6 +11,17 @@ of `security`, `removed`, `deprecated`, `added`, `changed`, `fixed`.
 
 <!-- towncrier release notes start -->
 
+## [0.5.0](https://github.com/nulzo/icelake/tree/v0.5.0) - 2026-09-07
+
+### Removed
+
+- Removed the tag-echo citation path: `Citations.parse`, `MarkerMode`, `ParsedReply`, `UsedSource`, `Citations.instructions`/`source_list`, `PromptContext.resolve_used`/`apply_citations`, `UsedCitation`, and `render_citation_tag`. The injection block no longer carries `[mem:N]` tags, and no regex parses model output — citation-shaped prose the model writes is inert text, while links only ever come from the closed set via attribution or provider-anchored offsets. Migrate: build the set with `Citations.from_prompt_context(ctx)`, call `await memory.attribute_citations(reply, set_, guild_id=...)`, then `set_.apply(reply, attribution)`. ([#citation-tags](https://github.com/nulzo/icelake/issues/citation-tags))
+
+### Added
+
+- Citations are now grounded **post-generation** via structured attribution, replacing model-echoed tags entirely. The answer model sees plain facts (no `[mem:N]` tags, no URLs, no citation contract); after generation, `DiscordMemory.attribute_citations()` maps verbatim reply spans to the closed citation set in one cheap structured call on the small-model tier, and `Citations.apply(text, attribution)` weaves `[[N]](<url>)` jump links at the verified spans. Only claims a registered source actually supports get cited — retrieved-but-unused sources never render, and source-list dumps are structurally impossible. Added `icelake.attribution` (`attribute`, `ReplyAttribution`, `AttributedClaim`), `Citations.citable`, `fact_source_urls`, and a `MeterPurpose.ATTRIBUTION` meter key. ([#citation-attribution](https://github.com/nulzo/icelake/issues/citation-attribution))
+
+
 ## [0.4.3](https://github.com/nulzo/icelake/tree/v0.4.3) - 2026-09-07
 
 No significant changes.
