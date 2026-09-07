@@ -67,10 +67,7 @@ async def prompt_from_message(
     """
     event = _event_from_message(message)
     thread: tuple[str, ...] = ()
-    if (
-        message.reference is not None
-        and getattr(message.reference, "resolved", None) is not None
-    ):
+    if message.reference is not None and getattr(message.reference, "resolved", None) is not None:
         author = getattr(message.reference.resolved, "author", None)
         if author is not None and not getattr(author, "bot", False):
             uid = str(author.id)

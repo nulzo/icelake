@@ -389,7 +389,9 @@ class OmniStyleBot(commands.Bot):
                 other = by_slug.get(edge.dst_id)
                 if other is None:
                     continue
-                lines.append(f"{edge.dst_id}: {a.display_name} {edge.verb} / {b.display_name} {other.verb}")
+                lines.append(
+                    f"{edge.dst_id}: {a.display_name} {edge.verb} / {b.display_name} {other.verb}"
+                )
             body = "\n".join(lines) or "nothing notable yet"
         await interaction.response.send_message(
             f"{a.display_name} and {b.display_name} share: {body}",

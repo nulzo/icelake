@@ -207,9 +207,7 @@ async def what_x_thinks_of_y(memory: DiscordMemory, x_name: str, y_name: str) ->
         other = by_hub.get(edge.dst_id)
         if other is None:
             continue
-        lines.append(
-            f"  share {edge.dst_id}: {_who(x_id)} {edge.verb} / {_who(y_id)} {other.verb}"
-        )
+        lines.append(f"  share {edge.dst_id}: {_who(x_id)} {edge.verb} / {_who(y_id)} {other.verb}")
     result = await memory.recall(
         RecallQuery(
             guild_id=GUILD,
