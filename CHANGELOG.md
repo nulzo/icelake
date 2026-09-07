@@ -11,6 +11,17 @@ of `security`, `removed`, `deprecated`, `added`, `changed`, `fixed`.
 
 <!-- towncrier release notes start -->
 
+## [0.4.2](https://github.com/nulzo/icelake/tree/v0.4.2) - 2026-09-07
+
+### Added
+
+- Added `icelake.citations`: a reply-side citation system built on a closed source set with deny-by-default rendering, mirroring how production assistants (ChatGPT, Claude, Perplexity) keep citations reliable. `CitationRegistry` seeds from `PromptContext`, registers link sources (`add_source`) and Discord messages (`add_message`) with library-minted `[src:N]` refs, exposes the model-facing `prompt_contract` / `source_list`, and renders with one call — `apply(text)` splices provider-anchored offsets, weaves echoed refs into Discord-safe links, canonicalizes mangled-but-known references, and deletes every citation-shaped token outside the set (invented `[5]`, unknown `[mem:99]`, self-written `[1](url)` links, `【…】` artifacts). Also added `sources_footer()`, `render_fact_list()`, and top-level exports of `CitationRegistry`, `CitationSource`, `message_url`, and `render_fact_list`. ([#citation-registry](https://github.com/nulzo/icelake/issues/citation-registry))
+
+### Changed
+
+- `PromptContext.apply_citations` now delegates to `CitationRegistry.apply` — a single rendering implementation for all citation handling. Behavior tightens deny-by-default: bare invented numbers (`prefers algebra [5]`), model-written `[N](url)` links whose target is not a registered source, and `【…】` artifacts are now removed, while word-attached prose like `array[0]` is preserved. ([#apply-citations-registry](https://github.com/nulzo/icelake/issues/apply-citations-registry))
+
+
 ## [0.4.1](https://github.com/nulzo/icelake/tree/v0.4.1) - 2026-09-07
 
 No significant changes.
