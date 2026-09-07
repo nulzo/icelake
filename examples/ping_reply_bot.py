@@ -24,7 +24,6 @@ import discord
 from discord.ext import commands
 
 from icelake import (
-    Citations,
     CommandAction,
     DiscordMemory,
     MemoryConfig,
@@ -145,13 +144,10 @@ class PingReplyBot(commands.Bot):
         )
         reply_text = await _generate(system_prompt, history, question)
 
-        # Reattach provenance post-generation: attribute claims to the closed
-        # set (one cheap structured call), then weave jump links.
-        citations = Citations.from_prompt_context(ctx)
-        attribution = await self.memory.attribute_citations(
-            reply_text, citations, guild_id=guild_id
-        )
-        reply_text = citations.apply(reply_text, attribution)
+        # Reattach provenance post-generation: deterministic embedder scoring
+        # (no LLM call) weaves jump links at the spans sources support.
+        cited = await self.memory.cite(reply_text, ctx)
+        reply_text = cited.text
         if not reply_text.strip():
             reply_text = "I don't have anything useful to add yet!"
         await message.reply(reply_text[:1900], mention_author=False)

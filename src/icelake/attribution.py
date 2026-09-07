@@ -1,58 +1,52 @@
-"""Claim-level attribution: map reply spans to the closed source set.
+"""Claim-level attribution: deterministic matching of reply spans to sources.
 
-This is the generate-then-attribute pattern production grounded systems use
-(Anthropic's span-level citations, the ALCE/post-hoc-attribution literature):
-the answer model writes plain prose and never sees citation syntax; a separate
-cheap structured call maps verbatim claim spans to source IDs. Generators
-hallucinate citations as confidently as facts, so the two skills never share
-one call.
+This is the ALCE ``POSTCITE`` pattern (Gao et al., EMNLP 2023) — the same
+machinery retrieval already uses, pointed at the answer instead of the
+question. Sentences of the reply and the closed set's source texts are
+embedded in one batched call; a source is cited at a span when cosine
+similarity clears the threshold. Dense embeddings absorb paraphrase and
+persona voice the same way they do at retrieval time, so a mutated reply
+("bro is a mayo goblin") still matches the canonical fact text ("klim likes
+mayonnaise").
 
-Reliability comes from deterministic validation, not from parsing model text:
-
-- The attributor can only reference the closed set (numbered source list).
-- Every returned ``claim`` must be a **verbatim substring** of the reply
-  (``str.find`` — no regex, no fuzzy matching); anything else is dropped.
-- Source numbers outside the list are dropped.
-
-A source that was retrieved but supports no claim is never cited — over-citing
-and source-list dumps are structurally impossible.
+Why not an LLM: production memory systems (Graphiti, Mem0, Letta) treat
+provenance as data written at ingest and never run a model to attach
+citations; the answer model never sees citation syntax at all. The failure
+mode here is asymmetric by design — a sentence that matches nothing is simply
+uncited; a wrong citation is never produced. No chat completion, no parsing
+of model output, deterministic and unit-testable with a fake embedder.
 """
 
 from __future__ import annotations
 
-from pydantic import Field
+import logging
 
 from icelake.citations import Citations, CitationSource
-from icelake.models.admin import MeterPurpose
 from icelake.models.common import FrozenModel
-from icelake.ports.llm import ChatLLM, LlmMessage, MessageRole
-from icelake.retrieval.injection import snippet
-from icelake.structured import complete_structured
+from icelake.ports.llm import Embedder
+from icelake.ports.vectors import cosine
 
-#: Hard caps keep the call cheap and bounded regardless of reply length.
+logger = logging.getLogger(__name__)
+
+#: Bounds keep one pathological reply from exploding the embed batch.
 MAX_CLAIMS = 12
 MAX_SOURCES_PER_CLAIM = 3
-ATTRIBUTION_MAX_TOKENS = 1024
+#: Segments with fewer word characters than this are voice noise ("lol", "💀").
+MIN_SEGMENT_WORD_CHARS = 3
+DEFAULT_MIN_SCORE = 0.55
 
-_INSTRUCTION = (
-    "You attach sources to claims. You are given a REPLY and a numbered SOURCE "
-    "LIST. Find every claim in the reply that a source directly supports.\n"
-    "Rules:\n"
-    "- `claim` must be a VERBATIM substring of the reply, copied exactly "
-    "(a sentence or clause; exclude trailing punctuation).\n"
-    "- List a source only when it directly supports the claim. Never cite a "
-    "source that was merely available but not used.\n"
-    "- Claims with no supporting source are omitted, never force-cited.\n"
-    "- If nothing in the reply is supported by any source, return an empty list."
-)
+_SENTENCE_END = frozenset(".!?…")
+#: Trailing characters excluded from the claim span so links land before the
+#: sentence's punctuation: ``he likes mayo [[1]].``, not ``…mayo. [[1]]``.
+_TRAILING = frozenset(" .!?,;:\"')]}…\t\n" + "\u201d\u2019")
 
 
 class AttributedClaim(FrozenModel):
-    """One reply span verified against the closed set.
+    """One reply span matched to sources from the closed set.
 
     ``start``/``end`` are character offsets into the reply; ``claim`` is always
     the verbatim substring ``reply[start:end]``. ``sources`` are the supporting
-    members of the closed set.
+    members of the closed set, best match first.
     """
 
     claim: str
@@ -79,77 +73,98 @@ class ReplyAttribution(FrozenModel):
         return tuple(out)
 
 
-class _ClaimOut(FrozenModel):
-    """Wire contract for one attributed claim (strict json_schema)."""
+class AttributedReply(FrozenModel):
+    """Consumer-facing result of ``DiscordMemory.cite``.
 
-    claim: str
-    sources: list[int] = Field(default_factory=list, max_length=MAX_SOURCES_PER_CLAIM)
+    ``text`` is the reply with the canonical Discord weave applied (or the raw
+    reply when ``weave=False``). ``claims``/``sources`` are the structured
+    spans and used-only sources for consumers that render their own way —
+    footers, dashboards, non-Discord surfaces.
+    """
 
-
-class _AttributionOut(FrozenModel):
-    """Wire contract for the attribution response (strict json_schema)."""
-
-    attributions: list[_ClaimOut] = Field(default_factory=list, max_length=MAX_CLAIMS)
+    text: str
+    claims: tuple[AttributedClaim, ...] = ()
+    sources: tuple[CitationSource, ...] = ()
 
 
 async def attribute(
     text: str,
     citations: Citations,
-    llm: ChatLLM,
+    embedder: Embedder,
     *,
-    guild_id: str | None = None,
+    threshold: float = DEFAULT_MIN_SCORE,
 ) -> ReplyAttribution:
-    """Map claims in ``text`` to the closed set via one structured LLM call.
+    """Match reply segments to the closed set by embedding similarity.
 
-    Returns an empty :class:`Attribution` — never raises, never guesses — when
-    there is nothing to cite, the call fails validation, or the attributor
-    finds no supported claim. Callers weave with :meth:`Citations.apply`.
+    One batched embed call per reply, only when there is something to cite.
+    Never raises and never guesses: embedder failure or an empty match set
+    returns an empty attribution, and the caller sends the reply uncited.
     """
-    citable = list(citations.citable)
-    if not text.strip() or not citable:
+    segments = _segments(text)[:MAX_CLAIMS]
+    sources = [
+        (source.excerpt or source.title, source)
+        for source in citations.citable
+        if (source.excerpt or source.title).strip()
+    ]
+    if not segments or not sources:
         return ReplyAttribution()
-    listing = "\n".join(
-        f"[{number}] {snippet(source.excerpt or source.title or source.url)}"
-        for number, source in enumerate(citable, 1)
-    )
-    output = await complete_structured(
-        llm,
-        model=_AttributionOut,
-        messages=(
-            LlmMessage(role=MessageRole.SYSTEM, content=_INSTRUCTION),
-            LlmMessage(role=MessageRole.USER, content=f"REPLY:\n{text}\n\nSOURCE LIST:\n{listing}"),
-        ),
-        max_tokens=ATTRIBUTION_MAX_TOKENS,
-        purpose=MeterPurpose.ATTRIBUTION,
-        guild_id=guild_id,
-    )
-    if output is None:
-        return ReplyAttribution()
-    return ReplyAttribution(claims=_validate(text, citable, output))
-
-
-def _validate(
-    text: str, citable: list[CitationSource], output: _AttributionOut
-) -> tuple[AttributedClaim, ...]:
-    """Keep only verbatim, in-range, non-overlapping claims — drop the rest."""
-    claims: list[AttributedClaim] = []
-    cursor = 0
-    for item in output.attributions:
-        claim = item.claim.strip()
-        if not claim:
-            continue
-        start = text.find(claim, cursor)
-        if start < 0:
-            continue  # not verbatim (or out of order) — never trust it
-        resolved = tuple(
-            dict.fromkeys(citable[n - 1] for n in item.sources if 1 <= n <= len(citable))
+    try:
+        vectors = await embedder.embed(
+            [claim for _, _, claim in segments] + [source_text for source_text, _ in sources]
         )
-        if not resolved:
-            continue
-        end = start + len(claim)
-        claims.append(AttributedClaim(claim=claim, start=start, end=end, sources=resolved))
-        cursor = end
-    return tuple(claims)
+    except Exception:
+        logger.warning("attribution embed failed; reply stays uncited", exc_info=True)
+        return ReplyAttribution()
+    if len(vectors) != len(segments) + len(sources):
+        logger.warning("attribution embed count mismatch; reply stays uncited")
+        return ReplyAttribution()
+    segment_vectors = vectors[: len(segments)]
+    source_vectors = vectors[len(segments) :]
+    claims: list[AttributedClaim] = []
+    for (start, end, claim), segment_vector in zip(segments, segment_vectors, strict=True):
+        ranked = sorted(
+            (
+                (cosine(segment_vector, source_vector), source)
+                for source_vector, (_, source) in zip(source_vectors, sources, strict=True)
+            ),
+            key=lambda pair: pair[0],
+            reverse=True,
+        )
+        matched = tuple(
+            dict.fromkeys(source for score, source in ranked if score >= threshold)
+        )[:MAX_SOURCES_PER_CLAIM]
+        if matched:
+            claims.append(AttributedClaim(claim=claim, start=start, end=end, sources=matched))
+    return ReplyAttribution(claims=tuple(claims))
 
 
-__all__ = ["AttributedClaim", "ReplyAttribution", "attribute"]
+def _segments(text: str) -> list[tuple[int, int, str]]:
+    """Sentence-ish spans with offsets into ``text``.
+
+    Boundaries are newlines and terminal punctuation followed by whitespace —
+    text segmentation only; nothing here parses citation syntax.
+    """
+    out: list[tuple[int, int, str]] = []
+    start = 0
+    for index, char in enumerate(text):
+        at_end = index + 1 == len(text)
+        if char == "\n" or (
+            char in _SENTENCE_END and (at_end or text[index + 1] in " \n\t")
+        ):
+            _emit(text, start, index + (0 if char == "\n" else 1), out)
+            start = index + 1
+    _emit(text, start, len(text), out)
+    return out
+
+
+def _emit(text: str, start: int, end: int, out: list[tuple[int, int, str]]) -> None:
+    while start < end and text[start] in " \t\n":
+        start += 1
+    while end > start and text[end - 1] in _TRAILING:
+        end -= 1
+    claim = text[start:end]
+    if sum(char.isalnum() for char in claim) >= MIN_SEGMENT_WORD_CHARS:
+        out.append((start, end, claim))
+
+
+__all__ = ["AttributedClaim", "AttributedReply", "ReplyAttribution", "attribute"]

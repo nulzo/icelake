@@ -19,7 +19,7 @@ from importlib.metadata import version
 
 from icelake.api.classify import CommandAction, UserMemoryCommand
 from icelake.api.client import DiscordMemory, MemoryOverrides
-from icelake.attribution import AttributedClaim, ReplyAttribution, attribute
+from icelake.attribution import AttributedClaim, AttributedReply, ReplyAttribution, attribute
 from icelake.citations import (
     Citations,
     CitationSource,
@@ -144,6 +144,7 @@ __all__ = [
     "AliasRecord",
     "AliasSource",
     "AttributedClaim",
+    "AttributedReply",
     "Attribution",
     "AttributionType",
     "BatchCompleted",

@@ -322,6 +322,10 @@ class RetrievalConfig(FrozenModel):
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
     reranker_threshold: float | None = Field(default=None, ge=0)
     reranker_pool_size: int = Field(default=32, ge=1, le=200)
+    #: Minimum cosine similarity between a reply segment and a source's text
+    #: for the source to be cited at that span. Deterministic attribution
+    #: (``DiscordMemory.cite``) — no LLM, one batched embed per cited turn.
+    citation_min_score: float = Field(default=0.55, ge=0.0, le=1.0)
 
     @field_validator("reranker", mode="before")
     @classmethod

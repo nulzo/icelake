@@ -18,7 +18,7 @@ from icelake.api.classify import CommandClassifier, UserMemoryCommand
 from icelake.api.events import EventBus
 from icelake.api.facts_api import FactsApi
 from icelake.api.groups import AdminApi, GraphApi, IdentityApi
-from icelake.attribution import ReplyAttribution, attribute
+from icelake.attribution import AttributedReply, attribute
 from icelake.citations import Citations
 from icelake.config import MemoryConfig, StorageBackend
 from icelake.consolidation.service import ConsolidationService
@@ -640,27 +640,44 @@ class DiscordMemory:
         """Teach the bot-guard its own id (never a memory subject)."""
         self._guard.register(str(user_id))
 
-    async def attribute_citations(
+    async def cite(
         self,
         text: str,
-        citations: Citations,
+        source: PromptContext | Citations,
         *,
-        guild_id: str | None = None,
-    ) -> ReplyAttribution:
-        """Map claims in a generated reply to the closed citation set.
+        weave: bool = True,
+    ) -> AttributedReply:
+        """Attach citations to a generated reply — deterministic, no LLM.
 
-        One cheap structured LLM call (the small-model tier, metered as
-        ``attribution``). The answer model never sees tags or URLs; this stage
-        reattaches provenance post-generation, so only claims a registered
-        source actually supports get cited. Returns an empty attribution —
-        never raises, never guesses — when there is nothing to cite, no LLM is
-        configured, or the call fails validation. Weave with
-        :meth:`Citations.apply`.
+        Reply segments and the closed set's source texts are embedded in one
+        batched call; a source is cited at a span when cosine similarity
+        clears ``retrieval.citation_min_score``. The answer model never sees
+        tags or URLs, and only claims a registered source actually supports
+        get cited — irrelevant retrieved memories are never linked.
+
+        ``source`` is the :class:`PromptContext` the reply was generated from,
+        or a pre-built :class:`Citations` (consumers that add tool sources).
+        With ``weave=False`` the raw reply is returned alongside the
+        structured claims so the consumer renders its own way. Never raises:
+        no embedder or an embedder failure yields the reply uncited.
         """
         await self.ensure_started()
-        if self._small_llm is None:
-            return ReplyAttribution()
-        return await attribute(text, citations, self._small_llm, guild_id=guild_id)
+        citations = (
+            source if isinstance(source, Citations) else Citations.from_prompt_context(source)
+        )
+        if not text.strip() or self._embedder is None:
+            return AttributedReply(text=text)
+        attribution = await attribute(
+            text,
+            citations,
+            self._embedder,
+            threshold=self.config.retrieval.citation_min_score,
+        )
+        return AttributedReply(
+            text=citations.apply(text, attribution) if weave else text,
+            claims=attribution.claims,
+            sources=attribution.used,
+        )
 
     # -- misc surface -------------------------------------------------------------
 

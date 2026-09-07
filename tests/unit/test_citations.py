@@ -1,8 +1,9 @@
-"""Closed-set registration, deterministic weaving, and structured attribution."""
+"""Closed-set registration, deterministic weaving, and embedder attribution."""
 
 from __future__ import annotations
 
-import json
+import math
+from collections.abc import Sequence
 
 import pytest
 
@@ -13,9 +14,8 @@ from icelake import (
     message_url,
     render_fact_list,
 )
-from icelake.attribution import attribute
+from icelake.attribution import MAX_SOURCES_PER_CLAIM, attribute
 from icelake.models import Citation, FactRecord, PromptContext, ScoredFact, SourceRef
-from tests.conftest import ScriptedLLM
 
 URL_MEM = "https://discord.com/channels/g1/c1/m1"
 URL_A = "https://example.com/a"
@@ -132,71 +132,126 @@ def test_apply_skips_url_less_claim_sources() -> None:
     assert reg.apply(text, _attribution(claim)) == "a claim"
 
 
-# --- attribute: structured claim mapping -------------------------------------
+# --- attribute: deterministic embedder scoring -------------------------------
 
 
-def _attribution_llm(payload: dict) -> ScriptedLLM:
-    return ScriptedLLM({"attribution": json.dumps(payload)})
+class KeywordEmbedder:
+    """Deterministic embedder: normalized bag-of-keywords over a fixed vocab.
+
+    Gives precise control over cosine scores so threshold behavior is tested
+    exactly, the way the real embedder port is faked at every other seam.
+    """
+
+    def __init__(self, vocab: dict[str, int]) -> None:
+        self._vocab = vocab
+        self.calls: list[tuple[str, ...]] = []
+
+    async def embed(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
+        self.calls.append(tuple(texts))
+        return tuple(self._embed_one(text) for text in texts)
+
+    def _embed_one(self, text: str) -> tuple[float, ...]:
+        vector = [0.0] * len(self._vocab)
+        for token in text.lower().split():
+            if token in self._vocab:
+                vector[self._vocab[token]] += 1.0
+        norm = math.sqrt(sum(v * v for v in vector))
+        return tuple(v / norm for v in vector) if norm else tuple(vector)
+
+
+class ExplodingEmbedder:
+    async def embed(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
+        raise RuntimeError("embedder exploded")
+
+
+def _mayo_embedder() -> KeywordEmbedder:
+    return KeywordEmbedder({"mayo": 0, "support": 1, "ranked": 2})
 
 
 @pytest.mark.asyncio
-async def test_attribute_maps_verbatim_claims_to_sources() -> None:
+async def test_attribute_cites_segment_matching_source() -> None:
     reg = _memory()
-    llm = _attribution_llm({"attributions": [{"claim": "he likes mayo", "sources": [1]}]})
-    result = await attribute("he likes mayo for sure", reg, llm)
+    result = await attribute("he likes mayo.", reg, _mayo_embedder())
     assert len(result.claims) == 1
     claim = result.claims[0]
-    assert (claim.start, claim.end) == (0, 13)
+    # Span excludes the trailing period so the link lands before it.
+    assert (claim.claim, claim.start, claim.end) == ("he likes mayo", 0, 13)
     assert [source.url for source in claim.sources] == [URL_MEM]
 
 
 @pytest.mark.asyncio
-async def test_attribute_drops_non_verbatim_claims() -> None:
+async def test_attribute_persona_paraphrase_still_matches() -> None:
+    # Voice mutation keeps the semantic content; embeddings absorb it.
     reg = _memory()
-    llm = _attribution_llm({"attributions": [{"claim": "he loves mayo", "sources": [1]}]})
-    result = await attribute("he likes mayo", reg, llm)
+    result = await attribute("bro is a mayo goblin", reg, _mayo_embedder())
+    assert [source.url for source in result.claims[0].sources] == [URL_MEM]
+
+
+@pytest.mark.asyncio
+async def test_attribute_leaves_unmatched_segments_uncited() -> None:
+    result = await attribute("the sky is blue", _memory(), _mayo_embedder())
     assert result.claims == ()
 
 
 @pytest.mark.asyncio
-async def test_attribute_drops_out_of_range_source_numbers() -> None:
+async def test_attribute_cites_only_matching_segment_in_mixed_reply() -> None:
+    result = await attribute("he likes mayo. the sky is blue.", _memory(), _mayo_embedder())
+    assert len(result.claims) == 1
+    assert result.claims[0].claim == "he likes mayo"
+
+
+@pytest.mark.asyncio
+async def test_attribute_respects_threshold() -> None:
     reg = _memory()
-    llm = _attribution_llm({"attributions": [{"claim": "he likes mayo", "sources": [9]}]})
-    result = await attribute("he likes mayo", reg, llm)
+    # Segment "mayo support ranked" vs fact "klim likes mayo": cosine 1/√3 ≈ 0.577.
+    text = "mayo support ranked"
+    assert (await attribute(text, reg, _mayo_embedder(), threshold=0.5)).claims
+    assert (await attribute(text, reg, _mayo_embedder(), threshold=0.6)).claims == ()
+
+
+@pytest.mark.asyncio
+async def test_attribute_skips_embed_when_nothing_citable() -> None:
+    embedder = _mayo_embedder()
+    result = await attribute("hello there", Citations(), embedder)
+    assert result.claims == ()
+    assert embedder.calls == []  # banter never pays for an embed call
+
+
+@pytest.mark.asyncio
+async def test_attribute_skips_embed_when_text_blank() -> None:
+    embedder = _mayo_embedder()
+    result = await attribute("   ", _memory(), embedder)
+    assert result.claims == ()
+    assert embedder.calls == []
+
+
+@pytest.mark.asyncio
+async def test_attribute_embed_failure_returns_empty_never_raises() -> None:
+    result = await attribute("he likes mayo", _memory(), ExplodingEmbedder())
     assert result.claims == ()
 
 
 @pytest.mark.asyncio
-async def test_attribute_skips_llm_when_nothing_citable() -> None:
-    llm = ScriptedLLM()
-    result = await attribute("hello there", Citations(), llm)
-    assert result.claims == ()
-    assert llm.calls == []  # banter never pays for an attribution call
+async def test_attribute_embeds_segments_and_sources_in_one_batch() -> None:
+    embedder = _mayo_embedder()
+    await attribute("he likes mayo. the sky is blue.", _memory(), embedder)
+    assert embedder.calls == [("he likes mayo", "the sky is blue", "klim likes mayo")]
 
 
 @pytest.mark.asyncio
-async def test_attribute_empty_when_text_blank() -> None:
-    llm = ScriptedLLM()
-    result = await attribute("   ", _memory(), llm)
-    assert result.claims == ()
-    assert llm.calls == []
+async def test_attribute_caps_sources_per_claim() -> None:
+    reg = _memory()
+    for index in range(MAX_SOURCES_PER_CLAIM + 1):
+        reg.add_source(f"https://example.com/{index}", excerpt="mayo")
+    result = await attribute("mayo", reg, _mayo_embedder())
+    assert len(result.claims[0].sources) == MAX_SOURCES_PER_CLAIM
 
 
 @pytest.mark.asyncio
-async def test_attribute_invalid_json_returns_empty() -> None:
-    llm = ScriptedLLM({"attribution": "not json at all"})
-    result = await attribute("he likes mayo", _memory(), llm)
-    assert result.claims == ()
-
-
-@pytest.mark.asyncio
-async def test_attribute_numbers_only_citable_sources() -> None:
+async def test_attribute_ignores_url_less_sources() -> None:
     reg = Citations([_citation("mem:1", url="")])
-    reg.add_source(URL_A, title="Doc A")
-    llm = _attribution_llm({"attributions": [{"claim": "the claim", "sources": [1]}]})
-    result = await attribute("the claim", reg, llm)
-    # [1] in the attributor's list is the first CITABLE source, not mem:1.
-    assert [source.url for source in result.claims[0].sources] == [URL_A]
+    result = await attribute("he likes mayo", reg, _mayo_embedder())
+    assert result.claims == ()
 
 
 def test_attribution_used_dedupes_first_use_order() -> None:

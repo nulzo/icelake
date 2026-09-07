@@ -3,8 +3,6 @@ mention links, summary refresh, pair/entity-hint recall, cite instructions."""
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from icelake._json import parse_json_object
@@ -502,10 +500,7 @@ class TestServerFactDedupAndCitations:
                             "source_message_indexes": [1],
                         },
                     ]
-                ),
-                "attribution": json.dumps(
-                    {"attributions": [{"claim": "she mains support", "sources": [1]}]}
-                ),
+                )
             }
         )
         client, _ = make_client(llm=llm)
@@ -525,9 +520,8 @@ class TestServerFactDedupAndCitations:
         assert primary.guild_id == GUILD
         assert primary.role.value in {"primary", "supporting"}
         ctx = await client.prompt_context(guild_id=GUILD, asker_id=ALICE, text="ranked games")
-        reply = "she mains support"
+        reply = "she mains support in every ranked game"
         set_ = Citations.from_prompt_context(ctx)
-        attribution = await client.attribute_citations(reply, set_, guild_id=GUILD)
-        linkified = set_.apply(reply, attribution)
-        assert "discord.com/channels/" in linkified
+        cited = await client.cite(reply, set_)
+        assert "discord.com/channels/" in cited.text
         await client.close()

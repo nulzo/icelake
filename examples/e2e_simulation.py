@@ -59,7 +59,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from icelake import (
-    AttributedClaim,
     BatchCompleted,
     ChannelName,
     Citations,
@@ -74,7 +73,6 @@ from icelake import (
     MessageEvent,
     MeterSnapshot,
     RecallQuery,
-    ReplyAttribution,
     Scope,
 )
 
@@ -230,24 +228,21 @@ def mentions(facts: list[str], pattern: str) -> list[str]:
     return [text for text in facts if re.search(pattern, text, re.IGNORECASE)]
 
 
-def _weave_probe(ctx) -> str:
-    """Hand-build an attribution over the first citable source and weave it."""
+async def _weave_probe(memory: DiscordMemory, ctx) -> str:
+    """Cite a probe reply through the real facade and return the woven text."""
     set_ = Citations.from_prompt_context(ctx)
     if not set_.citable:
         return ""
-    text = "nolan likes go"
-    attribution = ReplyAttribution(
-        claims=(AttributedClaim(claim=text, start=0, end=len(text), sources=(set_.citable[0],)),)
-    )
-    return set_.apply(text, attribution)
+    cited = await memory.cite(set_.citable[0].excerpt, set_)
+    return cited.text if cited.sources else ""
 
 
-def _woven_has_link(ctx) -> bool:
-    return "discord.com/channels/" in _weave_probe(ctx)
+async def _woven_has_link(memory: DiscordMemory, ctx) -> bool:
+    return "discord.com/channels/" in await _weave_probe(memory, ctx)
 
 
-def _woven_has_link_detail(ctx) -> str:
-    return _weave_probe(ctx) or "no citable sources"
+async def _woven_has_link_detail(memory: DiscordMemory, ctx) -> str:
+    return await _weave_probe(memory, ctx) or "no citable sources"
 
 
 async def print_state(memory: DiscordMemory) -> None:
@@ -912,9 +907,9 @@ async def phase_retrieval(suite: Suite, memory: DiscordMemory, pre_move_wall: da
         str(len(ctx.citations)),
     )
     suite.check(
-        "apply weaves attributed claims into jump links",
-        _woven_has_link(ctx),
-        _woven_has_link_detail(ctx),
+        "cite weaves attributed claims into jump links",
+        await _woven_has_link(memory, ctx),
+        await _woven_has_link_detail(memory, ctx),
     )
     suite.expect(
         "profile summary generated for the asker",

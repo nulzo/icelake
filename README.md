@@ -22,7 +22,7 @@ pip install "icelake[local-embeddings]"  # sentence-transformers
 import asyncio
 from datetime import UTC, datetime
 
-from icelake import Citations, DiscordMemory, MemoryConfig, MessageEvent
+from icelake import DiscordMemory, MemoryConfig, MessageEvent
 
 
 async def main() -> None:
@@ -55,12 +55,11 @@ async def main() -> None:
         print(ctx.injection_block)
 
         # Grounding is post-generation: the answer model writes plain prose
-        # (it never sees tags or URLs), then one cheap structured call maps
-        # reply claims to the closed citation set.
+        # (it never sees tags or URLs), then deterministic embedder scoring
+        # attaches the closed set's citations — no extra LLM call.
         reply = "You're learning Rust!"
-        citations = Citations.from_prompt_context(ctx)
-        attribution = await memory.attribute_citations(reply, citations, guild_id="555")
-        reply = citations.apply(reply, attribution)
+        cited = await memory.cite(reply, ctx)
+        reply = cited.text
         # reply is Discord-safe: "You're learning Rust [[1]](<https://discord.com/channels/...>)"
 
 
@@ -74,14 +73,14 @@ mentioned, thread participants, and the server. Mentions plus thread
 participants turn on graph-hop recall and pair-intersect **every** combination
 of those people (not just asker-other), so shared entities surface in one
 call. Stick the block on your system prompt and generate a reply — the model
-sees plain facts, never citation syntax. Then `memory.attribute_citations`
-maps the reply's claims to the closed set (one cheap structured call on the
-small-model tier) and `Citations.apply` weaves Discord-safe `[[N]](<url>)`
-jump links at the verified spans. Banter with no supported claims is left
-untouched — the library never invents links, and a retrieved-but-unused
-source is never cited.
+sees plain facts, never citation syntax. Then `memory.cite(reply, ctx)`
+matches reply segments against the closed set with the embedder you already
+configured (one batched embed, no LLM call) and weaves Discord-safe
+`[[N]](<url>)` jump links at the matched spans. Banter with no supported
+claims is left untouched — the library never invents links, and a
+retrieved-but-unused source is never cited.
 
-### Citations: a closed set with structured attribution
+### Citations: a closed set with deterministic attribution
 
 `icelake.citations.Citations` generalizes the closed-set discipline beyond
 memory facts — the same approach production grounded systems (ChatGPT, Claude,
@@ -89,17 +88,20 @@ Perplexity, Graphiti/Zep) use. Code registers every citable source (memory
 citations, web results, referenced messages); **citations are data, never
 model-written text**. The answer model sees no tags and no URLs, so invented
 refs, mangled links, and source-list dumps have no way to exist. Attribution
-is a separate stage — `icelake.attribute` maps verbatim reply spans to set
-members via one structured LLM call; a claim with no supporting source is
-omitted, never force-cited. Provider web annotations arrive as character
-offsets and splice deterministically. URLs only ever leave the library from
-registered sources.
+follows the ALCE `POSTCITE` pattern — reply sentences and source texts are
+embedded in one batched call, and a source is cited at a span when cosine
+similarity clears `retrieval.citation_min_score` (default 0.55). Dense
+embeddings absorb persona paraphrase the same way they do at retrieval time;
+a claim with no supporting source is omitted, never force-cited. Provider web
+annotations arrive as character offsets and splice deterministically. URLs
+only ever leave the library from registered sources.
 
 Rendering is deterministic splicing, not parsing: `apply()` inserts
 `[[N]](<url>)` at validated offsets, where `N` is the source's position among
 citable sources. **Presentation beyond the inline weave is the consumer's** —
-`ReplyAttribution.used` carries the sources that actually supported a claim
-(first-use order) for footers, logging, or analytics.
+`AttributedReply.claims` and `.sources` carry the matched spans and used-only
+sources for footers, logging, or analytics; pass `weave=False` to render
+entirely yourself.
 
 ```python
 from icelake import Citations
@@ -108,13 +110,16 @@ citations = Citations.from_prompt_context(ctx)  # memory set included
 citations.add_source("https://example.com/docs", title="Docs")
 citations.add_message(guild_id, channel_id, message_id)
 
-# One structured call maps reply claims to the closed set (used-only).
-attribution = await memory.attribute_citations(model_output, citations, guild_id=guild_id)
+# One batched embed matches reply segments to the closed set (used-only).
+cited = await memory.cite(model_output, citations)
 
-# Deterministic weave: inline jump links at the verified claim spans.
-reply_text = citations.apply(model_output, attribution)
-used = attribution.used  # tuple[CitationSource] that supported a claim
+reply_text = cited.text     # inline jump links at the matched spans
+used = cited.sources        # tuple[CitationSource] that supported a claim
 ```
+
+The default hashing embedder is lexical; for heavy persona paraphrase,
+configure a real embedding model (`embeddings="openai://..."` or the
+`local-embeddings` extra) — the same model retrieval already uses.
 
 Examples:
 
@@ -276,10 +281,9 @@ ctx = await memory.prompt_context(
 #   (usage guidelines follow — no citation syntax anywhere)
 
 reply = await generate(system_prompt + "\n\n" + ctx.injection_block, question)
-citations = Citations.from_prompt_context(ctx)
-attribution = await memory.attribute_citations(reply, citations, guild_id=guild_id)
-await message.reply(citations.apply(reply, attribution), mention_author=False)
-# apply weaves [[N]](<url>) at attributed claim spans; unsupported claims
+cited = await memory.cite(reply, ctx)
+await message.reply(cited.text, mention_author=False)
+# cite weaves [[N]](<url>) at attributed claim spans; unsupported claims
 # stay uncited, and sources the reply never used never render.
 ```
 
