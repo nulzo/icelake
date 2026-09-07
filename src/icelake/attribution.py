@@ -130,9 +130,9 @@ async def attribute(
             key=lambda pair: pair[0],
             reverse=True,
         )
-        matched = tuple(
-            dict.fromkeys(source for score, source in ranked if score >= threshold)
-        )[:MAX_SOURCES_PER_CLAIM]
+        matched = tuple(dict.fromkeys(source for score, source in ranked if score >= threshold))[
+            :MAX_SOURCES_PER_CLAIM
+        ]
         if matched:
             claims.append(AttributedClaim(claim=claim, start=start, end=end, sources=matched))
     return ReplyAttribution(claims=tuple(claims))
@@ -148,9 +148,7 @@ def _segments(text: str) -> list[tuple[int, int, str]]:
     start = 0
     for index, char in enumerate(text):
         at_end = index + 1 == len(text)
-        if char == "\n" or (
-            char in _SENTENCE_END and (at_end or text[index + 1] in " \n\t")
-        ):
+        if char == "\n" or (char in _SENTENCE_END and (at_end or text[index + 1] in " \n\t")):
             _emit(text, start, index + (0 if char == "\n" else 1), out)
             start = index + 1
     _emit(text, start, len(text), out)

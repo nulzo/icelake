@@ -113,8 +113,8 @@ citations.add_message(guild_id, channel_id, message_id)
 # One batched embed matches reply segments to the closed set (used-only).
 cited = await memory.cite(model_output, citations)
 
-reply_text = cited.text     # inline jump links at the matched spans
-used = cited.sources        # tuple[CitationSource] that supported a claim
+reply_text = cited.text  # inline jump links at the matched spans
+used = cited.sources  # tuple[CitationSource] that supported a claim
 ```
 
 The default hashing embedder is lexical; for heavy persona paraphrase,
