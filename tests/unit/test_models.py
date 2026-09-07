@@ -18,6 +18,7 @@ from icelake.models.retrieval import (
     Citation,
     PromptContext,
     channels,
+    discovery_pairs,
 )
 
 
@@ -114,7 +115,14 @@ def _prompt_context() -> PromptContext:
     return PromptContext(
         injection_block="[MEMORY CONTEXT]",
         citations=(
-            Citation(ref="mem:1", fact_id="fct_a", url="https://discord.com/channels/g/c/m1"),
+            Citation(
+                ref="mem:1",
+                fact_id="fct_a",
+                url="https://discord.com/channels/g/c/m1",
+                message_id="m1",
+                channel_id="c",
+                score=0.9,
+            ),
             Citation(ref="mem:2", fact_id="fct_b", url=""),
         ),
     )
@@ -123,8 +131,9 @@ def _prompt_context() -> PromptContext:
 def test_apply_citations_resolves_and_strips() -> None:
     ctx = _prompt_context()
     out = ctx.apply_citations("they game [mem:1] a lot [mem:2] and [mem:9] gone")
-    assert "[[mem:1]](https://discord.com/channels/g/c/m1)" in out
-    assert "a lot [mem:2]" in out  # citation without url keeps its plain tag
+    assert "[[mem:1]](<https://discord.com/channels/g/c/m1>)" in out
+    assert "a lot" in out
+    assert "mem:2" not in out  # citation without url is stripped
     assert "mem:9" not in out  # unknown refs stripped
 
 
@@ -139,3 +148,58 @@ def test_apply_citations_leaves_non_mem_brackets() -> None:
     ctx = _prompt_context()
     text = "array[0] and [not a citation]"
     assert ctx.apply_citations(text) == text
+
+
+def test_resolve_used_returns_rich_objects() -> None:
+    ctx = _prompt_context()
+    used = ctx.resolve_used("they game [mem:1] a lot")
+    assert len(used) == 1
+    assert used[0].ref == "mem:1"
+    assert used[0].fact_id == "fct_a"
+    assert used[0].url == "https://discord.com/channels/g/c/m1"
+    assert used[0].message_id == "m1"
+    assert used[0].channel_id == "c"
+    assert used[0].score == 0.9
+    assert used[0].claim == "[mem:1]"
+
+
+def test_resolve_used_structured_claims() -> None:
+    ctx = _prompt_context()
+    text = 'reply text {"claims": [{"fact_id": "fct_a"}, {"fact_id": "fct_b"}]}'
+    used = ctx.resolve_used(text)
+    assert len(used) == 2
+    assert used[0].fact_id == "fct_a"
+    assert used[1].fact_id == "fct_b"
+    assert used[0].claim == "fct_a"
+
+
+def test_resolve_used_drops_unknown_ids() -> None:
+    ctx = _prompt_context()
+    used = ctx.resolve_used("cite [mem:99] and fct_zzz")
+    assert used == ()
+
+
+def test_resolve_used_banter_returns_empty() -> None:
+    ctx = _prompt_context()
+    used = ctx.resolve_used("lol nice one")
+    assert used == ()
+
+
+def test_resolve_used_deduplicates() -> None:
+    ctx = _prompt_context()
+    used = ctx.resolve_used("[mem:1] and [mem:1] again")
+    assert len(used) == 1
+
+
+def test_discovery_pairs_empty_when_solo() -> None:
+    assert discovery_pairs("alice") == ()
+    assert discovery_pairs("alice", ("alice",), ("alice",)) == ()
+
+
+def test_discovery_pairs_all_combinations_first_seen_order() -> None:
+    pairs = discovery_pairs("alice", ("bob",), ("carol", "bob"))
+    assert pairs == (("alice", "bob"), ("alice", "carol"), ("bob", "carol"))
+
+
+def test_discovery_pairs_thread_only_enables_related() -> None:
+    assert discovery_pairs("alice", (), ("bob",)) == (("alice", "bob"),)

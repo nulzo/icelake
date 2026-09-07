@@ -30,6 +30,8 @@ from icelake.config import (
     MemoryConfig,
     ObserveConfig,
     PrivacyConfig,
+    RerankerConfig,
+    RerankerProvider,
     RetrievalConfig,
     StorageBackend,
     StorageConfig,
@@ -99,6 +101,7 @@ from icelake.models import (
     SourceRef,
     SourceRole,
     StanceSummary,
+    UsedCitation,
     channels,
 )
 from icelake.models.events import (
@@ -116,6 +119,7 @@ from icelake.ports.llm import (
     Embedder,
     LlmMessage,
     MessageRole,
+    Reranker,
 )
 from icelake.ports.store import MemoryStore
 
@@ -202,6 +206,9 @@ __all__ = [
     "RejectReason",
     "RelationEdge",
     "RelationVerb",
+    "Reranker",
+    "RerankerConfig",
+    "RerankerProvider",
     "Resolution",
     "ResolvedCandidate",
     "RetrievalConfig",
@@ -218,6 +225,7 @@ __all__ = [
     "StorageUnavailableError",
     "StructuredOutputError",
     "SubjectNotAllowedError",
+    "UsedCitation",
     "UserMemoryCommand",
     "WorkerNotRunningError",
     "WorkersConfig",

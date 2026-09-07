@@ -24,7 +24,7 @@ from icelake.models.retrieval import (
     ScoredFact,
 )
 from icelake.ports.clock import Clock
-from icelake.ports.llm import Embedder
+from icelake.ports.llm import Embedder, Reranker
 from icelake.ports.store import MemoryStore
 from icelake.ports.vectors import VectorIndex
 from icelake.retrieval import channels as ch
@@ -50,6 +50,7 @@ class RecallService:
         store: MemoryStore,
         vectors: VectorIndex | None,
         embedder: Embedder | None,
+        reranker: Reranker | None = None,
         config: RetrievalConfig,
         guard: BotGuard | None = None,
         is_subject_blocked: Any = None,
@@ -60,6 +61,7 @@ class RecallService:
         self._store = store
         self._vectors = vectors
         self._embedder = embedder
+        self._reranker = reranker
         self._config = config
         self._guard = guard
         self._is_subject_blocked = is_subject_blocked
@@ -132,7 +134,46 @@ class RecallService:
             weight_entity=self._config.weight_entity,
             weight_strength=self._config.weight_strength,
         )
-        return await self._materialize(query, scored, degraded, records=pool_records)
+        scored, rerank_scores = await self._apply_reranker(query, scored, pool_records)
+        return await self._materialize(
+            query, scored, degraded, records=pool_records, rerank_scores=rerank_scores
+        )
+
+    async def _apply_reranker(
+        self,
+        query: RecallQuery,
+        scored: list[RerankResult],
+        records: tuple[FactRecord, ...],
+    ) -> tuple[list[RerankResult], dict[str, float]]:
+        """Optional L2 cross-encoder over the fused pool. Degrades to hybrid order."""
+        if self._reranker is None or not query.text or not scored:
+            return scored, {}
+        pool_size = min(self._config.reranker_pool_size, len(scored))
+        pool = scored[:pool_size]
+        record_by_id = {record.id: record for record in records}
+        documents = [record_by_id[item[0]].text for item in pool if item[0] in record_by_id]
+        if not documents:
+            return scored, {}
+        try:
+            scores = await self._reranker.score(query.text, documents)
+        except Exception:
+            logger.warning("reranker failed; degrading to hybrid order", exc_info=True)
+            return scored, {}
+        if len(scores) != len(documents):
+            logger.warning(
+                "reranker returned %d scores for %d documents", len(scores), len(documents)
+            )
+            return scored, {}
+        threshold = self._config.reranker_threshold
+        reranked: list[tuple[float, RerankResult]] = []
+        rerank_scores: dict[str, float] = {}
+        for item, rerank_score in zip(pool, scores, strict=True):
+            if threshold is not None and rerank_score < threshold:
+                continue
+            reranked.append((rerank_score, item))
+            rerank_scores[item[0]] = rerank_score
+        reranked.sort(key=lambda pair: pair[0], reverse=True)
+        return [item for _score, item in reranked] + scored[pool_size:], rerank_scores
 
     def _strength_map(self, records: tuple[FactRecord, ...]) -> dict[str, float]:
         """Recency-aware strength: Ebbinghaus retention times log-scaled strength."""
@@ -308,12 +349,14 @@ class RecallService:
         degraded: list[ChannelName],
         *,
         records: tuple[FactRecord, ...],
+        rerank_scores: dict[str, float] | None = None,
     ) -> RecallResult:
         fact_ids = [fact_id for fact_id, score, _, _ in scored]
         by_id = {record.id: record for record in records}
         scores = {fact_id: score for fact_id, score, _, _ in scored}
         components_map = {fact_id: comps for fact_id, _, comps, _ in scored}
         channels_map = {fact_id: chans for fact_id, _, _, chans in scored}
+        rerank_scores = rerank_scores or {}
 
         per_subject: dict[str, int] = {}
         facts: list[ScoredFact] = []
@@ -369,6 +412,7 @@ class RecallService:
                         strength=comps[3],
                     ),
                     matched_channels=channels_map.get(fact_id, ()),
+                    rerank_score=rerank_scores.get(fact_id),
                 )
             )
         if trimmed:

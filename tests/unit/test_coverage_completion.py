@@ -14,6 +14,7 @@ from icelake.config import MemoryConfig
 from icelake.consolidation.service import ConsolidationService, profile_summary_due
 from icelake.models.events import BatchCompleted, FactCommitted
 from icelake.models.facts import ProfileSummary
+from icelake.models.retrieval import CHANNELS_DISCOVERY, ChannelName
 from icelake.ports.queue import BatchKey
 from tests.conftest import ScriptedLLM, extraction_response
 
@@ -258,6 +259,53 @@ class TestClientPaths:
         )
         assert ctx.injection_block.startswith("[MEMORY CONTEXT]")
         assert any(res.identifier for res in ctx.resolutions)
+        await client.close()
+
+    async def test_prompt_context_discovers_thread_and_all_pairs(self, make_client):
+        """Mentions plus thread participants enable GRAPH_HOP and every user pair."""
+        bob = "200000000000000002"
+        carol = "300000000000000003"
+        client, _ = make_client(llm=False)
+        captured: list = []
+        inner = client.recall
+
+        async def wrapped(query):
+            captured.append(query)
+            return await inner(query)
+
+        client.recall = wrapped
+        await client.start()
+        await client.prompt_context(
+            guild_id=GUILD,
+            asker_id=ALICE,
+            text="yo",
+            mentioned_ids=(bob,),
+            thread_participant_ids=(carol,),
+        )
+        subject_query = captured[0]
+        assert set(subject_query.pair_ids) == {
+            (ALICE, bob),
+            (ALICE, carol),
+            (bob, carol),
+        }
+        assert subject_query.channels == CHANNELS_DISCOVERY
+        assert ChannelName.GRAPH_HOP in subject_query.channels
+        await client.close()
+
+    async def test_prompt_context_solo_turn_skips_discovery(self, make_client):
+        client, _ = make_client(llm=False)
+        captured: list = []
+        inner = client.recall
+
+        async def wrapped(query):
+            captured.append(query)
+            return await inner(query)
+
+        client.recall = wrapped
+        await client.start()
+        await client.prompt_context(guild_id=GUILD, asker_id=ALICE, text="yo")
+        assert captured[0].pair_ids == ()
+        assert captured[0].channels is None
         await client.close()
 
     async def test_observe_many_and_flush_guild_filter(self, make_client, event_factory):

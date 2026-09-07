@@ -7,6 +7,9 @@ Providers are configured by URL strings for frictionless setup::
     embeddings= "hashing"            # free deterministic default
                 # "openai://$KEY@api.openai.com/v1?model=text-embedding-3-small"
                 # "local"             # sentence-transformers if installed
+    retrieval.reranker = "none"      # default: first-stage hybrid only
+                # "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=qwen/qwen3-reranker-8b"
+                # "local"             # sentence-transformers CrossEncoder if installed
 
 Every nested group can also be passed as a typed object for programmatic composition.
 Unknown keys raise ConfigError immediately (typo protection).
@@ -158,6 +161,54 @@ class EmbeddingsProvider(StrEnum):
     LOCAL = "local"
 
 
+class RerankerProvider(StrEnum):
+    NONE = "none"
+    OPENAI = "openai"
+    LOCAL = "local"
+
+
+class RerankerConfig(FrozenModel):
+    """Optional L2 cross-encoder after RRF. ``none`` (default) keeps recall zero-LLM."""
+
+    provider: RerankerProvider = RerankerProvider.NONE
+    model: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    timeout_seconds: float = Field(default=1.5, gt=0)
+
+    @model_validator(mode="after")
+    def _validate_openai_requirements(self) -> RerankerConfig:
+        if self.provider is RerankerProvider.OPENAI and not (self.base_url and self.model):
+            raise ConfigError(
+                "openai reranker requires base_url and model "
+                "(use a full 'openai://key@host/v1?model=...' spec)",
+            )
+        return self
+
+    @classmethod
+    def from_spec(cls, spec: str) -> RerankerConfig:
+        text = spec.strip().lower()
+        if text in {"", "none"}:
+            return cls(provider=RerankerProvider.NONE)
+        if text == "local":
+            return cls(
+                provider=RerankerProvider.LOCAL,
+                model="sentence-transformers/bge-reranker-v2-m3",
+            )
+        parsed = urlsplit(spec)
+        if parsed.scheme != "openai":
+            raise ConfigError(f"unknown reranker spec {spec!r}; use 'none', 'local' or 'openai://'")
+        model_values = parse_qs(parsed.query).get("model")
+        return cls(
+            provider=RerankerProvider.OPENAI,
+            base_url=f"https://{parsed.hostname}"
+            + (f":{parsed.port}" if parsed.port else "")
+            + parsed.path,
+            api_key=_expand(unquote(parsed.username or "")) or None,
+            model=(model_values[0] if model_values else "qwen/qwen3-reranker-8b"),
+        )
+
+
 class EmbeddingsConfig(FrozenModel):
     provider: EmbeddingsProvider = EmbeddingsProvider.HASHING
     dimensions: int = Field(default=256, ge=32)
@@ -265,6 +316,17 @@ class RetrievalConfig(FrozenModel):
     weight_lexical: float = Field(default=0.25, ge=0, le=1)
     weight_entity: float = Field(default=0.10, ge=0, le=1)
     weight_strength: float = Field(default=0.10, ge=0, le=1)
+    #: L2 cross-encoder rerank over the fused pool. ``rerank_pool_size`` bounds
+    #: how many candidates the reranker scores; the rest keep hybrid order.
+    #: Hosted path is OpenRouter ``POST /api/v1/rerank`` via an ``openai://`` URL.
+    reranker: RerankerConfig = Field(default_factory=RerankerConfig)
+    reranker_threshold: float | None = Field(default=None, ge=0)
+    reranker_pool_size: int = Field(default=32, ge=1, le=200)
+
+    @field_validator("reranker", mode="before")
+    @classmethod
+    def _coerce_reranker(cls, value: object) -> object:
+        return RerankerConfig.from_spec(value) if isinstance(value, str) else value
 
 
 class BudgetsConfig(FrozenModel):

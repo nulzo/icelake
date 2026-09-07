@@ -51,9 +51,10 @@ from icelake.models.retrieval import (
     Resolution,
     Scope,
     ScoredFact,
+    discovery_pairs,
 )
 from icelake.ports.clock import Clock, IdGen, SystemClock, UlidIdGen
-from icelake.ports.llm import ChatLLM, Embedder, LlmCache, Meter
+from icelake.ports.llm import ChatLLM, Embedder, LlmCache, Meter, Reranker
 from icelake.ports.queue import IngestQueue, StoredMessage
 from icelake.ports.store import MemoryStore
 from icelake.ports.vectors import VectorIndex
@@ -174,7 +175,7 @@ class MemoryOverrides(TypedDict, total=False):
 
     Every key is a documented port. Omitting a key builds the adapter from
     config; passing ``None`` for ``llm`` / ``small_llm`` / ``embedder`` /
-    ``vectors`` explicitly disables that capability (degraded mode).
+    ``vectors`` / ``reranker`` explicitly disables that capability (degraded mode).
     """
 
     clock: Clock
@@ -183,6 +184,7 @@ class MemoryOverrides(TypedDict, total=False):
     queue: IngestQueue
     vectors: VectorIndex | None
     embedder: Embedder | None
+    reranker: Reranker | None
     meter: Meter
     llm: ChatLLM | None
     small_llm: ChatLLM | None
@@ -213,6 +215,13 @@ class DiscordMemory:
 
         self._embedder: Embedder | None = (
             overrides["embedder"] if "embedder" in overrides else build_embedder(config.embeddings)
+        )
+        from icelake.adapters.rerankers import build_reranker
+
+        self._reranker: Reranker | None = (
+            overrides["reranker"]
+            if "reranker" in overrides
+            else build_reranker(config.retrieval.reranker)
         )
 
         if "meter" in overrides:
@@ -366,6 +375,9 @@ class DiscordMemory:
                 )
             except TimeoutError:
                 logger.warning("drain timeout exceeded; abandoning in-flight batches")
+        closer = getattr(self._reranker, "aclose", None)
+        if callable(closer):
+            await closer()
         await self._store.close()
         self.started = False
 
@@ -502,6 +514,7 @@ class DiscordMemory:
             store=self._store,
             vectors=self._vectors,
             embedder=self._embedder,
+            reranker=self._reranker,
             config=self.config.retrieval,
             guard=self._guard,
             clock=self._clock,
@@ -525,8 +538,11 @@ class DiscordMemory:
     ) -> PromptContext:
         """One-call turn context: subjects resolved, facts injected, citations bound.
 
-        This is the frictionless hot path — pass the current message and mention ids;
-        get back a paste-ready injection block plus citation bindings.
+        This is the frictionless hot path — pass the current message, mention
+        ids, and thread participants; get back a paste-ready injection block
+        plus citation bindings. Related users (mentions and thread) turn on
+        graph-hop recall and pair-intersect every combination so shared
+        entities between those people surface without a second call.
         """
         await self.ensure_started()
         budget = token_budget_tokens or self.config.retrieval.default_token_budget
@@ -535,6 +551,7 @@ class DiscordMemory:
             candidates=[asker_id, *mentioned_ids, *thread_participant_ids],
         )
         warnings: list[RecallWarning] = list(warnings_list)
+        pairs = discovery_pairs(asker_id, mentioned_ids, thread_participant_ids)
 
         result = await self.recall(
             RecallQuery(
@@ -542,12 +559,12 @@ class DiscordMemory:
                 text=text,
                 subject_ids=tuple(subjects),
                 scope=Scope.SUBJECTS,
-                pair_ids=tuple((asker_id, m) for m in mentioned_ids if m != asker_id),
+                pair_ids=pairs,
                 top_k=self.config.retrieval.top_k,
                 max_per_subject=self.config.retrieval.max_per_subject,
-                # Mentions make this a relationship-shaped question: hop facts
-                # earn their cost here, so widen to the discovery channel set.
-                channels=CHANNELS_DISCOVERY if mentioned_ids else None,
+                # Related users make this a relationship-shaped question: hop
+                # facts earn their cost here, so widen to the discovery set.
+                channels=CHANNELS_DISCOVERY if pairs else None,
             )
         )
         server_result = await self.recall(

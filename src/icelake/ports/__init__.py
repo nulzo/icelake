@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 from icelake.ports.clock import Clock, FixedClock, IdGen, SystemClock, UlidIdGen
-from icelake.ports.llm import ChatLLM, ChatRequest, ChatResponse, Embedder, LlmMessage, Meter
+from icelake.ports.llm import (
+    ChatLLM,
+    ChatRequest,
+    ChatResponse,
+    Embedder,
+    LlmMessage,
+    Meter,
+    Reranker,
+)
 from icelake.ports.queue import (
     BatchKey,
     ClaimOutcome,
@@ -30,6 +38,7 @@ __all__ = [
     "MessageStatus",
     "Meter",
     "NodeRef",
+    "Reranker",
     "StoredMessage",
     "SystemClock",
     "UlidIdGen",

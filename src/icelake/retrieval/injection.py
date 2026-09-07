@@ -116,6 +116,7 @@ class InjectionBuilder:
                 trimmed = True
                 continue
 
+            display = (display_names or {}).get(section_key, "")
             emitted = 0
             for scored in facts:
                 ref_number = len(citations) + 1
@@ -124,7 +125,7 @@ class InjectionBuilder:
                 if used_tokens + section_tokens + cost > token_budget:
                     trimmed = True
                     break
-                primary = _primary_citation(scored, guild_id, ref_number)
+                primary = _primary_citation(scored, guild_id, ref_number, display_name=display)
                 if primary is not None:
                     citations.append(primary)
                     section_lines.append(fact_line)
@@ -148,7 +149,13 @@ class InjectionBuilder:
         return block, tuple(citations), trimmed
 
 
-def _primary_citation(scored: ScoredFact, guild_id: str, ref_number: int) -> Citation | None:
+def _primary_citation(
+    scored: ScoredFact,
+    guild_id: str,
+    ref_number: int,
+    *,
+    display_name: str = "",
+) -> Citation | None:
     record = scored.fact
     source_ref = next(
         (c for c in record.citations if c.role is SourceRole.PRIMARY),
@@ -156,6 +163,9 @@ def _primary_citation(scored: ScoredFact, guild_id: str, ref_number: int) -> Cit
     )
     url = ""
     snippet_text = ""
+    message_id: str | None = None
+    channel_id: str | None = None
+    author_name = ""
     if source_ref is not None:
         url = source_ref.message_url or message_url(
             guild_id,
@@ -163,6 +173,9 @@ def _primary_citation(scored: ScoredFact, guild_id: str, ref_number: int) -> Cit
             source_ref.message_id,
         )
         snippet_text = source_ref.content_snippet
+        message_id = source_ref.message_id
+        channel_id = source_ref.channel_id
+        author_name = source_ref.author_name
     elif record.subject_id:
         return None
     if not url:
@@ -173,7 +186,11 @@ def _primary_citation(scored: ScoredFact, guild_id: str, ref_number: int) -> Cit
         url=url,
         snippet=snippet_text,
         subject_id=record.subject_id,
-        subject_name=record.attribution.speaker_name or "",
+        subject_name=display_name or author_name or record.attribution.speaker_name or "",
+        message_id=message_id,
+        channel_id=channel_id,
+        score=scored.score,
+        rerank_score=scored.rerank_score,
     )
 
 

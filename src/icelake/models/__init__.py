@@ -65,7 +65,9 @@ from icelake.models.retrieval import (
     Scope,
     ScoreComponents,
     ScoredFact,
+    UsedCitation,
     channels,
+    discovery_pairs,
     render_citation_tag,
 )
 
@@ -124,6 +126,8 @@ __all__ = [
     "SourceRole",
     "StanceSummary",
     "TokenUsage",
+    "UsedCitation",
     "channels",
+    "discovery_pairs",
     "render_citation_tag",
 ]

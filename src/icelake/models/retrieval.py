@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
@@ -48,6 +49,32 @@ CHANNELS_DISCOVERY: ChannelSet = CHANNELS_DEFAULT | {ChannelName.GRAPH_HOP}
 CHANNELS_ALL: ChannelSet = frozenset(ChannelName)
 
 
+def discovery_pairs(
+    asker_id: str,
+    mentioned_ids: tuple[str, ...] = (),
+    thread_participant_ids: tuple[str, ...] = (),
+) -> tuple[tuple[str, str], ...]:
+    """Unique unordered pairs among the asker and every related user.
+
+    Related = ``mentioned_ids`` plus ``thread_participant_ids``, asker excluded,
+    first-seen order. Empty when the turn is solo — callers then stay on
+    ``CHANNELS_DEFAULT`` (no graph-hop tax). All pairs, not just asker-other,
+    so m users share entity facts with one another (Alice-Bob, Alice-Carol,
+    Bob-Carol) in one recall.
+    """
+    related = tuple(
+        dict.fromkeys(
+            uid for uid in (*mentioned_ids, *thread_participant_ids) if uid and uid != asker_id
+        )
+    )
+    if not related:
+        return ()
+    members = (asker_id, *related)
+    return tuple(
+        (members[i], members[j]) for i in range(len(members)) for j in range(i + 1, len(members))
+    )
+
+
 def channels(*names: ChannelName) -> ChannelSet:
     """Build a channel selection from explicit names."""
     return frozenset(names)
@@ -70,6 +97,8 @@ class ScoredFact(FrozenModel):
     components: ScoreComponents = ScoreComponents()
     matched_channels: tuple[ChannelName, ...] = ()
     hop_path: tuple[str, ...] = ()
+    #: Raw L2 cross-encoder score when a reranker ran; ``None`` on first-stage only.
+    rerank_score: float | None = None
 
 
 class RecallQuery(FrozenModel):
@@ -90,7 +119,11 @@ class RecallQuery(FrozenModel):
 
 
 class Citation(FrozenModel):
-    """Citation binding for an injected fact (``mem:N`` → jump link)."""
+    """Citation binding for an injected fact (``mem:N`` → jump link).
+
+    Rich object: the consumer weaves used citations into the reply. The library
+    resolves a closed ID set; it does not decide Discord markdown for the bot.
+    """
 
     ref: str
     fact_id: str
@@ -98,6 +131,23 @@ class Citation(FrozenModel):
     snippet: str = ""
     subject_id: str | None = None
     subject_name: str = ""
+    #: Discord snowflakes for the primary source message (when known).
+    message_id: str | None = None
+    channel_id: str | None = None
+    #: Final ranking score for this fact within the recall call.
+    score: float | None = None
+    #: L2 cross-encoder score when a reranker ran.
+    rerank_score: float | None = None
+
+
+class UsedCitation(Citation):
+    """A citation the generator actually used, resolved from a closed ID set.
+
+    ``claim`` is the matched text span (echoed tag or structured claim) that
+    motivated the citation; empty when the consumer only passed an ID.
+    """
+
+    claim: str = ""
 
 
 class RecallWarning(StrEnum):
@@ -129,21 +179,84 @@ class PromptContext(FrozenModel):
     usage: TokenUsage = TokenUsage()
     warnings: tuple[RecallWarning, ...] = ()
 
-    def apply_citations(self, text: str) -> str:
-        """Resolve echoed ``[mem:N]`` tags to markdown links; strip unknown residue."""
-        import re
+    def resolve_used(self, text: str) -> tuple[UsedCitation, ...]:
+        """Resolve generator output to the used subset of the closed citation set.
 
-        by_ref = {c.ref.removeprefix("mem:"): c for c in self.citations}
+        Accepts echoed ``[mem:N]`` tags and a structured ``{"claims": [{"fact_id":
+        ...}]}`` JSON block. Unknown IDs are dropped (never invented). Order is
+        first-appearance in the text; duplicates collapse to one used citation.
+        """
+        used: list[UsedCitation] = []
+        seen: set[str] = set()
+
+        def add(citation: Citation, claim: str = "") -> None:
+            if citation.ref in seen:
+                return
+            seen.add(citation.ref)
+            used.append(UsedCitation(**citation.model_dump(), claim=claim))
+
+        for match in re.finditer(r"\[(mem:\d+)\]", text):
+            citation = self._citation_by_ref(match.group(1))
+            if citation is not None:
+                add(citation, claim=match.group(0))
+
+        for fact_id in _structured_claims(text):
+            citation = self._citation_by_fact_id(fact_id)
+            if citation is not None:
+                add(citation, claim=fact_id)
+
+        return tuple(used)
+
+    def apply_citations(self, text: str) -> str:
+        """Discord helper: weave used citations into markdown; strip residue.
+
+        Resolves the closed ID set first, then replaces each echoed tag with a
+        jump link. Unknown or unresolved tags are removed — internal refs never
+        leak into user-visible text.
+        """
+        used_by_ref = {used.ref: used for used in self.resolve_used(text)}
 
         def replace(match: re.Match[str]) -> str:
-            citation = by_ref.get(match.group(1).removeprefix("mem:"))
-            if citation is None:
+            used = used_by_ref.get(match.group(1))
+            if used is None or not used.url:
                 return ""
-            if citation.url:
-                return f"[[{citation.ref}]]({citation.url})"
-            return f"[{citation.ref}]"
+            return f"[[{used.ref}]](<{used.url}>)"
 
         return re.sub(r"\[(mem:\d+)\]", replace, text)
+
+    def _citation_by_ref(self, ref: str) -> Citation | None:
+        key = ref.removeprefix("mem:")
+        for citation in self.citations:
+            if citation.ref.removeprefix("mem:") == key:
+                return citation
+        return None
+
+    def _citation_by_fact_id(self, fact_id: str) -> Citation | None:
+        for citation in self.citations:
+            if citation.fact_id == fact_id:
+                return citation
+        return None
+
+
+def _structured_claims(text: str) -> tuple[str, ...]:
+    """Extract ``fact_id`` values from a structured claims JSON block, if any."""
+    import json
+
+    match = re.search(r"\{[^{}]*\"claims\"[^{}]*\[[^\]]*\][^{}]*\}", text, re.DOTALL)
+    if match is None:
+        return ()
+    try:
+        payload = json.loads(match.group(0))
+    except (ValueError, TypeError):
+        return ()
+    claims = payload.get("claims")
+    if not isinstance(claims, list):
+        return ()
+    out: list[str] = []
+    for item in claims:
+        if isinstance(item, dict) and isinstance(item.get("fact_id"), str):
+            out.append(item["fact_id"])
+    return tuple(out)
 
 
 CitationResolver = Callable[[str], Citation | None]
@@ -169,6 +282,8 @@ __all__ = [
     "Scope",
     "ScoreComponents",
     "ScoredFact",
+    "UsedCitation",
     "channels",
+    "discovery_pairs",
     "render_citation_tag",
 ]

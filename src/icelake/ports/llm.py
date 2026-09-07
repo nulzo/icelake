@@ -87,6 +87,18 @@ class Embedder(Protocol):
 
 
 @runtime_checkable
+class Reranker(Protocol):
+    """Cross-encoder L2 rerank port. Batched; async off-loop by contract.
+
+    Scores each ``(query, document)`` pair; higher is more relevant. Implementations
+    must not raise on empty input. Recall degrades to first-stage scores when this
+    port is absent or fails — it is never a hard dependency of the hot path.
+    """
+
+    async def score(self, query: str, documents: Sequence[str]) -> tuple[float, ...]: ...
+
+
+@runtime_checkable
 class Meter(Protocol):
     """Cost/usage metering with budget enforcement hooks."""
 
