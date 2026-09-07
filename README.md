@@ -75,32 +75,46 @@ used, or `ctx.apply_citations(reply)` to weave Discord-safe
 `[[mem:N]](<url>)` jump links. Banter with no echoed tags returns `()` /
 unchanged text — the library never invents links.
 
-### Citation registry: reliable citations for any source
+### Citations: a closed set with deny-by-default parsing
 
-`icelake.citations.CitationRegistry` generalizes the closed-set discipline
-beyond memory facts — the same approach production assistants use. Code
-registers every citable source (memory citations, web results, referenced
-messages); the model echoes `[mem:N]` / `[src:N]` refs or provider-anchored
-offsets; `apply()` is the single rendering boundary. It splices anchored
-sources at their offsets, weaves echoed refs into Discord-safe links,
+`icelake.citations.Citations` generalizes the closed-set discipline beyond
+memory facts — the same approach production assistants (ChatGPT, Claude,
+Perplexity) use. Code registers every citable source (memory citations, web
+results, referenced messages); the model echoes namespaced `[mem:N]` /
+`src:N` refs or provider-anchored offsets; `parse()` is the single validation
+boundary. It splices anchored sources at their offsets, resolves echoed refs,
 canonicalizes mangled-but-known references, and deletes every citation-shaped
-token outside the set — invented `[5]`, unknown `[mem:99]`, self-written
-`[1](url)` links, `【…】` artifacts. URLs only ever leave the library from
-registered sources.
+token outside the set — invented `[src:9]`, self-written `[1](url)` links,
+`【…】` artifacts. URLs only ever leave the library from registered sources.
+
+`parse()` returns structured data — cleaned `text` plus the resolved
+`citations` — so **presentation is the consumer's**: weave inline links, build
+a footer, or strip markers entirely. A `apply()` convenience weaves Discord
+jump links for the common bot path.
 
 ```python
-from icelake.citations import CitationRegistry
+from icelake import Citations, MarkerMode
 
-registry = CitationRegistry.from_prompt_context(ctx)  # memory set included
-registry.add_source("https://example.com/docs", title="Docs")  # [src:1]
-registry.add_message(guild_id, channel_id, message_id)  # [src:2]
+citations = Citations.from_prompt_context(ctx)  # memory set included
+citations.add_source("https://example.com/docs", title="Docs")  # [src:1]
+citations.add_message(guild_id, channel_id, message_id)  # [src:2]
 
-system_prompt += registry.prompt_contract  # exact rules for the model
-prompt += registry.source_list()  # refs the model may echo
+system_prompt += citations.instructions  # exact rules for the model
+prompt += citations.source_list()  # refs the model may echo
 
-reply = registry.apply(model_output)  # validate + weave + strip, once
-footer = registry.sources_footer()  # "**Sources:** [[1]]… [[2]]…"
+# Structured parse: cleaned text + resolved sources, presentation-agnostic.
+parsed = citations.parse(model_output, markers=MarkerMode.STRIP)
+reply_text = parsed.text  # clean prose, markers removed
+used = parsed.citations  # tuple[UsedSource] the model actually used
+
+# Or the Discord convenience: weave inline jump links in one call.
+reply_text = citations.apply(model_output)
 ```
+
+The consumer owns rendering. `MarkerMode.KEEP` leaves `[src:N]` in place so a
+renderer can weave links itself; `MarkerMode.STRIP` returns clean prose. Either
+way `parsed.citations` carries the resolved sources (with memory provenance —
+`fact_id`, `message_id`) for footers, logging, or analytics.
 
 Examples:
 

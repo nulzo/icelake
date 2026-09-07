@@ -141,7 +141,7 @@ def test_apply_citations_unknown_refs_removed() -> None:
     ctx = _prompt_context()
     out = ctx.apply_citations("cite [mem:42] end")
     assert "mem:42" not in out
-    assert out == "cite  end"
+    assert out == "cite end"
 
 
 def test_apply_citations_leaves_non_mem_brackets() -> None:

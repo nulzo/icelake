@@ -121,8 +121,8 @@ class RecallQuery(FrozenModel):
 class Citation(FrozenModel):
     """Citation binding for an injected fact (``mem:N`` → jump link).
 
-    Rich object resolved from a closed ID set; rendering is owned by
-    :class:`icelake.citations.CitationRegistry` (or ``PromptContext.apply_citations``).
+    Rich object resolved from a closed ID set; parsing/validation is owned by
+    :class:`icelake.citations.Citations` (or ``PromptContext.apply_citations``).
     """
 
     ref: str
@@ -195,7 +195,7 @@ class PromptContext(FrozenModel):
             seen.add(citation.ref)
             used.append(UsedCitation(**citation.model_dump(), claim=claim))
 
-        for match in re.finditer(r"\[(mem:\d+)\]", text):
+        for match in re.finditer(r"\[(?:mem:)?(\d+)\]", text):
             citation = self._citation_by_ref(match.group(1))
             if citation is not None:
                 add(citation, claim=match.group(0))
@@ -210,14 +210,14 @@ class PromptContext(FrozenModel):
     def apply_citations(self, text: str) -> str:
         """Discord helper: weave used citations into markdown; strip residue.
 
-        Delegates to :class:`icelake.citations.CitationRegistry` — the single
-        rendering boundary. Echoed ``[mem:N]`` tags become jump links; unknown
-        or citation-shaped tokens the model invented (``[mem:99]``, bare
-        ``[5]``, self-written ``[1](url)`` links) are removed.
+        Delegates to :class:`icelake.citations.Citations` — the single parsing
+        boundary. Echoed ``[mem:N]`` tags become jump links; unknown or
+        citation-shaped tokens the model invented (``[mem:99]``, bare ``[5]``,
+        self-written ``[1](url)`` links) are removed.
         """
-        from icelake.citations import CitationRegistry
+        from icelake.citations import Citations
 
-        return CitationRegistry(self.citations).apply(text)
+        return Citations(self.citations).apply(text)
 
     def _citation_by_ref(self, ref: str) -> Citation | None:
         key = ref.removeprefix("mem:")
