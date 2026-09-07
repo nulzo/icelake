@@ -91,15 +91,15 @@ registered sources.
 ```python
 from icelake.citations import CitationRegistry
 
-registry = CitationRegistry.from_prompt_context(ctx)     # memory set included
-registry.add_source("https://example.com/docs", title="Docs")      # [src:1]
-registry.add_message(guild_id, channel_id, message_id)             # [src:2]
+registry = CitationRegistry.from_prompt_context(ctx)  # memory set included
+registry.add_source("https://example.com/docs", title="Docs")  # [src:1]
+registry.add_message(guild_id, channel_id, message_id)  # [src:2]
 
-system_prompt += registry.prompt_contract   # exact rules for the model
-prompt += registry.source_list()            # refs the model may echo
+system_prompt += registry.prompt_contract  # exact rules for the model
+prompt += registry.source_list()  # refs the model may echo
 
-reply = registry.apply(model_output)        # validate + weave + strip, once
-footer = registry.sources_footer()          # "**Sources:** [[1]]… [[2]]…"
+reply = registry.apply(model_output)  # validate + weave + strip, once
+footer = registry.sources_footer()  # "**Sources:** [[1]]… [[2]]…"
 ```
 
 Examples:
