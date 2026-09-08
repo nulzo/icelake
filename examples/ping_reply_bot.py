@@ -8,7 +8,8 @@ This mirrors the classic "chat bot" deployment (see ~/Github/CringeDiscordBot):
    - every referenced (@mentioned) user's memories,
    - community/server-wide facts,
    each clearly labeled so facts never bleed across users.
-3. The model's echoed [mem:N] citation tags are resolved into jump links.
+3. The model answers in plain prose, then memory.cite weaves citation jump
+   links into the reply where the text matches a registered source.
 4. Natural-language commands ("remember that ...", "forget ...") work in chat.
 5. Nickname changes re-index identity automatically.
 
@@ -24,15 +25,24 @@ import discord
 from discord.ext import commands
 
 from icelake import (
+    ChatRequest,
     CommandAction,
     DiscordMemory,
+    LlmMessage,
     MemoryConfig,
     MessageEvent,
+    MessageRole,
     UserMemoryCommand,
 )
+from icelake.adapters.llm_openai_compat import OpenAICompatLLM, build_chat_llm
+from icelake.config import LlmConfig
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ping-bot")
+
+# Benchmark winner (see the README model table): best extraction quality at
+# about a cent per full eval run. reasoning=low is the cheapest allowed effort.
+LLM_URL = "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=z-ai/glm-5.3-flash&reasoning=low"
 
 
 def build_memory() -> DiscordMemory:
@@ -40,7 +50,7 @@ def build_memory() -> DiscordMemory:
     return DiscordMemory(
         MemoryConfig(
             storage="sqlite:///bot-memory.db",
-            llm=("openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=google/gemini-2.5-flash"),
+            llm=LLM_URL,
             batching={"batch_size_messages": 8, "max_age_seconds": 180},
             budgets={"guild_daily_prompt_tokens": 200_000},
         )
@@ -48,7 +58,7 @@ def build_memory() -> DiscordMemory:
 
 
 class PingReplyBot(commands.Bot):
-    """Replies only when pinged; learns from everyone all the time."""
+    """Replies only when pinged. Learns from everyone all the time."""
 
     def __init__(self, memory: DiscordMemory) -> None:
         intents = discord.Intents.default()
@@ -87,7 +97,7 @@ class PingReplyBot(commands.Bot):
         await self._maybe_handle_memory_command(message)
 
     # ------------------------------------------------------------------ #
-    # Identity upkeep: nicknames change; aliases must follow.            #
+    # Identity upkeep: nicknames change, and aliases must follow.        #
     # ------------------------------------------------------------------ #
 
     @commands.Cog.listener()
@@ -159,7 +169,7 @@ class PingReplyBot(commands.Bot):
     async def _maybe_handle_memory_command(self, message: discord.Message) -> None:
         assert self.user is not None
         if self.user in message.mentions:
-            return  # ping turns are answered above; avoid double-handling
+            return  # ping turns are answered above, so avoid double-handling
         command = await self.memory.classify_command(message.content)
         if command.action is CommandAction.NONE:
             return
@@ -180,7 +190,7 @@ class PingReplyBot(commands.Bot):
                 text=command.target_text,
                 actor_id=user_id,
             )
-            confirm = f"Got it — noted: “{fact.text}”"
+            confirm = f'Got it, noted: "{fact.text}"'
         elif command.action is CommandAction.FORGET:
             page = await self.memory.facts.list_for_subject(
                 guild_id,
@@ -255,15 +265,38 @@ async def _recent_channel_history(message: discord.Message, *, limit: int):
     return turns
 
 
-async def _generate(system_prompt: str, history, question: str) -> str:
-    """Call YOUR LLM here (OpenAI-compatible chat completions).
+_reply_llm: OpenAICompatLLM | None = None
 
-    Kept provider-agnostic on purpose: the library owns memory; this is where
-    your existing generation stack plugs in.
+
+def _reply_llm_client() -> OpenAICompatLLM:
+    """One shared reply-model client, built from the same URL as extraction."""
+    global _reply_llm
+    if _reply_llm is None:
+        _reply_llm = build_chat_llm(LlmConfig.from_url(LLM_URL))
+    return _reply_llm
+
+
+async def _generate(system_prompt: str, history, question: str) -> str:
+    """Generate the reply with the same OpenAI-compatible endpoint.
+
+    Any chat client works here. The library owns memory. Generation stays
+    yours. Reusing the configured URL keeps the example runnable as-is.
     """
-    raise NotImplementedError(
-        "wire your LLM call here: system_prompt + history + question -> reply text",
+    messages: list[LlmMessage] = [LlmMessage(role=MessageRole.SYSTEM, content=system_prompt)]
+    for author, content in history:
+        if content.strip():
+            messages.append(LlmMessage(role=MessageRole.USER, content=f"{author}: {content}"))
+    messages.append(LlmMessage(role=MessageRole.USER, content=question))
+    response = await _reply_llm_client().complete(
+        ChatRequest(
+            messages=tuple(messages),
+            max_tokens=900,
+            # Consumer-defined purpose: the meter vocabulary is open. The
+            # library's own calls use MeterPurpose members.
+            purpose="reply",
+        )
     )
+    return response.text.strip()
 
 
 def main() -> None:

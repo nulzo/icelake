@@ -1,19 +1,20 @@
 """Cross-user memory patterns: relationships, stances, discovery.
 
-Runnable WITHOUT Discord or an LLM — ``python examples/relationship_queries.py``
+Runnable WITHOUT Discord or an LLM. ``python examples/relationship_queries.py``
 seeds a guild into SQLite via ``facts.remember`` (the curation API) and walks
 query shapes that are zero-LLM by design:
 
-1. Name resolution (display names + nicknames; ambiguity never guesses)
-2. "What does X think about Y?" — directed edges + pair-intersect recall
+1. Name resolution (display names + nicknames, ambiguity never guesses)
+2. "What does X think about Y?": directed edges + pair-intersect recall
 3. Typed relation edges and 2-hop neighborhood
-4. Entity stance aggregation (who likes / dislikes movies, coffee, …)
-5. Shared-entity discovery (Jaccard — overlap, not "same taste")
+4. Entity stance aggregation (who likes / dislikes movies, coffee, ...)
+5. Shared-entity discovery (Jaccard: overlap, not "same taste")
 6. Shared attributions (both stances over the same entities)
+7. "Who is into X?": users_for_entity, plus N-way shared hubs (shared_n)
 
 Extraction, reconcile, and profile digests are not exercised here. Pass
 ``llm=`` / ``embeddings=`` on ``MemoryConfig`` only if you change the seed to
-``observe`` + ``flush`` real chat; this file will not call a provider as written.
+``observe`` + ``flush`` real chat. This file will not call a provider as written.
 """
 
 from __future__ import annotations
@@ -102,8 +103,8 @@ async def _teach(
         guild_id=GUILD,
         subject_id=subject_id,
         text=text,
-        # remember() only puts subject/actor/speaker on the relation roster —
-        # the other endpoint of a person-to-person edge must be actor or speaker.
+        # remember() only puts subject/actor/speaker on the relation roster,
+        # so the other endpoint of a person-to-person edge must be actor or speaker.
         actor_id=speaker_id or (other_ids[0] if other_ids else "seed"),
         speaker_id=speaker_id,
         entities=entities,
@@ -184,14 +185,14 @@ async def _resolve(memory: DiscordMemory, identifier: str) -> str:
     resolution = await memory.identity.resolve(GUILD, identifier)
     if resolution.ambiguous:
         ids = ", ".join(_who(c.user_id) for c in resolution.candidates)
-        return f"{identifier!r} is ambiguous ({ids}); refusing to guess"
+        return f"{identifier!r} is ambiguous ({ids}), refusing to guess"
     if resolution.resolved is None:
         return f"{identifier!r} matched nobody"
     return f"{identifier!r} -> {_who(resolution.resolved.user_id)} ({resolution.resolved.user_id})"
 
 
 async def what_x_thinks_of_y(memory: DiscordMemory, x_name: str, y_name: str) -> str:
-    """Directed edges X→Y plus facts linked to *both* people (not each profile dumped)."""
+    """Directed edges X->Y plus facts linked to *both* people (not each profile dumped)."""
     x = await memory.identity.resolve(GUILD, x_name)
     y = await memory.identity.resolve(GUILD, y_name)
     if x.resolved is None or y.resolved is None or x.ambiguous or y.ambiguous:
@@ -213,7 +214,7 @@ async def what_x_thinks_of_y(memory: DiscordMemory, x_name: str, y_name: str) ->
         RecallQuery(
             guild_id=GUILD,
             pair_ids=((x_id, y_id),),
-            # Default channels are guild-wide; LINKS-only lets pair_ids be the
+            # Default channels are guild-wide. LINKS-only lets pair_ids be the
             # sole candidate source (facts incident on both people).
             channels=channels(ChannelName.LINKS),
         )
@@ -265,7 +266,7 @@ async def main() -> None:
             _print_stances(entity, await memory.graph.entity_stances(GUILD, entity))
         print()
 
-        print("=== 5. Similar members (shared entities; polarity is ignored) ===")
+        print("=== 5. Similar members (shared entities, polarity is ignored) ===")
         for seed in ("alice", "bob", "henrik"):
             similar = await memory.graph.similar_users(GUILD, MEMBERS[seed], limit=4)
             shown = ", ".join(f"{_who(hit.user_id)} {hit.score:.2f}" for hit in similar) or "(none)"
@@ -280,7 +281,30 @@ async def main() -> None:
         for slug in hubs:
             a_verbs = ", ".join(e.verb for e in left if e.dst_id == slug)
             b_verbs = ", ".join(e.verb for e in right if e.dst_id == slug)
-            print(f"  alice *{a_verbs}* → {slug} ← *{b_verbs}* bob")
+            print(f"  alice *{a_verbs}* -> {slug} <- *{b_verbs}* bob")
+        print()
+
+        print("=== 7. Who is into X? (users_for_entity + shared_n) ===")
+        # users_for_entity answers "who likes golf?" directly: stance buckets
+        # hold user IDs from typed edges, mentioned holds user IDs whose facts
+        # only touch the entity through incidence links.
+        audience = await memory.graph.users_for_entity(GUILD, "movies")
+        fans = ", ".join(_who(uid) for uid in audience.positive) or "-"
+        critics = ", ".join(_who(uid) for uid in audience.negative) or "-"
+        talked = ", ".join(_who(uid) for uid in audience.mentioned) or "-"
+        print(f"  movies: likes=[{fans}]  dislikes=[{critics}]  mentioned-by=[{talked}]")
+
+        # shared_n intersects hubs across ALL members (not pairwise union).
+        # Output aligns with the input order: one tuple of edges per member.
+        trio = ("alice", "bob", "carol")
+        per_user = await memory.graph.shared_n(GUILD, tuple(MEMBERS[n] for n in trio))
+        common = tuple(dict.fromkeys(e.dst_id for edges in per_user for e in edges))
+        for slug in common:
+            stances = ", ".join(
+                f"{name}:" + "/".join(sorted({e.verb for e in edges if e.dst_id == slug}))
+                for name, edges in zip(trio, per_user, strict=True)
+            )
+            print(f"  all three share {slug}: {stances}")
 
         stats = await memory.stats(GUILD)
         print(f"\nserver holds {stats.active_facts} active memories")

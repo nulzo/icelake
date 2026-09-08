@@ -6,15 +6,16 @@ Mirrors the architecture of a production memory-native bot:
   persist everything    every message (bots included) is stored for citations
   addressing            replies when pinged OR when someone replies to it
   requester-first       turn context = asker + mentions/reply-targets, capped
-  two-verb seam         observe()/recall()/prompt_context(); nothing else touches storage
-  identity truth        Discord user IDs; names resolve through the alias ladder
-                        (UNIQUE / AMBIGUOUS / UNKNOWN — ambiguity never guesses)
+  two-verb seam         observe()/recall()/prompt_context(), nothing else touches storage
+  identity truth        Discord user IDs. Names resolve through the alias ladder
+                        (UNIQUE / AMBIGUOUS / UNKNOWN, and ambiguity never guesses)
   name-in-prose lookup  "what do you know about klim?" (no @mention) resolves
-                        via the alias ladder into a strict subject-only fetch —
+                        via the alias ladder into a strict subject-only fetch,
                         from /memory lookup (zero LLM) or one router call
   coreference           multi-name members get an explicit "one person" line
-  unfakeable citations  [mem:N] tags resolved to jump links; strays stripped
-  governance            opt-out, purge, budgets, health — first-class
+  grounded citations    the model writes plain prose, then memory.cite weaves
+                        jump links where the reply matches a registered source
+  governance            opt-out, purge, budgets, health: all first-class
 
 Slash commands mirror a /memory group: show, lookup, related, shared, edit, alias.
 
@@ -53,16 +54,18 @@ log = logging.getLogger("omni-style")
 
 MAX_CONTEXT_SUBJECTS = 4
 TURN_TOKEN_BUDGET = 2400
-LLM_URL = "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=google/gemini-3.7-flash"
+# Benchmark winner (see the README model table): best extraction quality at
+# about a cent per full eval run. reasoning=low is the cheapest allowed effort.
+LLM_URL = "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=z-ai/glm-5.3-flash&reasoning=low"
 EMBEDDINGS_URL = (
     "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=openai/text-embedding-3-small"
 )
 
 # prompt_context scopes people from structured mentions and reply targets
-# only — it never scans prose for names (recall is zero-LLM by design). For
+# only. It never scans prose for names (recall is zero-LLM by design). For
 # "what do you know about klim?" typed as prose, one cheap structured-output
 # call decides whether a strict profile lookup is needed and extracts the
-# name. response_schema is enforced server-side on capable providers; on
+# name. response_schema is enforced server-side on capable providers. On
 # others it degrades to JSON mode (LlmConfig.structured_outputs).
 _ROUTER_PROMPT = (
     "Decide what this message needs. If it asks what you know about a specific "
@@ -83,7 +86,7 @@ _USER_REF_RE = re.compile(r"<@!?(?P<snowflake>\d+)>")
 
 
 # =-------------------------------------------------------------------------= #
-# Composition root — the only place anything is wired together                #
+# Composition root: the only place anything is wired together                 #
 # =-------------------------------------------------------------------------= #
 
 
@@ -152,7 +155,7 @@ class OmniStyleBot(commands.Bot):
             discord.Message,
         ):
             author = message.reference.resolved.author
-            return bool(self.user) and author.id == self.user
+            return bool(self.user) and author.id == self.user.id
         return False
 
     # ------------------------------------------------------------------ #
@@ -180,14 +183,14 @@ class OmniStyleBot(commands.Bot):
         for warning in ctx.warnings:
             log.info("turn warning: %s", warning.value)
 
-        # Names typed as prose are invisible to prompt_context — route those
+        # Names typed as prose are invisible to prompt_context, so route those
         # to a strict lookup (one extra small call per addressed turn).
         profile = await self._route_name_lookup(guild_id, question)
 
         system_prompt = (
             "You are a memory-native community bot. Ground every claim about a "
             "member in the labeled MEMORY CONTEXT. Facts belong ONLY to the "
-            "person named in their header; coreference lines tell you which "
+            "person named in their header. Coreference lines tell you which "
             f"names are the same person.\n\n{ctx.injection_block}"
         )
         if profile:
@@ -205,10 +208,10 @@ class OmniStyleBot(commands.Bot):
         await message.reply(reply[:1900], mention_author=False)
 
     def _collect_subjects(self, message: discord.Message) -> tuple[list[str], list[str]]:
-        """Mentions vs reply-chain participants — icelake pair-intersects both."""
+        """Mentions vs reply-chain participants. Icelake pair-intersects both."""
         mentioned: list[str] = []
         for member in message.mentions:
-            if member.bot or member.id == self.user:
+            if member.bot or member.id == self.user.id:
                 continue
             mentioned.append(str(member.id))
         thread: list[str] = []
@@ -223,8 +226,8 @@ class OmniStyleBot(commands.Bot):
 
     # ------------------------------------------------------------------ #
     # Name-in-prose lookup: "what do you know about klim?" (no @mention). #
-    # Every entry point — /memory lookup (zero LLM), the structured-      #
-    # output router below, or a native tool call — converges on           #
+    # Every entry point (/memory lookup with zero LLM, the structured-    #
+    # output router below, or a native tool call) converges on            #
     # _resolve_lookup plus a STRICT subject-only fetch, so a claim        #
     # stored on someone else cannot be attributed to the person asked     #
     # about.                                                              #
@@ -255,7 +258,7 @@ class OmniStyleBot(commands.Bot):
         return await self._profile_block(guild_id, name)
 
     async def _resolve_lookup(self, guild_id: str, name: str) -> tuple[str, str] | str:
-        """Resolve a typed name to ``(user_id, display)``; an error string otherwise.
+        """Resolve a typed name to ``(user_id, display)``. An error string otherwise.
 
         Shared by every lookup entry point (slash command, router, tool call)
         so the ambiguity contract lives in exactly one place.
@@ -270,7 +273,7 @@ class OmniStyleBot(commands.Bot):
                 f" (ID {c.user_id})"
                 for c in resolution.candidates
             )
-            return f'"{name}" matches more than one member ({choices}); no guess made'
+            return f'"{name}" matches more than one member ({choices}), no guess made'
         if resolution.resolved is None:
             return f'no member named "{name}"'
         user_id = resolution.resolved.user_id
@@ -293,13 +296,13 @@ class OmniStyleBot(commands.Bot):
             return f"LOOKUP RESULT: {display} is a member, but nothing is stored about them yet."
         lines = "\n".join(f"- {fact.text}" for fact in page.items)
         return (
-            f"LOOKUP RESULT — STRICT PROFILE: {display}\n"
+            f"LOOKUP RESULT - STRICT PROFILE: {display}\n"
             f"Facts about {display} ONLY. Do NOT attribute these to the asker, and do "
             f"not attribute other members' claims to {display}.\n{lines}"
         )
 
     # ------------------------------------------------------------------ #
-    # /memory group — mirrors omni's five ops on this library's APIs.     #
+    # /memory group: mirrors omni's five ops on this library's APIs.      #
     # ------------------------------------------------------------------ #
 
     group_memory = app_commands.Group(name="memory", description="What the bot remembers")
@@ -329,7 +332,7 @@ class OmniStyleBot(commands.Bot):
 
     @group_memory.command(name="lookup")  # type: ignore[arg-type]
     async def memory_lookup(self, interaction: discord.Interaction, name: str) -> None:
-        """Look someone up by a typed name — no member picker, no LLM."""
+        """Look someone up by a typed name. No member picker, no LLM."""
         guild_id = str(interaction.guild_id)
         result = await self._resolve_lookup(guild_id, name)
         if isinstance(result, str):
@@ -369,7 +372,7 @@ class OmniStyleBot(commands.Bot):
 
         lines = [
             f"• {await label(edge.src_type, edge.src_id)} "
-            f"—{edge.verb}→ {await label(edge.dst_type, edge.dst_id)} "
+            f"-{edge.verb}-> {await label(edge.dst_type, edge.dst_id)} "
             f"({edge.polarity.value})"
             for edge in edges
         ]
@@ -414,7 +417,7 @@ class OmniStyleBot(commands.Bot):
             actor_id=str(interaction.user.id),
         )
         await interaction.response.send_message(
-            f"Noted: “{fact.text}”",
+            f'Noted: "{fact.text}"',
             ephemeral=True,
         )
 
@@ -427,7 +430,7 @@ class OmniStyleBot(commands.Bot):
             alias,
         )
         await interaction.response.send_message(
-            f"Got it — I'll also know you as “{alias}”.",
+            f'Got it, I\'ll also know you as "{alias}".',
             ephemeral=True,
         )
 
@@ -455,7 +458,7 @@ def register_governance(bot: OmniStyleBot) -> None:
     async def optout(ctx: commands.Context) -> None:
         assert ctx.guild is not None
         await bot.memory.admin.set_opt_out(str(ctx.guild.id), str(ctx.author.id), True)
-        await ctx.reply("You're opted out — I'll stop observing you.", mention_author=False)
+        await ctx.reply("You're opted out. I'll stop observing you.", mention_author=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -518,7 +521,7 @@ async def generate(system_prompt: str, history, question: str) -> str:
         ChatRequest(
             messages=tuple(messages),
             max_tokens=900,
-            # Consumer-defined purpose: the meter vocabulary is open; the
+            # Consumer-defined purpose: the meter vocabulary is open. The
             # library's own calls use MeterPurpose members.
             purpose="reply",
         )

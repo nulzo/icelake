@@ -6,7 +6,7 @@ Quickstart::
 
     memory = Memory(MemoryConfig(
         storage="sqlite:///memory.db",
-        llm="openai://$KEY@openrouter.ai/api/v1?model=google/gemini-2.5-flash",
+        llm="openai://$KEY@openrouter.ai/api/v1?model=z-ai/glm-5.3-flash&reasoning=low",
     ))
     async with memory:
         await memory.observe(event)

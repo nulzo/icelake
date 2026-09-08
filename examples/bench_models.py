@@ -1,10 +1,11 @@
 """Benchmark matrix: run the e2e sim against several chat models, aggregate results.
 
 Each model runs in an isolated subprocess of e2e_simulation.py (fresh db per
-model; a crash in one run doesn't kill the matrix). Per-model OpenRouter knobs
-live in MODELS — add a row there to keep testing it. Runs execute concurrently
-(--jobs to throttle); each run's full output lands in <out>/<model>.log.
-Writes <out>/report.json (full detail) and <out>/report.md (comparison table).
+model, so a crash in one run doesn't kill the matrix). Per-model OpenRouter
+knobs live in MODELS. Add a row there to keep testing a model. Runs execute
+concurrently (--jobs to throttle). Each run's full output lands in
+<out>/<model>.log. Writes <out>/report.json (full detail) and
+<out>/report.md (comparison table).
 
     uv run python examples/bench_models.py
     uv run python examples/bench_models.py --models z-ai/glm-5.3-flash,openai/gpt-4o-mini
@@ -28,7 +29,7 @@ class ModelParams(TypedDict, total=False):
 
     Omit a key to use the library default (temperature=0, no reasoning field,
     structured_outputs=strict). ``temperature="none"`` omits sampling entirely.
-    ``reasoning="none"`` disables thinking — rejected when the model is mandatory.
+    ``reasoning="none"`` disables thinking, and is rejected when the model is mandatory.
     """
 
     reasoning: str
@@ -38,7 +39,7 @@ class ModelParams(TypedDict, total=False):
 
 # Catalog: every id you want to keep re-testing. Empty {} = library defaults.
 # Mandatory-thinking models get the cheapest allowed effort (not none).
-# GPT-5.x endpoints reject temperature; 404-on-json_schema models use json_object.
+# GPT-5.x endpoints reject temperature. 404-on-json_schema models use json_object.
 MODELS: dict[str, ModelParams] = {
     # "z-ai/glm-5.3-flash": {"reasoning": "low"},
     # "z-ai/glm-4.6": {"reasoning": "low"},
@@ -122,7 +123,7 @@ def _counts(raw: dict[str, Any]) -> tuple[str, str, str]:
 
 def _report_markdown(raws: list[dict[str, Any]]) -> str:
     lines = [
-        "# Model benchmark — e2e simulation",
+        "# Model benchmark: e2e simulation",
         "",
         f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}. Each row is one full run of",
         "`examples/e2e_simulation.py` (suite A drain-mode + suite B worker-mode).",
@@ -132,7 +133,7 @@ def _report_markdown(raws: list[dict[str, Any]]) -> str:
     ]
     for raw in raws:
         if "error" in raw:
-            lines.append(f"| {raw['model']} | crashed | — | — | — | — | — |")
+            lines.append(f"| {raw['model']} | crashed | - | - | - | - | - |")
             continue
         hard, exp, usage = _counts(raw)
         calls, tokens, cost = usage.split("|")
@@ -149,7 +150,7 @@ def _report_markdown(raws: list[dict[str, Any]]) -> str:
             names = [
                 name for suite in raw.get("suites", {}).values() for name in suite.get(key, [])
             ]
-            rendered = ", ".join(names) if names else "—"
+            rendered = ", ".join(names) if names else "-"
             lines.append(f"- **{raw['model']}**: {rendered}")
     return "\n".join(lines) + "\n"
 
@@ -211,7 +212,7 @@ def main() -> None:
     parser.add_argument(
         "--temperature",
         default=None,
-        help="override MODELS[id].temperature for every selected run; 'none' omits sampling",
+        help="override MODELS[id].temperature for every selected run. 'none' omits sampling",
     )
     parser.add_argument(
         "--structured-outputs",
@@ -242,7 +243,7 @@ def main() -> None:
             params: ModelParams = {**MODELS.get(model, {}), **overrides}
             if model not in MODELS:
                 label = _params_label(params)
-                print(f"[warn] {model} is not in MODELS; running with {label}", flush=True)
+                print(f"[warn] {model} is not in MODELS, running with {label}", flush=True)
             futures[pool.submit(_run_one, model, params, out, sim)] = model
         for future in as_completed(futures):
             raw = future.result()

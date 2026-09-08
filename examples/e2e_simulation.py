@@ -1,12 +1,12 @@
 """Comprehensive end-to-end suite: the memory system as a bot experiences it.
 
-Drives the REAL library — real OpenRouter LLM, real embeddings, real sqlite —
+Drives the REAL library (real OpenRouter LLM, real embeddings, real sqlite)
 through ONLY the public DiscordMemory API, exactly the way omni_style_bot.py
 calls it. Nothing is stubbed, scripted, shaped, or reached into internals:
 every extraction and every reconcile decision is the model's genuine behavior,
 and every check asserts an outcome a production bot depends on.
 
-  Suite A (workers off, deterministic — cron-style flush mode):
+  Suite A (workers off, deterministic, cron-style flush mode):
     passive adds         observe() -> batch -> extract -> commit
     noise gauntlet       acks/emoji/bot authors/empty/dup ids never reach the LLM
     style gauntlet       CAPS, slang, questions, hypotheticals, ephemeral, negation
@@ -14,7 +14,7 @@ and every check asserts an outcome a production bot depends on.
     refinement           "promoted to charge nurse" updates the nurse fact
     conflicts            "i moved to seattle" retires "lives in omaha"
     contradictions       "i'm over red bull" retires "loves red bull"
-    cross-user pollution mentions anchor facts to the RIGHT user; no bleed-over
+    cross-user pollution mentions anchor facts to the RIGHT user, no bleed-over
     name guarding        third-party names never bind to the speaker
     manual curation      remember/update/reinforce/forget/history + extract_now
     identity             real-name mining, resolve, ambiguity, alias backfill
@@ -26,7 +26,7 @@ and every check asserts an outcome a production bot depends on.
     budgets              daily ceiling degrades to skip-extraction, no overspend
     failure resilience   poison batches dead-letter, event fires, requeue works
 
-  Suite B (workers on — the production path):
+  Suite B (workers on, the production path):
     response cache       identical LLM requests replay for zero tokens
     community scope      worker heartbeat extracts server-scope facts (game night)
     age trigger          below-size batches flush via max_age_seconds, no flush()
@@ -35,12 +35,12 @@ Requires OPENROUTER_API_KEY. Run:
 
     .venv/bin/python examples/e2e_simulation.py
 
-Checks come in two tiers: hard checks (system guarantees — gating, dedup,
-anchoring, governance, ranking rules) drive the non-zero exit code; expectations
-(model-decided outcomes — extraction recall, reinforcement, reconcile judgment)
-are reported as WEAK when unmet but never fail the suite. A persistent WEAK is
-a prompt/model finding to investigate, not a system bug. Inspect the database
-afterwards:
+Checks come in two tiers: hard checks (system guarantees: gating, dedup,
+anchoring, governance, ranking rules) drive the non-zero exit code.
+Expectations (model-decided outcomes: extraction recall, reinforcement,
+reconcile judgment) are reported as WEAK when unmet but never fail the suite.
+A persistent WEAK is a prompt/model finding to investigate, not a system bug.
+Inspect the database afterwards:
 
     sqlite3 e2e.db "SELECT text, occurrences, valid_until FROM dm_facts;"
     sqlite3 e2e.db "SELECT alias_norm, user_id, source FROM dm_aliases;"
@@ -77,18 +77,20 @@ from icelake import (
 )
 
 GUILD = "900000000000000001"
-GUILD2 = "900000000000000099"  # isolation probe; only the multitenancy phase uses it
+GUILD2 = "900000000000000099"  # isolation probe, only the multitenancy phase uses it
 CHANNEL = "900000000000000002"
 ALICE = "100000000000000001"  # username/display: "nulzo"
 BOB = "100000000000000002"  # username/display: "bobby"
 CAROL = "100000000000000003"  # username/display: "carol"
-DAVE = "100000000000000004"  # never speaks; cold-start backfill only
-BOT = "100000000000000009"  # a bot account; never a subject
-PROBE = "100000000000000010"  # deterministic curation probes; never speaks
+DAVE = "100000000000000004"  # never speaks, cold-start backfill only
+BOT = "100000000000000009"  # a bot account, never a subject
+PROBE = "100000000000000010"  # deterministic curation probes, never speaks
 PEOPLE = ((ALICE, "nulzo"), (BOB, "bobby"), (CAROL, "carol"))
 
-# Same provider URLs as examples/omni_style_bot.py.
-DEFAULT_MODEL = "deepseek/deepseek-v4-flash-0731"
+# Same provider URLs as examples/omni_style_bot.py. The default is the
+# benchmark winner (see the README model table) at its cheapest reasoning knob.
+DEFAULT_MODEL = "z-ai/glm-5.3-flash"
+DEFAULT_REASONING = "low"
 LLM_URL_TEMPLATE = "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model={model}"
 EMBEDDINGS_URL = (
     "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=openai/text-embedding-3-small"
@@ -96,13 +98,13 @@ EMBEDDINGS_URL = (
 
 
 class Suite:
-    """Hard checks gate the exit code; expectations report model behavior.
+    """Hard checks gate the exit code. Expectations report model behavior.
 
     The library's GUARANTEES (gating, dedup, anchoring, governance, curation,
     ranking rules) are hard checks. Outcomes the LLM freely decides (which facts
     it extracts, whether it re-emits to reinforce, how it phrases an update) are
-    expectations: reported as WEAK when unmet, but they never fail the suite —
-    a persistent WEAK is a model/prompt finding, not a system bug.
+    expectations: reported as WEAK when unmet, but they never fail the suite.
+    A persistent WEAK is a model/prompt finding, not a system bug.
     """
 
     def __init__(self) -> None:
@@ -313,7 +315,7 @@ async def phase_adds(suite: Suite, memory: DiscordMemory, sim: Simulator) -> Non
 
 
 async def phase_noise(suite: Suite, memory: DiscordMemory, sim: Simulator) -> None:
-    print("\n== Phase 2: noise gauntlet — never reaches the LLM ==")
+    print("\n== Phase 2: noise gauntlet, never reaches the LLM ==")
     before = dict(memory.ops.meter_snapshot().calls)
     before_facts = (await memory.stats(GUILD)).total_facts
 
@@ -347,7 +349,7 @@ async def phase_noise(suite: Suite, memory: DiscordMemory, sim: Simulator) -> No
 
 
 async def phase_styles(suite: Suite, memory: DiscordMemory, sim: Simulator) -> None:
-    print("\n== Phase 3: style gauntlet — durable signal vs non-facts ==")
+    print("\n== Phase 3: style gauntlet, durable signal vs non-facts ==")
     await sim.say(ALICE, "nulzo", "I JUST GOT A PUPPY NAMED BISCUIT I'M SO HAPPY")
     await sim.say(ALICE, "nulzo", "ngl biscuit is my whole world now 🐶💕")
     await sim.say(ALICE, "nulzo", "do you guys think i should get another dog?")
@@ -514,7 +516,7 @@ async def phase_contradiction(suite: Suite, memory: DiscordMemory, sim: Simulato
 
 
 async def phase_pollution(suite: Suite, memory: DiscordMemory, sim: Simulator) -> None:
-    print("\n== Phase 8: cross-user pollution — facts anchor to the right person ==")
+    print("\n== Phase 8: cross-user pollution, facts anchor to the right person ==")
     await sim.say(
         ALICE,
         "nulzo",
@@ -528,7 +530,7 @@ async def phase_pollution(suite: Suite, memory: DiscordMemory, sim: Simulator) -
             sim.event(ALICE, "nulzo", "my favorite color is purple"),
             sim.event(BOB, "bobby", "i'm learning to play the drums"),
             sim.event(CAROL, "carol", "i just adopted a cat named whiskers"),
-            sim.event(ALICE, "nulzo", "purple everything — even my keyboard is purple"),
+            sim.event(ALICE, "nulzo", "purple everything... even my keyboard is purple"),
             sim.event(BOB, "bobby", "drum practice every evening this week"),
             sim.event(CAROL, "carol", "whiskers is already destroying my couch lol"),
         )
@@ -646,7 +648,7 @@ async def phase_manual_curation(suite: Suite, memory: DiscordMemory, sim: Simula
         str(await active_facts(memory, ALICE)),
     )
 
-    # Pagination over the public listing API — driven by curation probes so the
+    # Pagination over the public listing API, driven by curation probes so the
     # check tests the mechanism, not the model's extraction volume.
     for i in range(3):
         await memory.facts.remember(
@@ -695,7 +697,7 @@ async def phase_identity(suite: Suite, memory: DiscordMemory, sim: Simulator) ->
 
 
 async def phase_governance(suite: Suite, memory: DiscordMemory, sim: Simulator) -> None:
-    print("\n== Phase 12: governance — opt-out and purge ==")
+    print("\n== Phase 12: governance, opt-out and purge ==")
     await memory.admin.set_opt_out(GUILD, CAROL, True)
     before = dict(memory.ops.meter_snapshot().calls)
     detail = await sim.say(CAROL, "carol", "i love hiking")
@@ -1013,7 +1015,7 @@ async def phase_lifecycle(suite: Suite, llm_url: str) -> None:
         MemoryConfig(storage="sqlite:///:memory:", llm=llm_url, workers={"enabled": False})
     )
     await memory.start()
-    await memory.start()  # idempotent — a crash here fails the suite loudly
+    await memory.start()  # idempotent, and a crash here fails the suite loudly
     await memory.close()
     await memory.close()
     receipt = await memory.observe(
@@ -1038,7 +1040,7 @@ async def phase_lifecycle(suite: Suite, llm_url: str) -> None:
 
 
 async def phase_budget(suite: Suite, llm_url: str) -> None:
-    print("\n== Phase 17: budget ladder — degradation instead of overspend ==")
+    print("\n== Phase 17: budget ladder, degradation instead of overspend ==")
     memory = DiscordMemory(
         MemoryConfig(
             storage="sqlite:///:memory:",
@@ -1073,11 +1075,11 @@ async def phase_budget(suite: Suite, llm_url: str) -> None:
 
 
 async def phase_failure(suite: Suite) -> None:
-    print("\n== Phase 18: failure resilience — poison batches dead-letter ==")
+    print("\n== Phase 18: failure resilience, poison batches dead-letter ==")
     memory = DiscordMemory(
         MemoryConfig(
             storage="sqlite:///:memory:",
-            llm="openai://sk-invalid-key@openrouter.ai/api/v1?model=google/gemini-3.7-flash",
+            llm="openai://sk-invalid-key@openrouter.ai/api/v1?model=z-ai/glm-5.3-flash",
             workers={"enabled": False},
         )
     )
@@ -1105,7 +1107,7 @@ async def phase_failure(suite: Suite) -> None:
 
 
 async def phase_cache(suite: Suite, db_path: Path, llm_url: str) -> None:
-    print("\n== Phase 19: LLM response cache — identical requests replay free ==")
+    print("\n== Phase 19: LLM response cache, identical requests replay free ==")
     llm_config = LlmConfig.from_url(llm_url).model_copy(update={"cache_responses": True})
     memory = DiscordMemory(
         MemoryConfig(storage=f"sqlite:///{db_path}", llm=llm_config, workers={"enabled": False})
@@ -1131,7 +1133,7 @@ async def phase_cache(suite: Suite, db_path: Path, llm_url: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Suite B: workers enabled — the production path, including the community     #
+# Suite B: workers enabled, the production path, including the community      #
 # window pass that only the worker heartbeat triggers.                        #
 # --------------------------------------------------------------------------- #
 
@@ -1139,7 +1141,7 @@ async def phase_cache(suite: Suite, db_path: Path, llm_url: str) -> None:
 async def quiesce(memory: DiscordMemory) -> None:
     """Wait for the worker loop to reach quiescence: nothing pending, nothing
     in-flight (claimed-but-uncommitted), and a stable fact count. All three are
-    publicly observable via stats(); in_flight covers the extraction window that
+    publicly observable via stats(). in_flight covers the extraction window that
     pending_messages alone cannot see."""
     last_total = -1
     for _ in range(120):
@@ -1174,7 +1176,7 @@ async def phase_community(suite: Suite, db_path: Path, llm_url: str) -> MeterSna
                 await sim.say(user_id, name, "i'll bring snacks for game night")
 
         # Wave 1 lets the first heartbeat absorb suite A's backlog and set the
-        # watermark; later waves are then pure game-night windows.
+        # watermark. Later waves are then pure game-night windows.
         await game_night_wave()
         await asyncio.sleep(6)
         await quiesce(memory)
@@ -1212,7 +1214,7 @@ async def phase_community(suite: Suite, db_path: Path, llm_url: str) -> MeterSna
         )
 
         # Age trigger: a below-size batch must flush via max_age_seconds with no
-        # manual flush — quiesce() only returns once the worker has drained it.
+        # manual flush. quiesce() only returns once the worker has drained it.
         await sim.say(ALICE, "nulzo", "my new hobby is playing the piano")
         await sim.say(ALICE, "nulzo", "i started learning piano last month")
         await sim.say(ALICE, "nulzo", "practicing piano scales every morning now")
@@ -1260,8 +1262,8 @@ async def run(memory: DiscordMemory, llm_url: str) -> Suite:
 
     stats = await memory.stats(GUILD)
     print(
-        f"\n== {suite.checks - suite.failures}/{suite.checks} hard checks passed; "
-        f"{suite.expectations - suite.weak}/{suite.expectations} model expectations met; "
+        f"\n== {suite.checks - suite.failures}/{suite.checks} hard checks passed, "
+        f"{suite.expectations - suite.weak}/{suite.expectations} model expectations met, "
         f"{stats.total_facts} total fact rows =="
     )
     print_cost_report(memory)
@@ -1269,8 +1271,8 @@ async def run(memory: DiscordMemory, llm_url: str) -> Suite:
 
 
 def print_cost_report(memory: DiscordMemory) -> None:
-    """Per-purpose usage from the library's meter (chat calls; embeddings are
-    not metered — the Embedder port returns no usage)."""
+    """Per-purpose usage from the library's meter (chat calls only. Embeddings
+    are not metered: the Embedder port returns no usage)."""
     meter = memory.ops.meter_snapshot()
     print("\n== cost report ==")
     print(f"  {'purpose':<14} {'calls':>5} {'prompt':>8} {'completion':>10} {'est. cost':>10}")
@@ -1324,7 +1326,7 @@ def _meter_totals(*snapshots: MeterSnapshot) -> dict[str, object]:
 
 
 def _load_dotenv(path: Path) -> None:
-    """Minimal .env loader (KEY=VALUE lines); real environment wins."""
+    """Minimal .env loader (KEY=VALUE lines). The real environment wins."""
     if not path.exists():
         return
     for line in path.read_text().splitlines():
@@ -1346,7 +1348,7 @@ def main() -> None:
         "--reasoning",
         choices=("none", "minimal", "low", "medium", "high"),
         default=None,
-        help="OpenRouter reasoning.effort; 'none' disables thinking when the model allows it",
+        help="OpenRouter reasoning.effort. 'none' disables thinking when the model allows it",
     )
     parser.add_argument(
         "--temperature",
@@ -1364,7 +1366,7 @@ def main() -> None:
         "--report",
         default=None,
         metavar="PATH",
-        help="also write the machine-readable run report (JSON) here — used by bench_models.py",
+        help="also write the machine-readable run report (JSON) here, used by bench_models.py",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logs from the pipeline")
     args = parser.parse_args()
@@ -1374,11 +1376,12 @@ def main() -> None:
             logging.getLogger(noisy).setLevel(logging.WARNING)
     _load_dotenv(Path(__file__).resolve().parent.parent / ".env")
     if not os.environ.get("OPENROUTER_API_KEY"):
-        raise SystemExit("set OPENROUTER_API_KEY (or add it to .env); this suite runs the real LLM")
+        raise SystemExit("set OPENROUTER_API_KEY (or add it to .env). This suite runs the real LLM")
 
     llm_url = LLM_URL_TEMPLATE.format(model=args.model)
-    if args.reasoning:
-        llm_url += f"&reasoning={args.reasoning}"
+    reasoning = args.reasoning or (DEFAULT_REASONING if args.model == DEFAULT_MODEL else None)
+    if reasoning:
+        llm_url += f"&reasoning={reasoning}"
     if args.temperature is not None:
         llm_url += f"&temperature={args.temperature}"
     if args.structured_outputs:
@@ -1389,7 +1392,7 @@ def main() -> None:
         print(f"fresh db: {db_path}")
 
     # Mirror omni_style_bot.py's configuration. Workers stay OFF for suite A so
-    # drain() is deterministic; suite B runs its own client with workers ON.
+    # drain() is deterministic. Suite B runs its own client with workers ON.
     memory = DiscordMemory(
         MemoryConfig(
             storage=f"sqlite:///{db_path}",
@@ -1417,7 +1420,7 @@ def main() -> None:
         meter_b = await phase_community(suite_b, db_path, llm_url)
         met = suite_b.expectations - suite_b.weak
         print(
-            f"\n== suite B: {suite_b.checks - suite_b.failures}/{suite_b.checks} hard checks; "
+            f"\n== suite B: {suite_b.checks - suite_b.failures}/{suite_b.checks} hard checks, "
             f"{met}/{suite_b.expectations} model expectations met =="
         )
         if args.report:

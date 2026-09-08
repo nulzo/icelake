@@ -1,9 +1,8 @@
 # icelake
 
-Persistent memory layer specifically for discord bots. Passively consumes messages, extracts facts about users, and hands you a labeled block to put in your system prompt when you need to reply.
+Persistent memory for Discord bots. It passively reads messages, extracts facts about your members, and hands you a labeled block to paste into your system prompt when the bot needs to reply.
 
-Facts are stored against Discord user IDs (as opposed to names), so a rename does not move someone else's memories onto a new person. Third-party claims ("alice called bob
-a hacker") attach to the person they are about.
+Facts are stored against Discord user IDs, not names, so a rename never moves someone's memories onto the wrong person. Third-party claims ("alice called bob a hacker") attach to the person they are about.
 
 Requires Python 3.12+.
 
@@ -29,7 +28,7 @@ async def main() -> None:
     memory = DiscordMemory(
         MemoryConfig(
             storage="sqlite:///memory.db",
-            llm="openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=google/gemini-3.7-flash",
+            llm="openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=z-ai/glm-5.3-flash&reasoning=low",
         )
     )
     async with memory:
@@ -54,9 +53,9 @@ async def main() -> None:
         )
         print(ctx.injection_block)
 
-        # Grounding is post-generation: the answer model writes plain prose
-        # (it never sees tags or URLs), then deterministic embedder scoring
-        # attaches the closed set's citations — no extra LLM call.
+        # Grounding happens after generation. The answer model writes plain
+        # prose (it never sees tags or URLs), then deterministic embedder
+        # scoring attaches citations from the closed set. No extra LLM call.
         reply = "You're learning Rust!"
         cited = await memory.cite(reply, ctx)
         reply = cited.text
@@ -67,40 +66,39 @@ asyncio.run(main())
 ```
 
 `observe` returns immediately. Extraction runs in the background.
-
 `prompt_context` builds a labeled block for the asker, anyone they
 mentioned, thread participants, and the server. Mentions plus thread
 participants turn on graph-hop recall and pair-intersect **every** combination
 of those people (not just asker-other), so shared entities surface in one
-call. Stick the block on your system prompt and generate a reply — the model
+call. Stick the block on your system prompt and generate a reply. The model
 sees plain facts, never citation syntax. Then `memory.cite(reply, ctx)`
 matches reply segments against the closed set with the embedder you already
 configured (one batched embed, no LLM call) and weaves Discord-safe
 `[[N]](<url>)` jump links at the matched spans. Banter with no supported
-claims is left untouched — the library never invents links, and a
+claims is left untouched. The library never invents links, and a
 retrieved-but-unused source is never cited.
 
 ### Citations: a closed set with deterministic attribution
 
 `icelake.citations.Citations` generalizes the closed-set discipline beyond
-memory facts — the same approach production grounded systems (ChatGPT, Claude,
-Perplexity, Graphiti/Zep) use. Code registers every citable source (memory
-citations, web results, referenced messages); **citations are data, never
-model-written text**. The answer model sees no tags and no URLs, so invented
-refs, mangled links, and source-list dumps have no way to exist. Attribution
-follows the ALCE `POSTCITE` pattern — reply sentences and source texts are
-embedded in one batched call, and a source is cited at a span when cosine
-similarity clears `retrieval.citation_min_score` (default 0.55). Dense
-embeddings absorb persona paraphrase the same way they do at retrieval time;
-a claim with no supporting source is omitted, never force-cited. Provider web
+memory facts. This is the same approach production grounded systems use
+(ChatGPT, Claude, Perplexity, Graphiti/Zep). Code registers every citable
+source (memory citations, web results, referenced messages). **Citations are
+data, never model-written text.** The answer model sees no tags and no URLs,
+so invented refs, mangled links, and source-list dumps have no way to exist.
+Attribution follows the ALCE `POSTCITE` pattern: reply sentences and source
+texts are embedded in one batched call, and a source is cited at a span when
+cosine similarity clears `retrieval.citation_min_score` (default 0.55). Dense
+embeddings absorb persona paraphrase the same way they do at retrieval time.
+A claim with no supporting source is omitted, never force-cited. Provider web
 annotations arrive as character offsets and splice deterministically. URLs
 only ever leave the library from registered sources.
 
 Rendering is deterministic splicing, not parsing: `apply()` inserts
 `[[N]](<url>)` at validated offsets, where `N` is the source's position among
-citable sources. **Presentation beyond the inline weave is the consumer's** —
+citable sources. **Presentation beyond the inline weave is yours.**
 `AttributedReply.claims` and `.sources` carry the matched spans and used-only
-sources for footers, logging, or analytics; pass `weave=False` to render
+sources for footers, logging, or analytics. Pass `weave=False` to render
 entirely yourself.
 
 ```python
@@ -117,9 +115,9 @@ reply_text = cited.text  # inline jump links at the matched spans
 used = cited.sources  # tuple[CitationSource] that supported a claim
 ```
 
-The default hashing embedder is lexical; for heavy persona paraphrase,
+The default hashing embedder is lexical. For heavy persona paraphrase,
 configure a real embedding model (`embeddings="openai://..."` or the
-`local-embeddings` extra) — the same model retrieval already uses.
+`local-embeddings` extra). Use the same model retrieval already uses.
 
 Examples:
 
@@ -134,11 +132,11 @@ The current recommended extractor is **`z-ai/glm-5.3-flash`**. See [Model benchm
 
 ## Model benchmark
 
-One full run of [`examples/e2e_simulation.py`](examples/e2e_simulation.py) per model (suite A drain-mode + suite B worker-mode) against OpenRouter on 2026-08-29 and 2026-08-30. Hard checks are library guarantees; expectations are model-decided extraction/reconcile/classify outcomes. Spend is the meter's provider-reported USD. List prices are OpenRouter prompt / completion per 1M tokens as of 2026-08-30.
+One full run of [`examples/e2e_simulation.py`](examples/e2e_simulation.py) per model (suite A drain-mode + suite B worker-mode) against OpenRouter on 2026-08-29 and 2026-08-30. Hard checks are library guarantees. Expectations are model-decided extraction/reconcile/classify outcomes. Spend is the meter's provider-reported USD. List prices are OpenRouter prompt / completion per 1M tokens as of 2026-08-30.
 
 `n=2` rows average the latest `aug30-mapped` run with the previous published fair run on comparable knobs. `n=1` is either a first fair run (correct `MODELS` knobs in [`examples/bench_models.py`](examples/bench_models.py)) or a holdover not in this matrix. Not averaged: `aug30-temp-none` GLM (wrong knobs), GPT-5 mini without `reasoning=minimal`, Luna with `reasoning=low`.
 
-**Pick `z-ai/glm-5.3-flash` unless you have a reason not to.** It hit 47/47 this run and still sits around a cent. Gemini 3.7 Flash also hit 47/47, at ~8× the spend. Mistral Small 3.2 is the cheap quality sleeper (43/47, retired both contradictions, $0.0064) but takes ~9.5 min. GPT-5 mini is usable with `reasoning=minimal` + `temperature none`, but still leaves Omaha live. 4o-mini ranks high on cost/speed while failing reconcile.
+**Pick `z-ai/glm-5.3-flash` unless you have a reason not to.** It hit 47/47 this run and still sits around a cent. Gemini 3.7 Flash also hit 47/47, at ~8x the spend. Mistral Small 3.2 is the cheap quality sleeper (43/47, retired both contradictions, $0.0064) but takes ~9.5 min. GPT-5 mini is usable with `reasoning=minimal` + `temperature none`, but still leaves Omaha live. 4o-mini ranks high on cost/speed while failing reconcile.
 
 | Rank | Model | Score | n | Exp. | Hard | Spend | Time | In $/M | Out $/M |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -175,18 +173,18 @@ Score is `/100`. In/out are OpenRouter list prices, not the run. Expectation den
 Fixed anchors, so a new row does not rescale the others:
 
 ```
-Exp   = 100 × (expectations met) / (expectations total)          # suites A+B
-Hard  = 100 if zero hard failures, else max(0, 100 − 30 × failures)
+Exp   = 100 * (expectations met) / (expectations total)          # suites A+B
+Hard  = 100 if zero hard failures, else max(0, 100 - 30 * failures)
         # n>1: use mean failure count
-Cost  = 100 × (1 − log10(spend / 0.007) / log10(0.30 / 0.007))   # clamp 0–100
-Speed = 100 × (1 − log10(seconds / 45)  / log10(1400 / 45))      # clamp 0–100
+Cost  = 100 * (1 - log10(spend / 0.007) / log10(0.30 / 0.007))   # clamp 0-100
+Speed = 100 * (1 - log10(seconds / 45)  / log10(1400 / 45))      # clamp 0-100
 
-Score = 0.50×Exp + 0.20×Hard + 0.20×Cost + 0.10×Speed
+Score = 0.50*Exp + 0.20*Hard + 0.20*Cost + 0.10*Speed
 ```
 
 `$0.007` / `$0.30` and `45s` / `1400s` are this round's observed best/worst. Leave them unless a new run is clearly outside the band.
 
-To add a model: run `uv run python examples/bench_models.py --models <id> --out bench_runs/<date>`. If it already has a fair run on the same knobs, average hard / expectations / spend / duration; otherwise use the new run alone. Plug current OpenRouter in/out, compute Score, insert the row in rank order.
+To add a model: run `uv run python examples/bench_models.py --models <id> --out bench_runs/<date>`. If it already has a fair run on the same knobs, average hard / expectations / spend / duration. Otherwise use the new run alone. Plug current OpenRouter in/out, compute Score, insert the row in rank order.
 
 ### What actually differed
 
@@ -197,27 +195,27 @@ Name-binding is the other split: Bob saying "nolan's last name is gregory" must 
 | Model | What it did well | What it missed |
 | --- | --- | --- |
 | GLM 5.3 Flash | Perfect 47/47 this run (retired Omaha + Red Bull). n=2 still ~a cent | First run missed the charge-nurse merge |
-| GPT-5.6 Luna | First fair with `reasoning=none`: 40/46, $0.012, 77s. Retired Red Bull | Omaha still live; nursing versions piled up; missed piano age-flush |
-| Mistral Small 3.2 | First fair. Retired both contradictions at $0.0064 | ~9.5 min; leftover "prefers yellow cans" next to "does not drink"; no puppy merge / charge nurse / drums. Two reconcile JSON drops in the log |
-| GPT-5 mini | First fair with `minimal` + `temp none`. 41/46, $0.024, 1:54. Retired Red Bull. Opening batch survived | Omaha still live; nursing versions piled up. Do not average the earlier $0.11 disaster (no `minimal`; dropped Alice's first batch) |
-| GPT-4o-mini | n=2 cheapest-completed band, ~1 min. Mem0/Cognee's old default | Omaha and Red Bull still live both runs; no puppy / purple |
-| Gemini 3.7 Flash | Perfect 47/47 this run (also retired both). Fast (~2 min) | n=2 spend ~8× GLM. First run missed a classify query |
+| GPT-5.6 Luna | First fair with `reasoning=none`: 40/46, $0.012, 77s. Retired Red Bull | Omaha still live. Nursing versions piled up. Missed piano age-flush |
+| Mistral Small 3.2 | First fair. Retired both contradictions at $0.0064 | ~9.5 min. Leftover "prefers yellow cans" next to "does not drink". No puppy merge / charge nurse / drums. Two reconcile JSON drops in the log |
+| GPT-5 mini | First fair with `minimal` + `temp none`. 41/46, $0.024, 1:54. Retired Red Bull. Opening batch survived | Omaha still live. Nursing versions piled up. Do not average the earlier $0.11 disaster (no `minimal`. Dropped Alice's first batch) |
+| GPT-4o-mini | n=2 cheapest-completed band, ~1 min. Mem0/Cognee's old default | Omaha and Red Bull still live both runs. No puppy / purple |
+| Gemini 3.7 Flash | Perfect 47/47 this run (also retired both). Fast (~2 min) | n=2 spend ~8x GLM. First run missed a classify query |
 | GPT-4.1-mini | Graphiti's default. Fast | Inconsistent: first run retired Omaha, this run left Omaha + Red Bull live |
-| GPT-4.1-nano | First fair. Fastest OpenAI row (56s), $0.0056 | Omaha and Red Bull still live; thin store; no puppy / purple / piano |
-| gpt-oss-120b | First fair. GLM-level spend | 4:38; Omaha and Red Bull still live; one extraction JSON drop |
-| GPT-5 nano | First fair (`json_object` no longer needed). Cheapest run ($0.0032) | **Hard fail:** Bob stating Nolan's surname became Bob's alias (`gregory`). Never extracted Red Bull; added "the move went well" without retiring Omaha |
-| Qwen3-30B instruct | First fair. $0.0054 | 5:12; Omaha and Red Bull still live; two extraction JSON drops |
+| GPT-4.1-nano | First fair. Fastest OpenAI row (56s), $0.0056 | Omaha and Red Bull still live. Thin store. No puppy / purple / piano |
+| gpt-oss-120b | First fair. GLM-level spend | 4:38. Omaha and Red Bull still live. One extraction JSON drop |
+| GPT-5 nano | First fair (`json_object` no longer needed). Cheapest run ($0.0032) | **Hard fail:** Bob stating Nolan's surname became Bob's alias (`gregory`). Never extracted Red Bull. Added "the move went well" without retiring Omaha |
+| Qwen3-30B instruct | First fair. $0.0054 | 5:12. Omaha and Red Bull still live. Two extraction JSON drops |
 | Mercury 2 | Fastest by far (46s). Holdover | Same reconcile misses as the pack |
-| Qwen3 32B | GLM-level spend both runs | ~14 min; Omaha and Red Bull still live |
+| Qwen3 32B | GLM-level spend both runs | ~14 min. Omaha and Red Bull still live |
 | DeepSeek V4 Flash | This run retired Omaha (not Red Bull). Near-GLM spend | n=2 time pulled to ~15 min by the 1189s mapped run. Two extraction JSON drops. `0731` still worse |
-| Gemini 3.1 Flash Lite | This run retired both contradictions; 44/47 expectations | **Hard fail** this run (same Gregory-alias miss). n=2 Hard 82/83. First run did not reconcile Omaha |
+| Gemini 3.1 Flash Lite | This run retired both contradictions. 44/47 expectations | **Hard fail** this run (same Gregory-alias miss). n=2 Hard 82/83. First run did not reconcile Omaha |
 | Gemini 2.5 Flash | First run retired both | This run left Omaha live (Red Bull retired). n=2 quality dropped |
 | MiniMax M3 | Fast and cheap. Holdover | **Hard fail:** Gregory alias on Bob. Omaha and Red Bull still live |
-| Gemini 3 Flash Preview | First fair. Retired both; 43/47 | **Hard fail:** Gregory alias on Bob. Classify JSON dropped (`remember` / `query` missed) |
-| DeepSeek 0731 | Cleaner than its first published run (33/46 this time) | Still no reconcile; several JSON drops; ~13 min |
-| Grok 4.3 | Holdover | Thin store; expensive; reconcile misses |
-| Claude Haiku Latest | Holdover. Same expectation rate as old Luna | 28× GLM's spend; 401s and invalid JSON in the log |
-| Gemma 4 31B | Holdover. Clean hard pass | 40 minutes; missed name/Go/Omaha on first pass |
+| Gemini 3 Flash Preview | First fair. Retired both. 43/47 | **Hard fail:** Gregory alias on Bob. Classify JSON dropped (`remember` / `query` missed) |
+| DeepSeek 0731 | Cleaner than its first published run (33/46 this time) | Still no reconcile. Several JSON drops. ~13 min |
+| Grok 4.3 | Holdover | Thin store. Expensive. Reconcile misses |
+| Claude Haiku Latest | Holdover. Same expectation rate as old Luna | 28x GLM's spend. 401s and invalid JSON in the log |
+| Gemma 4 31B | Holdover. Clean hard pass | 40 minutes. Missed name/Go/Omaha on first pass |
 | GLM 4.5 Air | First fair (`json_object`, was 404) | Dropped Alice's opening batches (invalid JSON after one repair): no name / Go / Omaha / Red Bull / nursing. Later quit-Red-Bull facts attached to the wrong speaker |
 | Qwen 3.7 flash | First fair (`json_object`, was 404) | Same opening-batch drops. **Hard fail:** `BatchCompleted` never fired. 6 facts |
 | Hy4 preview | Holdover | Structured output kept failing. 5 rows, all curation probes. Failed `BatchCompleted` |
@@ -230,11 +228,11 @@ Name-binding is the other split: Bob saying "nolan's last name is gregory" must 
 | `tencent/hy-mt2-1.8b` | $0.044 | $0.18 | Same 404 (translation model) |
 | `tencent/hy-mt2-30b-a3b` | $0.074 | $0.30 | Same 404 (translation model) |
 
-Mapped knobs live in `MODELS` in [`examples/bench_models.py`](examples/bench_models.py): mandatory-thinking models get the cheapest allowed effort (`low` / `minimal`); GPT-5.x omits temperature; models that 404 on `json_schema` use `structured_outputs=json_object`. Holdovers are `aug29-full-models`. Challengers averaged into n=2 are `aug30-challengers`.
+Mapped knobs live in `MODELS` in [`examples/bench_models.py`](examples/bench_models.py): mandatory-thinking models get the cheapest allowed effort (`low` / `minimal`), GPT-5.x omits temperature, models that 404 on `json_schema` use `structured_outputs=json_object`. Holdovers are `aug29-full-models`. Challengers averaged into n=2 are `aug30-challengers`.
 
 ## Graph explorer
 
-A self-contained HTML canvas over the public API — users, entities, typed
+A self-contained HTML canvas over the public API: users, entities, typed
 relations, identity links (`entity is this member`), and server facts.
 Incidence links (`dm_links`) are an index, not a relationship, and are not drawn.
 
@@ -248,7 +246,7 @@ python -m icelake.visualizer \
 
 `--center klim --depth 2` limits the canvas to that neighborhood (`server` /
 `the server` works). `--list-guilds` prints guilds in storage. Serve over HTTP
-(`--serve`) so the layout worker can run; opening the file directly still works
+(`--serve`) so the layout worker can run. Opening the file directly still works
 with a one-shot layout.
 
 ## A reply turn
@@ -278,12 +276,12 @@ ctx = await memory.prompt_context(
 #   Community-wide traits:
 #   - the community bonds over late night gaming sessions
 #
-#   (usage guidelines follow — no citation syntax anywhere)
+#   (usage guidelines follow - no citation syntax anywhere)
 
 reply = await generate(system_prompt + "\n\n" + ctx.injection_block, question)
 cited = await memory.cite(reply, ctx)
 await message.reply(cited.text, mention_author=False)
-# cite weaves [[N]](<url>) at attributed claim spans; unsupported claims
+# cite weaves [[N]](<url>) at attributed claim spans. Unsupported claims
 # stay uncited, and sources the reply never used never render.
 ```
 
@@ -293,20 +291,20 @@ whenever anyone else is in the turn. The pairing helper is
 `discovery_pairs(asker_id, mentioned_ids, thread_participant_ids)` (exported
 from `icelake`) if you need the same pairs without a recall.
 
-Identity is always `memory.identity.resolve(guild, name_or_mention_or_id)` —
-ambiguous matches never auto-pick. `identity.display_name` is the reverse
+Identity is always `memory.identity.resolve(guild, name_or_mention_or_id)`.
+Ambiguous matches never auto-pick. `identity.display_name` is the reverse
 map so replies can attribute by the name the guild actually uses.
 
-## "What do you know about X?" — names in prose
+## "What do you know about X?" - names in prose
 
 `prompt_context` is mention-and-thread keyed: it scopes sections from
 `asker_id`, `mentioned_ids`, and `thread_participant_ids`. It never scans
-the question text for names — recall makes no LLM calls, by design. So when
+the question text for names. Recall makes no LLM calls, by design. So when
 someone asks "what do you know about klim?" and `klim` is typed rather than
 @mentioned (and isn't in the thread), no klim section exists unless you
 resolve the name yourself.
 
-The library side is two calls — resolve, then a strict subject fetch:
+The library side is two calls: resolve, then a strict subject fetch.
 
 ```python
 resolution = await memory.identity.resolve(guild_id, name)
@@ -319,13 +317,13 @@ if resolution.resolved is not None:
 ```
 
 Getting `name` out of the conversation is your side, and no tool runtime is
-required — use whatever your bot already has:
+required. Use whatever your bot already has:
 
 - **A slash command with a free-text option (zero LLM).** `/memory lookup
   klim` hands you the name directly. See `memory_lookup` in
   [`examples/omni_style_bot.py`](examples/omni_style_bot.py).
 - **One structured-output call.** A tiny JSON router via
-  `ChatRequest.response_schema` classifies the turn and extracts the name —
+  `ChatRequest.response_schema` classifies the turn and extracts the name,
   no function-calling machinery. See `_route_name_lookup` in the same file.
 - **Native function calling.** If your LLM client already speaks tools, hand
   it a schema and dispatch to the same handler.
@@ -333,7 +331,7 @@ required — use whatever your bot already has:
 Two details matter for accuracy:
 
 - **Never guess on ambiguity.** `Resolution.ambiguous` means more than one
-  member matches; ask which one. The ladder ranks mention ID > username >
+  member matches. Ask which one. The ladder ranks mention ID > username >
   real name > display name > nicknames, and only auto-resolves a clear
   winner.
 - **Fetch strict when answering "about X".** Recall channels deliberately
@@ -412,8 +410,8 @@ Opt-out applies to both `observe` and recall.
 
 ## Typed vocabulary
 
-Every closed set of values is a `StrEnum` exported from the package root —
-no magic strings, no guessing. Enum members are plain strings, so they
+Every closed set of values is a `StrEnum` exported from the package root.
+No magic strings, no guessing. Enum members are plain strings, so they
 compare equal to and serialize as their values:
 
 ```python
@@ -446,9 +444,9 @@ from icelake import (
 
 Two vocabularies are intentionally open and accept plain strings alongside
 the enum: `RelationVerb` (extraction may produce verbs outside the known
-set; unknown verbs are polarity-neutral) and meter purposes (charge your own
-LLM calls under your own names). Note `Scope` (retrieval) and `FactScope`
-(storage) are different sets — don't use one where the other is expected.
+set, and unknown verbs are polarity-neutral) and meter purposes (charge your
+own LLM calls under your own names). Note `Scope` (retrieval) and `FactScope`
+(storage) are different sets. Don't use one where the other is expected.
 
 ## How extraction works
 
@@ -459,7 +457,7 @@ mints roster tokens (`p0`, `p1`, `server`), asks the model for JSON, runs
 quality gates, and stores what survives.
 
 The model never sees Discord snowflakes. Identity fields may only use tokens
-minted for that batch, anything else is dropped. Stored text uses display
+minted for that batch. Anything else is dropped. Stored text uses display
 names. The owner of a fact is the snowflake on `subject_id`, so a rename
 adds an alias instead of moving the row.
 
@@ -471,7 +469,7 @@ Recall does not call the LLM. Typical queries:
 
 | Question | Call |
 |---|---|
-| what do you know about X | `identity.resolve("X")` → `facts.list_for_subject(x)` |
+| what do you know about X | `identity.resolve("X")` then `facts.list_for_subject(x)` |
 | what does X think about Y | `graph.between(x, y)` |
 | what do X and Y share / disagree on | `graph.shared_attributions(x, y)` |
 | what do X, Y, Z all share | `graph.shared_n((x, y, z))` |
@@ -521,16 +519,18 @@ The rest are indexes over them.
 memory.observe(event)
 memory.observe_many(events)
 memory.flush(guild_id=...)
+memory.extract_now(event)            # observe + flush in one step
 memory.register_bot_id(bot_user_id)  # never stored as a subject
 
 memory.prompt_context(...)
 memory.recall(RecallQuery(...))
+memory.cite(reply_text, ctx)         # weave jump links into a finished reply
 
-memory.facts.remember / update / forget / reinforce / history / list_for_subject / search
-memory.identity.resolve / register_alias / handle_member_rename / aliases_of
-memory.graph.between / entity_stances / users_for_entity / neighbors / relations_of / similar_users / shared / shared_attributions / shared_n
-memory.admin.set_opt_out / purge_user / export_guild / get_opt_out
-memory.ops.run_pending / retry_dead_letters / meter_snapshot / health
+memory.facts.remember / get / get_all / update / forget / reinforce / history / list_for_subject / search
+memory.identity.resolve / register_alias / handle_member_rename / aliases_of / display_name
+memory.graph.between / relations_of / entity_stances / users_for_entity / neighbors / similar_users / shared / shared_attributions / shared_n
+memory.admin.set_opt_out / get_opt_out / purge_user / export_guild / import_guild
+memory.ops.run_pending / backfill_aliases / retry_dead_letters / meter_snapshot / health
 memory.events.subscribe(BatchCompleted, handler)
 memory.classify_command(text)
 memory.regenerate_summaries(guild_id)
@@ -547,7 +547,7 @@ from icelake.integrations import setup_discord_memory
 
 config = MemoryConfig(
     storage="sqlite:///bot-memory.db",
-    llm="openai://$KEY@openrouter.ai/api/v1?model=google/gemini-3.7-flash",
+    llm="openai://$KEY@openrouter.ai/api/v1?model=z-ai/glm-5.3-flash&reasoning=low",
 )
 
 
@@ -557,8 +557,9 @@ class MyBot(commands.Bot):
 ```
 
 This wires `on_message` to `observe`, refreshes aliases on
-`on_member_update`, and registers the bot's user id on ready. For a full
-`/memory` group see [`examples/omni_style_bot.py`](examples/omni_style_bot.py).
+`on_member_update`, registers the bot's user id on ready, and adds a
+`/memory` command group (`me`, `remember`, `forget`). For a bigger
+command surface see [`examples/omni_style_bot.py`](examples/omni_style_bot.py).
 
 ## Configuration
 
@@ -652,20 +653,21 @@ uv run mypy
 
 Coverage floor is 90%. mypy is strict.
 
-User-facing changes need a changelog fragment in `changelog.d/` — see
-[CHANGELOG.md](CHANGELOG.md). Releases are cut from the **Release** workflow;
-see [docs/RELEASE.md](docs/RELEASE.md).
+User-facing changes need a changelog fragment in `changelog.d/`. See
+[CHANGELOG.md](CHANGELOG.md). Releases are cut from the **Release** workflow.
+See [docs/RELEASE.md](docs/RELEASE.md).
 
-## Status (v0.3.x)
+## Status
 
 - Storage: SQLite (default), MongoDB (`[mongo]`), in-memory (tests). Postgres
-  is not implemented, `postgresql://` fails with a clear error.
+  is not implemented and `postgresql://` fails with a clear error.
 - Default hashing embeddings are not good enough for production recall. See
   [Embeddings](#embeddings).
 - Bad extraction JSON is repaired once, then dead-lettered. Retry with
   `ops.retry_dead_letters`.
-- Caps and TTL drop weakest facts first (manual/CORE last). Budgets are
-  per-process. Cross-process accounting needs store-backed counters.
+- Caps and TTL drop weakest facts first (manual/CORE last). Budget counters
+  are store-backed, so they are correct across N worker processes.
+  Observability meters stay per-process.
 - `similar_users` is capped Jaccard over entity adjacency.
 
 ## License

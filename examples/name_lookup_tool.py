@@ -1,21 +1,21 @@
 """Answering "what do you know about <name>?" when the name is prose, not a mention.
 
-Runnable WITHOUT Discord or an LLM — ``python examples/name_lookup_tool.py``
+Runnable WITHOUT Discord or an LLM. ``python examples/name_lookup_tool.py``
 seeds a guild into SQLite via ``facts.remember`` and runs the lookup handler
 end to end.
 
-The pattern is two library calls — ``identity.resolve`` then a STRICT
-``facts.list_for_subject`` — and it is transport-agnostic. The ``user``
-argument can come from anywhere; no tool runtime is required:
+The pattern is two library calls (``identity.resolve``, then a STRICT
+``facts.list_for_subject``) and it is transport-agnostic. The ``user``
+argument can come from anywhere. No tool runtime is required:
 
-1. A slash command with a free-text option (zero LLM — see ``memory_lookup``
+1. A slash command with a free-text option (zero LLM, see ``memory_lookup``
    in ``examples/omni_style_bot.py``).
 2. One structured-output router call via ``ChatRequest.response_schema``
    (see ``_route_name_lookup`` in the same file).
-3. Native function calling, if your LLM client already speaks tools —
+3. Native function calling, if your LLM client already speaks tools.
    ``MEMORY_SHOW_TOOL`` below is the schema you hand it.
 
-The library never scans prose for names itself; ``prompt_context`` scopes
+The library never scans prose for names itself. ``prompt_context`` scopes
 sections from structured mentions and reply targets only. ``memory_show``
 here is the handler every one of those entry points converges on: resolve
 the name through the identity ladder, refuse to guess on ambiguity, and
@@ -48,7 +48,7 @@ MEMBERS = {
 }
 
 # Only needed for the LLM-driven entry points: native function calling takes
-# this schema verbatim; a JSON-mode router uses the same shape as its
+# this schema verbatim. A JSON-mode router uses the same shape as its
 # response_schema. A slash-command option needs no schema at all.
 MEMORY_SHOW_TOOL = {
     "type": "function",
@@ -56,7 +56,7 @@ MEMORY_SHOW_TOOL = {
         "name": "memory_show",
         "description": (
             "Look up everything stored about a server member. Call this when the "
-            "user asks about a person BY NAME. Pass the name exactly as written; "
+            "user asks about a person BY NAME. Pass the name exactly as written. "
             "never invent an ID."
         ),
         "parameters": {
@@ -88,7 +88,7 @@ async def memory_show(
     if match := _MENTION_RE.fullmatch(ref):
         ref = match.group("snowflake")
     if not ref:
-        return "No user given — ask which member they mean."
+        return "No user given. Ask which member they mean."
 
     resolution = await memory.identity.resolve(guild_id, ref)
     if resolution.ambiguous:
@@ -97,14 +97,14 @@ async def memory_show(
             f" (ID {c.user_id})"
             for c in resolution.candidates
         ]
-        return f"{ref!r} matches more than one member ({', '.join(choices)}) — ask which one."
+        return f"{ref!r} matches more than one member ({', '.join(choices)}). Ask which one."
     if resolution.resolved is None:
         mentions = await memory.facts.search(guild_id, ref, limit=3)
         if not mentions:
-            return f"No member named {ref!r} — say you don't recognize them."
+            return f"No member named {ref!r}. Say you don't recognize them."
         lines = "\n".join(f"- {fact.text}" for fact, _ in mentions)
         return (
-            f"No member named {ref!r} — say you don't recognize them as a member.\n"
+            f"No member named {ref!r}. Say you don't recognize them as a member.\n"
             f"Memories that mention {ref!r} (may be a thing, not a person):\n{lines}"
         )
 
@@ -120,8 +120,8 @@ async def memory_show(
         return f"{display} is a member, but nothing is stored about them yet."
     lines = "\n".join(f"- {fact.text}" for fact in page.items)
     return (
-        f"Facts about {display} ONLY (subject-scoped — other members' claims "
-        f"about them are not listed here; do not attribute these to the asker):\n{lines}"
+        f"Facts about {display} ONLY (subject-scoped, so other members' claims "
+        f"about them are not listed here. Do not attribute these to the asker):\n{lines}"
     )
 
 
@@ -163,14 +163,14 @@ async def seed(memory: DiscordMemory) -> None:
     # Stored on carol, but bob co-participates (actor), so he is on the fact's
     # incidence links: links-channel recall surfaces it under bob while a
     # strict profile fetch must not. (Extraction links @mentioned users the
-    # same way; remember() derives mentions from the actor.)
+    # same way. remember() derives mentions from the actor.)
     await memory.facts.remember(
         guild_id=GUILD,
         subject_id=MEMBERS["carol"],
         text="carol and bob argued over the game night loss",
         actor_id=MEMBERS["bob"],
     )
-    # "zenith" is a place, not a member — the unknown-name fallback finds it.
+    # "zenith" is a place, not a member. The unknown-name fallback finds it.
     await memory.facts.remember(
         guild_id=GUILD,
         subject_id=MEMBERS["alice"],
@@ -184,29 +184,29 @@ async def main() -> None:
     async with memory:
         await seed(memory)
 
-        print("=== memory_show(user=...) — the lookup handler, end to end ===\n")
+        print("=== memory_show(user=...): the lookup handler, end to end ===\n")
 
-        print('tool call: memory_show(user="bob")  — strict profile')
+        print('tool call: memory_show(user="bob")  - strict profile')
         print(await memory_show(memory, GUILD, user="bob"))
         print()
 
-        print('tool call: memory_show(user="bobby")  — nickname resolves the same')
+        print('tool call: memory_show(user="bobby")  - nickname resolves the same')
         print(await memory_show(memory, GUILD, user="bobby"))
         print()
 
-        print('tool call: memory_show(user="alex")  — shared nickname, never guesses')
+        print('tool call: memory_show(user="alex")  - shared nickname, never guesses')
         print(await memory_show(memory, GUILD, user="alex"))
         print()
 
-        print('tool call: memory_show(user="zenith")  — not a member, mention fallback')
+        print('tool call: memory_show(user="zenith")  - not a member, mention fallback')
         print(await memory_show(memory, GUILD, user="zenith"))
         print()
 
         # CONTRAST: why the strict fetch matters. Recall's links channel
         # (in the default set, and in prompt_context) surfaces every fact
-        # INCIDENT on bob — carol's fact links him as a participant, so it
+        # INCIDENT on bob. Carol's fact links him as a participant, so it
         # appears under bob even though carol is the subject. Right for
-        # passive context (each section is labeled); wrong for a direct
+        # passive context (each section is labeled). Wrong for a direct
         # "about bob" answer, which must be subject-scoped.
         print("=== CONTRAST: recall(subject_ids=(bob,)) is cross-subject by design ===\n")
         result = await memory.recall(
