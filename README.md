@@ -318,6 +318,16 @@ if resolution.resolved is not None:
     )
 ```
 
+Subject listings are deterministic and cursor-pageable by default. For an
+unpageable sample of eligible facts, pass `random=True`; it preserves the
+subject, server-scope, and active-state filters but does not return a cursor:
+
+```python
+sample = await memory.facts.list_for_subject(
+    guild_id, resolution.resolved.user_id, include_server=False, limit=5, random=True
+)
+```
+
 Getting `name` out of the conversation is your side, and no tool runtime is
 required — use whatever your bot already has:
 

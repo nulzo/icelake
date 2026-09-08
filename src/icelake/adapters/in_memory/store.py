@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime
+from random import sample
 
 from icelake.lifecycle.forget import select_forgotten_facts
 from icelake.lifecycle.prune import select_prune_victims_by_anchor
@@ -282,7 +283,10 @@ class InMemoryStore:
         active_only: bool = True,
         limit: int = 50,
         cursor: str | None = None,
+        random: bool = False,
     ) -> Page[FactRecord]:
+        if random and cursor is not None:
+            raise ValueError("cursor cannot be used with random sampling")
         selected = []
         for record in self._facts.values():
             if record.guild_id != guild_id:
@@ -295,6 +299,8 @@ class InMemoryStore:
             if active_only and not self._active(record):
                 continue
             selected.append(record)
+        if random:
+            return Page(items=tuple(sample(selected, min(limit, len(selected)))), next_cursor=None)
         selected.sort(key=lambda r: r.id)
         start = 0
         if cursor:

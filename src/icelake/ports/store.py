@@ -153,6 +153,7 @@ class MemoryStore(Protocol):
         active_only: bool = True,
         limit: int = 50,
         cursor: str | None = None,
+        random: bool = False,
     ) -> Page[FactRecord]:
         """List facts for one subject (or server facts when ``subject_id=None``)."""
 

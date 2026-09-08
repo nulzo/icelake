@@ -367,7 +367,10 @@ class MongoStore:
         active_only: bool = True,
         limit: int = 50,
         cursor: str | None = None,
+        random: bool = False,
     ) -> Page[FactRecord]:
+        if random and cursor is not None:
+            raise ValueError("cursor cannot be used with random sampling")
         subject_clause: list[dict[str, Any]] = [{"subject_id": subject_id}]
         if include_server and subject_id is not None:
             subject_clause.append({"subject_id": None})
@@ -377,10 +380,16 @@ class MongoStore:
         }
         if active_only:
             query.update(self._ACTIVE)
-        if cursor:
+        if cursor and not random:
             query["_id"] = {"$gt": cursor}
-        docs = (
-            await self.db["dm_facts"].find(query).sort("_id", 1).limit(limit + 1).to_list(limit + 1)
+        if random:
+            sample_cursor = await self.db["dm_facts"].aggregate(
+                [{"$match": query}, {"$sample": {"size": limit}}]
+            )
+            docs = await sample_cursor.to_list(limit)
+            return Page(items=tuple(fact_from_doc(d) for d in docs), next_cursor=None)
+        docs = await (
+            self.db["dm_facts"].find(query).sort("_id", 1).limit(limit + 1).to_list(limit + 1)
         )
         items = tuple(fact_from_doc(d) for d in docs[:limit])
         next_cursor = items[-1].id if len(docs) > limit and items else None

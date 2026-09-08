@@ -71,6 +71,26 @@ class TestFactsApi:
             await client.facts.get("g1", "fct_missing")
         await client.close()
 
+    async def test_random_fact_listing_is_unpageable(self, make_client) -> None:
+        client, _ = make_client(llm=False)
+        await client.start()
+        for index in range(3):
+            await client.facts.remember(
+                guild_id="g1", subject_id="u1", text=f"has preference number {index}"
+            )
+
+        page = await client.facts.list_for_subject("g1", "u1", limit=2, random=True)
+        assert len(page.items) == 2
+        assert page.next_cursor is None
+        assert len({fact.id for fact in page.items}) == 2
+        assert len(await client.facts.get_all("g1", "u1", limit=2, random=True)) == 2
+
+        with pytest.raises(ValueError, match="cursor cannot be used"):
+            await client.facts.list_for_subject(
+                "g1", "u1", limit=2, cursor="fct_cursor", random=True
+            )
+        await client.close()
+
     async def test_curation_publishes_events(self, make_client) -> None:
         client, _ = make_client(llm=False)
         await client.start()

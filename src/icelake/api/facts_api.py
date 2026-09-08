@@ -180,14 +180,16 @@ class FactsApi:
         *,
         include_server: bool = False,
         limit: int = 100,
+        random: bool = False,
     ) -> tuple[FactRecord, ...]:
-        """All active facts for a member (mem0 ``get_all`` parity)."""
+        """All active facts for a member, optionally sampled randomly."""
         page = await self.list_for_subject(
             guild_id,
             subject_id,
             include_server=include_server,
             active_only=True,
             limit=limit,
+            random=random,
         )
         return page.items
 
@@ -277,7 +279,11 @@ class FactsApi:
         active_only: bool = True,
         limit: int = 50,
         cursor: str | None = None,
+        random: bool = False,
     ) -> Page[FactRecord]:
+        """List facts, or return an unpageable random sample when requested."""
+        if random and cursor is not None:
+            raise ValueError("cursor cannot be used with random sampling")
         return await self._store.list_facts(
             guild_id,
             subject_id=subject_id,
@@ -285,6 +291,7 @@ class FactsApi:
             active_only=active_only,
             limit=limit,
             cursor=cursor,
+            random=random,
         )
 
     async def search(
