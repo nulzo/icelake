@@ -25,7 +25,7 @@ from icelake.models.retrieval import (
 )
 from icelake.ports.clock import Clock
 from icelake.ports.llm import Embedder, Reranker
-from icelake.ports.store import MemoryStore
+from icelake.ports.store import MemoryStore, NodeRef
 from icelake.ports.vectors import VectorIndex
 from icelake.retrieval import channels as ch
 from icelake.scoring.fusion import (
@@ -78,8 +78,20 @@ class RecallService:
         if query.scope is Scope.GUILD:
             subject_ids = None  # guild-wide union: no subject restriction
 
-        pair_fact_ids = await self._pair_intersection(query)
         entity_slug = await self._resolve_entity_hint(query)
+        if entity_slug is not None:
+            # An explicit entity makes this a graph-shaped question: hop from
+            # the entity node even on the default channel set (Graphiti-style
+            # BFS from query entities), bounded by hop_depth / fan_out config.
+            selected = frozenset({*selected, ChannelName.GRAPH_HOP})
+
+        # Identity-collapse map: subject reads expand to entity twins so a
+        # member mentioned by name before speaking still recalls fully.
+        linked_twins: dict[str, str] = {}
+        if subject_ids or query.pair_ids:
+            linked_twins = await self._store.entities_linked_to_users(query.guild_id)
+
+        pair_fact_ids = await self._pair_intersection(query, linked_twins)
 
         outputs, degraded = await self._run_channels(
             selected,
@@ -88,6 +100,8 @@ class RecallService:
             subject_ids=subject_ids,
             server_only=server_only,
             as_of=query.as_of,
+            linked_twins=linked_twins,
+            entity_seed=entity_slug,
         )
 
         if pair_fact_ids:
@@ -135,8 +149,16 @@ class RecallService:
             weight_strength=self._config.weight_strength,
         )
         scored, rerank_scores = await self._apply_reranker(query, scored, pool_records)
+        hop_paths: dict[str, tuple[str, ...]] = {}
+        for out in outputs:
+            hop_paths.update(out.hop_paths)
         return await self._materialize(
-            query, scored, degraded, records=pool_records, rerank_scores=rerank_scores
+            query,
+            scored,
+            degraded,
+            records=pool_records,
+            rerank_scores=rerank_scores,
+            hop_paths=hop_paths,
         )
 
     async def _apply_reranker(
@@ -202,8 +224,17 @@ class RecallService:
         subject_ids: tuple[str, ...] | None,
         server_only: bool,
         as_of: datetime | None = None,
+        linked_twins: dict[str, str] | None = None,
+        entity_seed: str | None = None,
     ) -> tuple[list[ch.ChannelOutput], list[ChannelName]]:
+        from icelake.graph.collapse import twin_refs
+        from icelake.models.graph import NodeType
+
         tasks: dict[ChannelName, object] = {}
+        twins = linked_twins or {}
+        subject_refs: tuple[NodeRef, ...] = tuple(
+            ref for user_id in (subject_ids or ()) for ref in twin_refs(user_id, twins)
+        )
 
         if ChannelName.VECTOR in selected:
             tasks[ChannelName.VECTOR] = ch.vector_channel(
@@ -226,11 +257,11 @@ class RecallService:
                 limit=self._config.recall_limit,
                 as_of=as_of,
             )
-        if ChannelName.LINKS in selected and subject_ids:
+        if ChannelName.LINKS in selected and subject_refs:
             tasks[ChannelName.LINKS] = ch.links_channel(
                 store=self._store,
                 guild_id=guild_id,
-                subject_ids=subject_ids,
+                refs=subject_refs,
                 limit=self._config.recall_limit,
             )
         if ChannelName.BASELINE in selected:
@@ -241,11 +272,14 @@ class RecallService:
                 server_only=server_only,
                 limit=self._config.max_per_subject * max(1, len(subject_ids or (1,))),
             )
-        if ChannelName.GRAPH_HOP in selected and subject_ids:
+        hop_seeds: tuple[NodeRef, ...] = subject_refs + (
+            ((NodeType.ENTITY, entity_seed),) if entity_seed else ()
+        )
+        if ChannelName.GRAPH_HOP in selected and hop_seeds:
             tasks[ChannelName.GRAPH_HOP] = ch.graph_hop_channel(
                 store=self._store,
                 guild_id=guild_id,
-                subject_ids=subject_ids,
+                seed_refs=hop_seeds,
                 depth=self._config.hop_depth,
                 fan_out_per_node=self._config.fan_out_per_node,
                 limit=self._config.recall_limit,
@@ -274,25 +308,27 @@ class RecallService:
             outputs.append(result)
         return outputs, degraded
 
-    async def _pair_intersection(self, query: RecallQuery) -> list[str]:
+    async def _pair_intersection(
+        self, query: RecallQuery, linked_twins: dict[str, str]
+    ) -> list[str]:
         """Facts joined to BOTH users of each ``pair_ids`` pair (Q3/Q2 link-intersect).
 
-        All pairs resolve concurrently; each intersection is two indexed
-        ``links_for_node`` lookups, so cost stays O(pairs), not O(facts).
+        Each side reads its user node plus entity twins (one batched
+        ``links_for_nodes``), so a member's pre-speech twin facts count.
+        All pairs resolve concurrently, so cost stays O(pairs), not O(facts).
         """
         if not query.pair_ids:
             return []
-        from icelake.models.graph import NodeType
+        from icelake.graph.collapse import twin_refs
 
         async def linked_ids(user_id: str) -> set[str]:
             return {
                 record.id
-                for _row, record in await self._store.links_for_node(
+                for _row, record in await self._store.links_for_nodes(
                     query.guild_id,
-                    NodeType.USER,
-                    user_id,
+                    twin_refs(user_id, linked_twins),
                     active_only=True,
-                    limit=self._config.recall_limit,
+                    limit_per_node=self._config.recall_limit,
                 )
             }
 
@@ -350,6 +386,7 @@ class RecallService:
         *,
         records: tuple[FactRecord, ...],
         rerank_scores: dict[str, float] | None = None,
+        hop_paths: dict[str, tuple[str, ...]] | None = None,
     ) -> RecallResult:
         fact_ids = [fact_id for fact_id, score, _, _ in scored]
         by_id = {record.id: record for record in records}
@@ -412,6 +449,7 @@ class RecallService:
                         strength=comps[3],
                     ),
                     matched_channels=channels_map.get(fact_id, ()),
+                    hop_path=(hop_paths or {}).get(fact_id, ()),
                     rerank_score=rerank_scores.get(fact_id),
                 )
             )

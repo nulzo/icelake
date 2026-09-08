@@ -181,7 +181,7 @@ class TestChannels:
         output = await links_channel(
             store=client._store,
             guild_id=event.guild_id,
-            subject_ids=("200000000000000002",),
+            refs=((NodeType.USER, "200000000000000002"),),
             limit=50,
         )
         assert output.ranked_ids  # bob's incidence reaches alice's stored fact

@@ -659,7 +659,7 @@ class InMemoryStore:
             if gid == guild_id and record.linked_user_id is not None
         }
 
-    async def link_entity_to_user(self, guild_id: str, slug: str, user_id: str) -> None:
+    async def link_entity_to_user(self, guild_id: str, slug: str, user_id: str | None) -> None:
         record = self._entities.get((guild_id, slug))
         if record is not None:
             self._entities[(guild_id, slug)] = record.model_copy(update={"linked_user_id": user_id})

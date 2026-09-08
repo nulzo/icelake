@@ -537,6 +537,7 @@ class DiscordMemory:
         mentioned_ids: tuple[str, ...] = (),
         thread_participant_ids: tuple[str, ...] = (),
         token_budget_tokens: int | None = None,
+        entity_hint: str | None = None,
     ) -> PromptContext:
         """One-call turn context: subjects resolved, facts injected, citations bound.
 
@@ -545,6 +546,10 @@ class DiscordMemory:
         plus citation bindings. Related users (mentions and thread) turn on
         graph-hop recall and pair-intersect every combination so shared
         entities between those people surface without a second call.
+
+        ``entity_hint`` centers the recall on one thing ("golf"): its facts
+        rank first and graph-hop expands from the entity node, so answers
+        about who cares about the thing arrive with the context.
         """
         await self.ensure_started()
         budget = token_budget_tokens or self.config.retrieval.default_token_budget
@@ -562,6 +567,7 @@ class DiscordMemory:
                 subject_ids=tuple(subjects),
                 scope=Scope.SUBJECTS,
                 pair_ids=pairs,
+                entity_hint=entity_hint,
                 top_k=self.config.retrieval.top_k,
                 max_per_subject=self.config.retrieval.max_per_subject,
                 # Related users make this a relationship-shaped question: hop

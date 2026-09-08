@@ -360,7 +360,9 @@ if resolution.ambiguous:
 edges = await memory.graph.between(guild_id, x_id, y_id)
 shared = await memory.graph.shared(guild_id, x_id, y_id)
 left, right = await memory.graph.shared_attributions(guild_id, x_id, y_id)
+per_user = await memory.graph.shared_n(guild_id, (x_id, y_id, z_id))
 stances = await memory.graph.entity_stances(guild_id, "movies")
+audience = await memory.graph.users_for_entity(guild_id, "golf")
 neighbors = await memory.graph.neighbors(guild_id, x_id, depth=2)
 similar = await memory.graph.similar_users(guild_id, x_id)
 ```
@@ -472,8 +474,10 @@ Recall does not call the LLM. Typical queries:
 | what do you know about X | `identity.resolve("X")` → `facts.list_for_subject(x)` |
 | what does X think about Y | `graph.between(x, y)` |
 | what do X and Y share / disagree on | `graph.shared_attributions(x, y)` |
-| who likes movies | `graph.entity_stances("movies")` |
+| what do X, Y, Z all share | `graph.shared_n((x, y, z))` |
+| who likes movies | `graph.users_for_entity("movies")` (stances + mentions) or `graph.entity_stances("movies")` (edges) |
 | people connected to X | `graph.neighbors(x, depth=2)` |
+| everything about an entity in context | `prompt_context(..., entity_hint="golf")` |
 
 ## What gets stored
 
@@ -524,7 +528,7 @@ memory.recall(RecallQuery(...))
 
 memory.facts.remember / update / forget / reinforce / history / list_for_subject / search
 memory.identity.resolve / register_alias / handle_member_rename / aliases_of
-memory.graph.between / entity_stances / neighbors / relations_of / similar_users / shared / shared_attributions
+memory.graph.between / entity_stances / users_for_entity / neighbors / relations_of / similar_users / shared / shared_attributions / shared_n
 memory.admin.set_opt_out / purge_user / export_guild / get_opt_out
 memory.ops.run_pending / retry_dead_letters / meter_snapshot / health
 memory.events.subscribe(BatchCompleted, handler)

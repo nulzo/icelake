@@ -542,7 +542,7 @@ class IdentityGraphMixin:
         )
         return {row["slug"]: row["linked_user_id"] for row in rows}
 
-    async def link_entity_to_user(self, guild_id: str, slug: str, user_id: str) -> None:
+    async def link_entity_to_user(self, guild_id: str, slug: str, user_id: str | None) -> None:
         await self._db.execute(
             "UPDATE dm_entities SET linked_user_id=? WHERE guild_id=? AND slug=?",
             (user_id, guild_id, slug),

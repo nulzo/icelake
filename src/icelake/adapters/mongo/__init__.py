@@ -872,7 +872,7 @@ class MongoStore:
         )
         return {doc["slug"]: doc["linked_user_id"] async for doc in cursor}
 
-    async def link_entity_to_user(self, guild_id: str, slug: str, user_id: str) -> None:
+    async def link_entity_to_user(self, guild_id: str, slug: str, user_id: str | None) -> None:
         await self.db["dm_entities"].update_one(
             {"guild_id": guild_id, "slug": slug},
             {"$set": {"linked_user_id": user_id}},

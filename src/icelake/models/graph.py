@@ -93,6 +93,23 @@ class StanceSummary(FrozenModel):
     total_evidence: int = 0
 
 
+class EntityUsers(FrozenModel):
+    """Every member connected to one entity node — the "who likes golf?" read.
+
+    Stance buckets hold user IDs from typed relation edges (identity-collapsed);
+    ``mentioned`` holds user IDs whose facts touch the entity through incidence
+    links without a typed stance (talked about golf, never "likes golf").
+    """
+
+    entity_slug: str
+    entity_name: str = ""
+    positive: tuple[str, ...] = ()
+    negative: tuple[str, ...] = ()
+    other: tuple[str, ...] = ()
+    mentioned: tuple[str, ...] = ()
+    total_evidence: int = 0
+
+
 class NeighborInfo(FrozenModel):
     """One hop-discovery result with its relation path for honest phrasing."""
 
@@ -147,6 +164,7 @@ __all__ = [
     "EdgeKind",
     "EntityKind",
     "EntityRecord",
+    "EntityUsers",
     "LinkRow",
     "NeighborInfo",
     "NodeType",

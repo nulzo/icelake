@@ -12,6 +12,8 @@ from icelake.identity.resolver import IdentityResolver
 from icelake.models.admin import MemoryExport, PurgeReport
 from icelake.models.common import Page
 from icelake.models.graph import (
+    EntityKind,
+    EntityUsers,
     NeighborInfo,
     NodeType,
     Polarity,
@@ -56,6 +58,31 @@ class IdentityApi:
             return
         weight = weight_for_source(source, surface=alias)
         await self._store.upsert_alias(guild_id, alias_norm, user_id, source, weight)
+        await self._reconcile_person_entity(guild_id, alias_norm, user_id)
+
+    async def _reconcile_person_entity(self, guild_id: str, alias_norm: str, user_id: str) -> None:
+        """Bridge (or unbridge) a PERSON entity twin as the name's resolution changes.
+
+        Extraction can mint a person-entity from a third-party mention before
+        the member ever speaks. When the alias uniquely resolves to a member,
+        the entity IS that member — link it so graph reads collapse the twin
+        onto the user node. When the name is ambiguous (a second member
+        registers it), any existing bridge is cleared: an ambiguous name owns
+        no twin (grounded-or-silent — never guess which member it is).
+        """
+        slug = await self._store.resolve_entity_alias(guild_id, alias_norm)
+        if slug is None:
+            return
+        entity = await self._store.get_entity(guild_id, slug)
+        if entity is None or entity.kind is not EntityKind.PERSON:
+            return
+        resolution = await self._resolver.resolve(guild_id, alias_norm)
+        if resolution.ambiguous or resolution.resolved is None:
+            if entity.linked_user_id is not None:
+                await self._store.link_entity_to_user(guild_id, slug, None)
+            return
+        if entity.linked_user_id is None and resolution.resolved.user_id == user_id:
+            await self._store.link_entity_to_user(guild_id, slug, user_id)
 
     async def handle_member_rename(
         self,
@@ -78,6 +105,7 @@ class IdentityApi:
                 AliasSource.DISPLAY_NAME,
                 weight_for_source(AliasSource.DISPLAY_NAME, surface=normalized),
             )
+        await self._reconcile_person_entity(guild_id, normalized, user_id)
 
     async def aliases_of(self, guild_id: str, user_id: str) -> tuple[AliasRecord, ...]:
         return await self._store.aliases_for_user(guild_id, user_id)
@@ -170,6 +198,8 @@ class GraphApi:
         self,
         guild_id: str,
         entity_name_or_slug: str,
+        *,
+        limit: int = 100,
     ) -> StanceSummary:
         from icelake.identity.aliases import alias_slug
 
@@ -179,7 +209,7 @@ class GraphApi:
         )
         if slug is None:
             slug = alias_slug(entity_name_or_slug)
-        edges = await self._store.entity_stance_edges(guild_id, slug, limit=100)
+        edges = await self._store.entity_stance_edges(guild_id, slug, limit=limit)
         edges = await self._collapse(guild_id, edges)
         entity = await self._store.get_entity(guild_id, slug)
         return StanceSummary(
@@ -217,26 +247,102 @@ class GraphApi:
         *,
         limit: int = 10,
     ) -> tuple[tuple[RelationEdge, ...], tuple[RelationEdge, ...]]:
-        """Both members' edges over the entities they share.
+        """Both members' edges over the entities they share (pair form of
+        ``shared_n``). Polarity is preserved so callers can show agreement
+        vs disagreement."""
+        left, right = await self.shared_n(guild_id, (left_user_id, right_user_id), limit=limit)
+        return left, right
 
-        One incident fetch per side. Identity-collapsed so a member named as
-        an entity never counts as a shared hobby. Polarity is preserved on
-        each edge so callers can show agreement vs disagreement.
+    async def shared_n(
+        self,
+        guild_id: str,
+        user_ids: tuple[str, ...],
+        *,
+        limit: int = 10,
+    ) -> tuple[tuple[RelationEdge, ...], ...]:
+        """Entity edges over the intersection of ALL members' hubs (N-way).
+
+        A hub survives only when every member touches it — this is the true
+        intersection, not a union of pairwise overlaps. One incident fetch per
+        member, identity-collapsed so a member named as an entity never counts
+        as a shared hobby. Output aligns with ``user_ids`` order.
         """
-        left, right = await asyncio.gather(
-            self._incident(guild_id, left_user_id, limit=200),
-            self._incident(guild_id, right_user_id, limit=200),
+        ids = tuple(dict.fromkeys(user_ids))
+        if len(ids) < 2:
+            return tuple(() for _ in ids)
+        per_user = await asyncio.gather(
+            *(self._incident(guild_id, user_id, limit=200) for user_id in ids)
         )
-        keep = {e.dst_id for e in left if e.dst_type is NodeType.ENTITY} & {
-            e.dst_id for e in right if e.dst_type is NodeType.ENTITY
-        }
-        if not keep:
-            return (), ()
-        ranked = tuple(dict.fromkeys(e.dst_id for e in left if e.dst_id in keep))[:limit]
+        entity_sets = [
+            {e.dst_id for e in edges if e.dst_type is NodeType.ENTITY} for edges in per_user
+        ]
+        common = set.intersection(*entity_sets)
+        if not common:
+            return tuple(() for _ in ids)
+        ranked = tuple(dict.fromkeys(e.dst_id for e in per_user[0] if e.dst_id in common))[:limit]
         keep = set(ranked)
-        return (
-            tuple(e for e in left if e.dst_type is NodeType.ENTITY and e.dst_id in keep),
-            tuple(e for e in right if e.dst_type is NodeType.ENTITY and e.dst_id in keep),
+        return tuple(
+            tuple(e for e in edges if e.dst_type is NodeType.ENTITY and e.dst_id in keep)
+            for edges in per_user
+        )
+
+    async def users_for_entity(
+        self,
+        guild_id: str,
+        entity_name_or_slug: str,
+        *,
+        limit: int = 100,
+    ) -> EntityUsers:
+        """Every member connected to a thing — the "who likes golf?" read.
+
+        Stance buckets come from typed relation edges (``likes`` → positive,
+        ``dislikes`` → negative, neutral verbs like ``plays`` → other).
+        ``mentioned`` covers members whose facts touch the entity through
+        incidence links without a typed stance. Identity-collapsed: a member
+        bridged to an entity twin appears as their user ID, never both.
+        """
+        from icelake.identity.aliases import alias_slug
+
+        slug = await self._store.resolve_entity_alias(
+            guild_id,
+            normalize_alias(entity_name_or_slug),
+        )
+        if slug is None:
+            slug = alias_slug(entity_name_or_slug)
+        edges, linked_rows, entity = await asyncio.gather(
+            self._store.entity_stance_edges(guild_id, slug, limit=limit),
+            self._store.links_for_node(
+                guild_id, NodeType.ENTITY, slug, active_only=True, limit=limit
+            ),
+            self._store.get_entity(guild_id, slug),
+        )
+        edges = await self._collapse(guild_id, edges)
+
+        def bucket(polarity: Polarity) -> tuple[str, ...]:
+            return tuple(
+                dict.fromkeys(
+                    edge.src_id
+                    for edge in edges
+                    if edge.polarity is polarity and edge.src_type is NodeType.USER
+                )
+            )
+
+        mentioned = tuple(
+            dict.fromkeys(
+                user_id
+                for _row, record in linked_rows
+                for user_id in (record.subject_id, record.attribution.speaker_id)
+                if user_id
+            )
+        )
+        return EntityUsers(
+            entity_slug=slug,
+            entity_name=entity.name if entity else entity_name_or_slug,
+            positive=bucket(Polarity.POSITIVE),
+            negative=bucket(Polarity.NEGATIVE),
+            other=bucket(Polarity.NEUTRAL),
+            mentioned=mentioned,
+            total_evidence=sum(edge.occurrences for edge in edges),
         )
 
     async def similar_users(

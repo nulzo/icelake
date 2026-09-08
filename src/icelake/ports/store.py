@@ -309,8 +309,13 @@ class MemoryStore(Protocol):
         as its member, write paths use it to stop minting new twins.
         """
 
-    async def link_entity_to_user(self, guild_id: str, slug: str, user_id: str) -> None:
-        """Record that this entity node is the guild member ``user_id``."""
+    async def link_entity_to_user(self, guild_id: str, slug: str, user_id: str | None) -> None:
+        """Record that this entity node is the guild member ``user_id``.
+
+        ``None`` clears the bridge — required when a name that once resolved
+        uniquely becomes ambiguous (a second member registers it), because an
+        ambiguous name must own no twin (grounded-or-silent).
+        """
 
     async def merge_entities(
         self,
