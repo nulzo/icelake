@@ -11,14 +11,14 @@ fact fails the build.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
+from tests.conftest import ScriptedLLM
 
 from icelake import DiscordMemory, MessageEvent
-from tests.conftest import ScriptedLLM
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 

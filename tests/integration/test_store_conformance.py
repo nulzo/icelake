@@ -203,6 +203,36 @@ class TestFacts:
         all_ids = {f.id for f in (*page_one.items, *page_two.items)}
         assert len(all_ids) == 5
 
+    async def test_list_facts_random_sample_preserves_filters(self, store) -> None:
+        now = datetime.now(UTC)
+        for index in range(5):
+            await store.insert_fact(make_fact(id=f"fct_random_{index}"))
+        await store.insert_fact(make_fact(id="fct_other_subject", subject_id="u2"))
+        await store.insert_fact(make_fact(id="fct_server", subject_id=None))
+        await store.insert_fact(make_fact(id="fct_inactive", valid_until=now))
+
+        page = await store.list_facts(
+            "g1",
+            subject_id="u1",
+            include_server=False,
+            active_only=True,
+            limit=3,
+            random=True,
+        )
+
+        assert len(page.items) == 3
+        assert page.next_cursor is None
+        assert len({fact.id for fact in page.items}) == 3
+        assert {fact.id for fact in page.items} <= {f"fct_random_{index}" for index in range(5)}
+
+        full_page = await store.list_facts(
+            "g1", subject_id="u1", active_only=True, limit=100, random=True
+        )
+        assert {fact.id for fact in full_page.items} == {
+            f"fct_random_{index}" for index in range(5)
+        }
+        assert full_page.next_cursor is None
+
     async def test_top_strength_ordering(self, store) -> None:
         await store.insert_fact(make_fact(id="weak", strength=1.0))
         await store.insert_fact(make_fact(id="strong", strength=9.0))

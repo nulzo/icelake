@@ -298,7 +298,10 @@ class FactsMixin:
         active_only: bool = True,
         limit: int = 50,
         cursor: str | None = None,
+        random: bool = False,
     ) -> Page[FactRecord]:
+        if random and cursor is not None:
+            raise ValueError("cursor cannot be used with random sampling")
         conditions = ["guild_id=?"]
         params: list[object] = [guild_id]
         if subject_id is None:
@@ -308,16 +311,17 @@ class FactsMixin:
             params.extend([subject_id, int(include_server)])
         if active_only:
             conditions.append("valid_until IS NULL AND superseded_by_id IS NULL")
-        if cursor:
+        if cursor and not random:
             conditions.append("id>?")
             params.append(cursor)
+        order = "RANDOM()" if random else "id"
         params.append(limit)
         rows = await self._db.query(
-            f"SELECT * FROM dm_facts WHERE {' AND '.join(conditions)} ORDER BY id LIMIT ?",
+            f"SELECT * FROM dm_facts WHERE {' AND '.join(conditions)} ORDER BY {order} LIMIT ?",
             tuple(params),
         )
         items = tuple(record_from_row(r) for r in rows)
-        next_cursor = items[-1].id if len(items) == limit and items else None
+        next_cursor = items[-1].id if not random and len(items) == limit and items else None
         return Page(items=items, next_cursor=next_cursor)
 
     async def top_strength_facts(
