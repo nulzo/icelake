@@ -200,7 +200,8 @@ class OmniStyleBot(commands.Bot):
 
         # Reattach provenance post-generation: deterministic embedder scoring
         # (no LLM call) weaves jump links at the spans sources support. The
-        # answer model never sees tags or URLs.
+        # answer model never sees tags or URLs. Custom footers, mixed web
+        # sources, and used-only numbering: examples/citations.py.
         cited = await self.memory.cite(reply, ctx)
         reply = cited.text
         if not reply.strip():

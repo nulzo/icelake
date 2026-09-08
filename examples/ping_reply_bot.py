@@ -156,6 +156,7 @@ class PingReplyBot(commands.Bot):
 
         # Reattach provenance post-generation: deterministic embedder scoring
         # (no LLM call) weaves jump links at the spans sources support.
+        # Custom footers and mixed sources: examples/citations.py.
         cited = await self.memory.cite(reply_text, ctx)
         reply_text = cited.text
         if not reply_text.strip():

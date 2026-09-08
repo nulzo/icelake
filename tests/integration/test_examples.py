@@ -12,6 +12,38 @@ EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 sys.path.insert(0, str(EXAMPLES.parent))
 
 
+def test_citations_example_runs_end_to_end(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = importlib.import_module("examples.citations")
+    asyncio = pytest.importorskip("asyncio")
+    asyncio.run(module.main())
+    out = capsys.readouterr().out
+    assert "same URL returns the same source: True" in out
+    assert "[[1]]" in out
+    assert "the rust book never matched a span" in out
+    assert "[3] bob" in out
+    assert "persona voice cited: False" in out
+    assert "two facts pointing at the same message keep number [1]" in out
+    assert "footer numbers must walk Citations.citable" in out
+
+
+def test_lifecycle_example_runs_end_to_end(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = importlib.import_module("examples.lifecycle")
+    asyncio = pytest.importorskip("asyncio")
+    asyncio.run(module.main())
+    out = capsys.readouterr().out
+    assert "'ali' -> 100000000000000001" in out
+    assert "history after update+forget" in out
+    assert "FactCommitted fired: 1" in out
+    assert "action=remember" in out
+    assert "observe after opt-out ignored=True" in out
+    assert "import into a fresh store: 3 facts" in out
+    assert "healthy=True" in out
+
+
 def test_relationship_queries_example_runs_end_to_end(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

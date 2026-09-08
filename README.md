@@ -99,7 +99,8 @@ Rendering is deterministic splicing, not parsing: `apply()` inserts
 citable sources. **Presentation beyond the inline weave is yours.**
 `AttributedReply.claims` and `.sources` carry the matched spans and used-only
 sources for footers, logging, or analytics. Pass `weave=False` to render
-entirely yourself.
+entirely yourself. Footer numbers must walk `Citations.citable` so they agree
+with the inline labels. See [`examples/citations.py`](examples/citations.py).
 
 ```python
 from icelake import Citations
@@ -123,6 +124,8 @@ Examples:
 
 - [`examples/omni_style_bot.py`](examples/omni_style_bot.py) - full bot: learns from everyone, replies when pinged or replied to, `/memory` slash commands, name-in-prose lookups
 - [`examples/ping_reply_bot.py`](examples/ping_reply_bot.py) - smaller ping-reply bot
+- [`examples/citations.py`](examples/citations.py) - closed-set citations, weave vs footer, used-only rendering, no Discord or LLM
+- [`examples/lifecycle.py`](examples/lifecycle.py) - facts, identity, admin, ops, events, recall
 - [`examples/name_lookup_tool.py`](examples/name_lookup_tool.py) - "what do you know about X?" tool handler, no Discord or LLM
 - [`examples/relationship_queries.py`](examples/relationship_queries.py) - graph queries with no Discord or LLM
 - [`examples/e2e_simulation.py`](examples/e2e_simulation.py) - scripted-guild eval
