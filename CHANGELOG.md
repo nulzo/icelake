@@ -11,6 +11,18 @@ of `security`, `removed`, `deprecated`, `added`, `changed`, `fixed`.
 
 <!-- towncrier release notes start -->
 
+## [0.6.1](https://github.com/nulzo/icelake/tree/v0.6.1) - 2026-09-10
+
+### Added
+
+- Two runnable examples covering the rest of the public surface. `examples/citations.py` walks the presentation layer: closed-set registration, provider-anchored web links, `memory.cite` used-only weaving, `weave=False` footers numbered from `Citations.citable`, hashing-embedder paraphrase limits, and `render_fact_list`. `examples/lifecycle.py` covers facts CRUD, identity, events, recall, classify_command, opt-out/purge/export-import, and ops health. ([#citation-lifecycle-examples](https://github.com/nulzo/icelake/issues/citation-lifecycle-examples))
+- Entity-centric graph reads and identity collapse. New `graph.users_for_entity(guild, name)` answers "who likes golf?" in one call: stance buckets (positive/negative/other) from typed edges plus mention-only members from incidence links, identity-collapsed. New `graph.shared_n(guild, user_ids)` is the true N-way intersection of members' entity hubs ("what do these three have in common?"), and `shared_attributions` is now the pair form of it. Recall closes the entity loop: `entity_hint` (now also on `prompt_context`) seeds graph-hop from the entity node so "does anyone like golf?" hops golf to members to their hubs. The entity channel matches multi-word aliases longest-first ("board games" resolves as one node). Subject reads (links, pair-intersect, hop) expand to entity twins so members mentioned by name before speaking recall fully. `ScoredFact.hop_path` now records the node path that surfaced each hop fact. Person-entity twins bridge automatically when an alias uniquely registers (`identity.register_alias` / `handle_member_rename`), and un-bridge if the name later becomes ambiguous. `store.link_entity_to_user` accepts `None` to clear. ([#entity-graph-queries](https://github.com/nulzo/icelake/issues/entity-graph-queries))
+
+### Fixed
+
+- Recall no longer raises when the L2 reranker scores fewer documents than the fused pool. Stale vector/graph ids dropped by `get_facts` are skipped; score-arity mismatches and reranker exceptions still degrade to hybrid order. ([#reranker-stale-pool](https://github.com/nulzo/icelake/issues/reranker-stale-pool))
+
+
 ## [0.6.0](https://github.com/nulzo/icelake/tree/v0.6.0) - 2026-09-08
 
 ### Added

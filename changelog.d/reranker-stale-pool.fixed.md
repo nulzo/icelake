@@ -1,1 +1,0 @@
-Recall no longer raises when the L2 reranker scores fewer documents than the fused pool. Stale vector/graph ids dropped by `get_facts` are skipped; score-arity mismatches and reranker exceptions still degrade to hybrid order.
