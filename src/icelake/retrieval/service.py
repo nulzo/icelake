@@ -173,29 +173,32 @@ class RecallService:
         pool_size = min(self._config.reranker_pool_size, len(scored))
         pool = scored[:pool_size]
         record_by_id = {record.id: record for record in records}
-        documents = [record_by_id[item[0]].text for item in pool if item[0] in record_by_id]
+        # get_facts drops missing ids (stale vector/graph hits). Score only
+        # stored docs; zip against that aligned list, never the full pool.
+        aligned = [item for item in pool if item[0] in record_by_id]
+        documents = [record_by_id[item[0]].text for item in aligned]
         if not documents:
             return scored, {}
         try:
             scores = await self._reranker.score(query.text, documents)
+            if len(scores) != len(aligned):
+                logger.warning(
+                    "reranker returned %d scores for %d documents", len(scores), len(aligned)
+                )
+                return scored, {}
+            threshold = self._config.reranker_threshold
+            reranked: list[tuple[float, RerankResult]] = []
+            rerank_scores: dict[str, float] = {}
+            for item, rerank_score in zip(aligned, scores, strict=True):
+                if threshold is not None and rerank_score < threshold:
+                    continue
+                reranked.append((rerank_score, item))
+                rerank_scores[item[0]] = rerank_score
+            reranked.sort(key=lambda pair: pair[0], reverse=True)
+            return [item for _score, item in reranked] + scored[pool_size:], rerank_scores
         except Exception:
             logger.warning("reranker failed; degrading to hybrid order", exc_info=True)
             return scored, {}
-        if len(scores) != len(documents):
-            logger.warning(
-                "reranker returned %d scores for %d documents", len(scores), len(documents)
-            )
-            return scored, {}
-        threshold = self._config.reranker_threshold
-        reranked: list[tuple[float, RerankResult]] = []
-        rerank_scores: dict[str, float] = {}
-        for item, rerank_score in zip(pool, scores, strict=True):
-            if threshold is not None and rerank_score < threshold:
-                continue
-            reranked.append((rerank_score, item))
-            rerank_scores[item[0]] = rerank_score
-        reranked.sort(key=lambda pair: pair[0], reverse=True)
-        return [item for _score, item in reranked] + scored[pool_size:], rerank_scores
 
     def _strength_map(self, records: tuple[FactRecord, ...]) -> dict[str, float]:
         """Recency-aware strength: Ebbinghaus retention times log-scaled strength."""

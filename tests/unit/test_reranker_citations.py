@@ -14,6 +14,7 @@ from icelake.errors import ConfigError
 from icelake.models.facts import FactCategory, FactRecord, SourceRef, SourceRole
 from icelake.models.retrieval import Citation, RecallQuery, ScoredFact
 from icelake.retrieval.injection import InjectionBuilder, _primary_citation
+from icelake.retrieval.service import RecallService
 
 GUILD = "500000000000000001"
 ALICE = "100000000000000001"
@@ -91,16 +92,16 @@ class TestRerankerAdapters:
 
     def test_from_spec_openrouter(self) -> None:
         config = RerankerConfig.from_spec(
-            "openai://key@openrouter.ai/api/v1?model=qwen/qwen3-reranker-8b"
+            "openai://key@openrouter.ai/api/v1?model=voyageai/rerank-2.5-lite"
         )
         assert config.provider is RerankerProvider.OPENAI
         assert config.base_url == "https://openrouter.ai/api/v1"
         assert config.api_key == "key"
-        assert config.model == "qwen/qwen3-reranker-8b"
+        assert config.model == "voyageai/rerank-2.5-lite"
 
     def test_from_spec_openrouter_default_model(self) -> None:
         config = RerankerConfig.from_spec("openai://key@openrouter.ai/api/v1")
-        assert config.model == "qwen/qwen3-reranker-8b"
+        assert config.model == "voyageai/rerank-2.5-lite"
 
     def test_from_spec_unknown_raises(self) -> None:
         with pytest.raises(ConfigError, match="unknown reranker spec"):
@@ -109,7 +110,7 @@ class TestRerankerAdapters:
     def test_retrieval_config_coerces_reranker_url(self) -> None:
         config = RetrievalConfig(reranker="openai://key@openrouter.ai/api/v1")
         assert config.reranker.provider is RerankerProvider.OPENAI
-        assert config.reranker.model == "qwen/qwen3-reranker-8b"
+        assert config.reranker.model == "voyageai/rerank-2.5-lite"
 
 
 class TestOpenRouterReranker:
@@ -119,7 +120,7 @@ class TestOpenRouterReranker:
                 provider=RerankerProvider.OPENAI,
                 base_url="https://openrouter.ai/api/v1",
                 api_key="key",
-                model="qwen/qwen3-reranker-8b",
+                model="voyageai/rerank-2.5-lite",
             )
         )
         reranker._client = httpx.AsyncClient(transport=transport)
@@ -147,7 +148,7 @@ class TestOpenRouterReranker:
         assert scores == (0.9, 0.1)
         assert captured["url"] == "https://openrouter.ai/api/v1/rerank"
         assert captured["auth"] == "Bearer key"
-        assert captured["body"]["model"] == "qwen/qwen3-reranker-8b"
+        assert captured["body"]["model"] == "voyageai/rerank-2.5-lite"
         assert captured["body"]["query"] == "table tennis"
         assert captured["body"]["documents"] == ["plays table tennis", "likes chess"]
         assert captured["body"]["top_n"] == 2
@@ -200,6 +201,26 @@ class TestRerankerDegrade:
         assert result.facts
         assert result.facts[0].rerank_score is None
         await client.close()
+
+    async def test_rerank_aligns_scores_to_stored_docs_not_stale_pool(self) -> None:
+        ghost = ("fct_ghost", 0.9, (0.5, 0.0, 0.0, 0.0), ())
+        real = ("fct_real", 0.4, (0.4, 0.0, 0.0, 0.0), ())
+        reranker = _StubReranker([0.7])
+        service = RecallService(
+            store=None,  # type: ignore[arg-type]
+            vectors=None,
+            embedder=None,
+            reranker=reranker,
+            config=RetrievalConfig(),
+        )
+        scored, scores = await service._apply_reranker(
+            RecallQuery(guild_id=GUILD, text="table tennis"),
+            [ghost, real],
+            (_fact("plays table tennis", fact_id="fct_real"),),
+        )
+        assert reranker.calls[0][1] == ["plays table tennis"]
+        assert scores == {"fct_real": 0.7}
+        assert [item[0] for item in scored] == ["fct_real"]
 
     async def test_recall_uses_reranker_scores(self, make_client) -> None:
         client, _ = make_client(llm=False)

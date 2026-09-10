@@ -577,7 +577,7 @@ MemoryConfig(
     retrieval={
         "default_token_budget": 2400,
         # Optional L2 after hybrid RRF. Default is "none" (zero-LLM hot path).
-        # "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=qwen/qwen3-reranker-8b"
+        # "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=voyageai/rerank-2.5-lite"
         # "local" needs icelake[local-embeddings]. Failure degrades to hybrid order.
         "reranker": "none",
         "hop_depth": 2,  # user -> entity -> other attributions

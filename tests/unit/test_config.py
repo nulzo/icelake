@@ -179,10 +179,10 @@ def test_retrieval_caps_default_and_override() -> None:
 
 def test_retrieval_reranker_url_nested() -> None:
     config = MemoryConfig(
-        retrieval={"reranker": "openai://k@openrouter.ai/api/v1?model=qwen/qwen3-reranker-8b"}
+        retrieval={"reranker": "openai://k@openrouter.ai/api/v1?model=voyageai/rerank-2.5-lite"}
     )
     assert config.retrieval.reranker.base_url == "https://openrouter.ai/api/v1"
-    assert config.retrieval.reranker.model == "qwen/qwen3-reranker-8b"
+    assert config.retrieval.reranker.model == "voyageai/rerank-2.5-lite"
 
 
 def test_unknown_top_level_key_rejected() -> None:

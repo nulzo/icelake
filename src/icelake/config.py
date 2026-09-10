@@ -8,7 +8,7 @@ Providers are configured by URL strings for frictionless setup::
                 # "openai://$KEY@api.openai.com/v1?model=text-embedding-3-small"
                 # "local"             # sentence-transformers if installed
     retrieval.reranker = "none"      # default: first-stage hybrid only
-                # "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=qwen/qwen3-reranker-8b"
+                # "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=voyageai/rerank-2.5-lite"
                 # "local"             # sentence-transformers CrossEncoder if installed
 
 Every nested group can also be passed as a typed object for programmatic composition.
@@ -205,7 +205,7 @@ class RerankerConfig(FrozenModel):
             + (f":{parsed.port}" if parsed.port else "")
             + parsed.path,
             api_key=_expand(unquote(parsed.username or "")) or None,
-            model=(model_values[0] if model_values else "qwen/qwen3-reranker-8b"),
+            model=(model_values[0] if model_values else "voyageai/rerank-2.5-lite"),
         )
 
 
