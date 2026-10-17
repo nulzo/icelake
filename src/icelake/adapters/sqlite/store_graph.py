@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime
+from typing import Any
 
 from icelake.adapters.sqlite.connection import SqliteConnection, dumps, iso
 from icelake.adapters.sqlite.store_facts import parse_moment
+from icelake.governance import fact_fenced, generation_map
 from icelake.models.facts import FactRecord
 from icelake.models.graph import (
     EdgeKind,
@@ -34,9 +36,14 @@ def _alias_from_row(row: sqlite3.Row) -> AliasRecord:
 
 
 class IdentityGraphMixin:
-    """Identity + graph persistence over ``self._db``."""
+    """Identity + graph persistence over ``self._db``.
+
+    Composed onto :class:`~icelake.adapters.sqlite.store.SqliteStore`, which
+    provides the governance read methods the fence consults.
+    """
 
     _db: SqliteConnection
+    governance_generations: Any
 
     # -- aliases -----------------------------------------------------------------
 
@@ -164,6 +171,9 @@ class IdentityGraphMixin:
                 created_at=parse_moment(row["created_at"]),
             )
             record = record_from_row(row)
+            generations = await generation_map(self, guild_id, (record,))
+            if fact_fenced(record, generations):
+                continue
             results.append((link, record))
         return tuple(results[:limit])
 

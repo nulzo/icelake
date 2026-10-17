@@ -32,25 +32,16 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.12", "3.13"]
-    services:
-      mongodb:
-        image: mongo:7
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd "mongosh --eval 'db.adminCommand({ ping: 1 })'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-          --health-start-period 20s
     env:
-      MONGODB_URI: mongodb://127.0.0.1:27017/icelake_test
+      MONGODB_URI: mongodb://127.0.0.1:27017/?replicaSet=icelake_test&directConnection=true
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --group dev
+      - name: Start disposable replica set
+        run: docker run --detach --name icelake-mongo -p 27017:27017 mongo:7 --replSet icelake_test --bind_ip_all
       - name: Wait for MongoDB
         run: |
           for i in $(seq 1 30); do
@@ -59,7 +50,25 @@ jobs:
           done
           echo "MongoDB did not become ready" >&2
           exit 1
-      - run: uv run pytest tests/ -q --cov=icelake --cov-report=xml
+      - name: Initialize transactions
+        run: |
+          uv run python - <<'PY'
+          import time
+          from pymongo import MongoClient
+          client = MongoClient('mongodb://127.0.0.1:27017/?directConnection=true')
+          client.admin.command('replSetInitiate', {
+              '_id': 'icelake_test',
+              'members': [{'_id': 0, 'host': 'localhost:27017'}],
+          })
+          for _ in range(60):
+              if client.admin.command('hello').get('isWritablePrimary'):
+                  break
+              time.sleep(1)
+          else:
+              raise RuntimeError('replica set did not elect a primary')
+          client.close()
+          PY
+      - run: uv run pytest tests/ -q --live-mongo --cov=icelake --cov-report=xml
       - uses: codecov/codecov-action@v5
         if: matrix.python-version == '3.12'
         with:

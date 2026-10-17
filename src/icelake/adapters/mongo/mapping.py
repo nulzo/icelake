@@ -79,6 +79,7 @@ def fact_to_doc(record: FactRecord) -> dict[str, Any]:
         "tags": list(record.tags),
         "expires_at": _dt_out(record.expires_at),
         "version": record.version,
+        "governance": dict(record.governance),
     }
 
 
@@ -116,6 +117,7 @@ def fact_from_doc(doc: dict[str, Any]) -> FactRecord:
         tags=tuple(doc.get("tags", [])),
         expires_at=_dt_in(doc.get("expires_at")),
         version=int(doc.get("version", 1)),
+        governance=dict(doc.get("governance", {})),
     )
 
 
@@ -254,6 +256,8 @@ def summary_to_doc(summary: ProfileSummary) -> dict[str, Any]:
         "text": summary.text,
         "generated_at": _dt_out(summary.generated_at),
         "source_fact_count": summary.source_fact_count,
+        "schema_version": summary.schema_version,
+        "sources": [source.model_dump(mode="json") for source in summary.sources],
     }
 
 
@@ -265,4 +269,6 @@ def summary_from_doc(doc: dict[str, Any]) -> ProfileSummary:
         text=doc["text"],
         generated_at=_dt_in(doc.get("generated_at")),
         source_fact_count=int(doc.get("source_fact_count", 0)),
+        schema_version=doc.get("schema_version", 1),
+        sources=doc.get("sources", ()),
     )

@@ -1,12 +1,13 @@
 """Mongo adapter unit tests: mapping round-trips + config wiring (server-free).
 
-Live-server conformance runs via tests/integration/test_mongo_live.py when
-MONGODB_URI is set (skipped otherwise).
+Live-server conformance requires --live-mongo and MONGODB_URI.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
 
 import pytest
 
@@ -159,18 +160,174 @@ class TestConfigWiring:
         assert MemoryConfig(storage="mongodb://localhost:27017/mydb").storage.backend == "mongo"
         assert MemoryConfig(storage="mongodb+srv://cluster.example/db").storage.backend == "mongo"
 
-    def test_mongo_store_requires_pymongo_but_loads_with_it(self) -> None:
-        pytest.importorskip("pymongo")
+    async def test_mongo_store_requires_pymongo_but_loads_with_it(
+        self, mongo_client: MagicMock
+    ) -> None:
         from icelake.adapters.mongo import MongoStore
         from icelake.api.client import _build_store
         from icelake.config import MemoryConfig
 
         store = _build_store(MemoryConfig(storage="mongodb://localhost:27017/memdb"))
-        assert isinstance(store, MongoStore)
+        try:
+            assert isinstance(store, MongoStore)
+            assert store.db.name == "memdb"
+        finally:
+            await store.close()
+        mongo_client.close.assert_awaited_once()
 
-    async def test_mongo_store_ping_fails_fast_without_server(self) -> None:
-        pytest.importorskip("pymongo")
+    @pytest.mark.parametrize("fails", [False, True])
+    async def test_mongo_store_ping_uses_fake_database(
+        self, mongo_client: MagicMock, fails: bool
+    ) -> None:
         from icelake.adapters.mongo import MongoStore
 
-        store = MongoStore("mongodb://127.0.0.1:1/?serverSelectionTimeoutMS=200")
-        assert await store.ping() is False
+        store = MongoStore("mongodb://localhost/ignored", database="icelake_test_unit")
+        store.db.command.side_effect = RuntimeError("offline") if fails else None
+        try:
+            assert await store.ping() is (not fails)
+            store.db.command.assert_awaited_once_with("ping")
+        finally:
+            await store.close()
+        mongo_client.close.assert_awaited_once()
+
+
+@pytest.fixture()
+def mongo_client(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    pymongo = pytest.importorskip("pymongo")
+    client = MagicMock()
+    client.close = AsyncMock()
+    client.drop_database = AsyncMock()
+
+    def database(name: str) -> MagicMock:
+        db = MagicMock()
+        db.name = name
+        db.client = client
+        db.command = AsyncMock(return_value={"setName": "unit-replica"})
+        db.__getitem__.return_value.create_index = AsyncMock()
+        return db
+
+    client.__getitem__.side_effect = database
+    monkeypatch.setattr(pymongo, "AsyncMongoClient", MagicMock(return_value=client))
+    return client
+
+
+def live_config(enabled: bool = True) -> pytest.Config:
+    config = MagicMock(spec=pytest.Config)
+    config.getoption.return_value = enabled
+    return config
+
+
+class TestMongoTestInfrastructure:
+    async def test_opt_in_precedes_environment_and_constructor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests import conftest
+
+        environment = MagicMock()
+        constructor = MagicMock(side_effect=AssertionError("must not construct"))
+        monkeypatch.setattr(conftest.os, "environ", environment)
+        monkeypatch.setattr(conftest, "MongoStore", constructor)
+        with pytest.raises(pytest.skip.Exception, match="--live-mongo"):
+            async with conftest.mongo_test_store(live_config(False)):
+                pytest.fail("must not yield")
+        environment.get.assert_not_called()
+        constructor.assert_not_called()
+
+    async def test_opt_in_requires_uri(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from tests import conftest
+
+        monkeypatch.delenv("MONGODB_URI", raising=False)
+        constructor = MagicMock(side_effect=AssertionError("must not construct"))
+        monkeypatch.setattr(conftest, "MongoStore", constructor)
+        with pytest.raises(pytest.fail.Exception, match="requires MONGODB_URI"):
+            async with conftest.mongo_test_store(live_config()):
+                pytest.fail("must not yield")
+        constructor.assert_not_called()
+
+    async def test_unique_explicit_database_and_owned_cleanup(
+        self, monkeypatch: pytest.MonkeyPatch, mongo_client: MagicMock
+    ) -> None:
+        from tests.conftest import mongo_test_store
+
+        monkeypatch.setenv("MONGODB_URI", "mongodb://localhost/ignored")
+        pymongo = pytest.importorskip("pymongo")
+        names: list[str] = []
+        for _ in range(2):
+            async with mongo_test_store(live_config()) as store:
+                name = store.db.name
+                assert name.startswith("icelake_test_")
+                assert UUID(hex=name.removeprefix("icelake_test_")).version == 4
+                names.append(name)
+                pymongo.AsyncMongoClient.assert_called_with(
+                    "mongodb://localhost/ignored", serverSelectionTimeoutMS=5000
+                )
+                mongo_client.__getitem__.assert_called_with(name)
+                assert store.queue.col is store.db["dm_messages"]
+                assert store.vectors.col is store.db["dm_vectors"]
+            mongo_client.drop_database.assert_awaited_with(name)
+        assert names[0] != names[1]
+        assert mongo_client.close.await_count == 2
+
+    @pytest.mark.parametrize("target", ["icelake", f"icelake_test_{UUID(int=0).hex}", ""])
+    async def test_unsafe_target_rejected_before_any_writes(
+        self, monkeypatch: pytest.MonkeyPatch, mongo_client: MagicMock, target: str
+    ) -> None:
+        from tests.conftest import mongo_test_store
+
+        monkeypatch.setenv("MONGODB_URI", "mongodb://localhost/ignored")
+        db = mongo_client["unused"]
+        db.name = target
+        mongo_client.__getitem__.side_effect = None
+        mongo_client.__getitem__.return_value = db
+        with pytest.raises(ValueError, match="exact generated database"):
+            async with mongo_test_store(live_config()):
+                pytest.fail("must not yield")
+        db.__getitem__.return_value.create_index.assert_not_awaited()
+        db.command.assert_not_awaited()
+        mongo_client.drop_database.assert_not_awaited()
+        mongo_client.close.assert_awaited_once()
+
+    async def test_setup_retarget_rejected_before_ping(
+        self, monkeypatch: pytest.MonkeyPatch, mongo_client: MagicMock
+    ) -> None:
+        from tests import conftest
+
+        monkeypatch.setenv("MONGODB_URI", "mongodb://localhost/ignored")
+
+        async def retarget(store: conftest.MongoStore) -> None:
+            store.db.name = "icelake"
+
+        ping = AsyncMock()
+        monkeypatch.setattr(conftest.MongoStore, "setup", retarget)
+        monkeypatch.setattr(conftest.MongoStore, "ping", ping)
+        with pytest.raises(ValueError, match="exact generated database"):
+            async with conftest.mongo_test_store(live_config()):
+                pytest.fail("must not yield")
+        ping.assert_not_awaited()
+        mongo_client.drop_database.assert_not_awaited()
+        mongo_client.close.assert_awaited_once()
+
+    @pytest.mark.parametrize("failure", ["setup", "ping", "body", "cleanup", "retarget"])
+    async def test_failure_cleanup_always_closes(
+        self, monkeypatch: pytest.MonkeyPatch, mongo_client: MagicMock, failure: str
+    ) -> None:
+        from tests import conftest
+
+        monkeypatch.setenv("MONGODB_URI", "mongodb://localhost/ignored")
+        if failure in {"setup", "ping"}:
+            monkeypatch.setattr(
+                conftest.MongoStore, failure, AsyncMock(side_effect=RuntimeError(failure))
+            )
+        if failure == "cleanup":
+            mongo_client.drop_database.side_effect = RuntimeError(failure)
+        with pytest.raises((RuntimeError, ValueError)):
+            async with conftest.mongo_test_store(live_config()) as store:
+                if failure == "body":
+                    raise RuntimeError(failure)
+                if failure == "retarget":
+                    store.db.name = "icelake_test_other"
+        if failure == "retarget":
+            mongo_client.drop_database.assert_not_awaited()
+        else:
+            mongo_client.drop_database.assert_awaited_once()
+        mongo_client.close.assert_awaited_once()

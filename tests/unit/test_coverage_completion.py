@@ -12,6 +12,7 @@ from icelake.api.client import DiscordMemory
 from icelake.api.events import EventBus
 from icelake.config import MemoryConfig
 from icelake.consolidation.service import ConsolidationService, profile_summary_due
+from icelake.consolidation.validity import summary_source
 from icelake.models.events import BatchCompleted, FactCommitted
 from icelake.models.facts import ProfileSummary
 from icelake.models.retrieval import CHANNELS_DISCOVERY, ChannelName
@@ -201,6 +202,10 @@ class TestConsolidation:
         old = ProfileSummary(
             guild_id=GUILD, subject_id=ALICE, text="previous digest", source_fact_count=2
         )
+        records = await client.facts.get_all(GUILD, ALICE)
+        old = old.model_copy(
+            update={"sources": tuple(summary_source(record) for record in records)}
+        )
         await client._store.put_summary(old)
         await client.regenerate_summaries(GUILD, (ALICE,))
         doc = await client._store.get_summary(GUILD, ALICE)
@@ -210,8 +215,15 @@ class TestConsolidation:
     async def test_no_llm_keeps_existing_summary(self, make_client) -> None:
         client, _ = make_client(llm=False)
         await client.start()
+        seed = await client.facts.remember(
+            guild_id=GUILD, subject_id=ALICE, text="kept digest seed fact for provenance"
+        )
         existing = ProfileSummary(
-            guild_id=GUILD, subject_id=ALICE, text="kept", source_fact_count=1
+            guild_id=GUILD,
+            subject_id=ALICE,
+            text="kept",
+            source_fact_count=1,
+            sources=(summary_source(seed),),
         )
         await client._store.put_summary(existing)
         service = ConsolidationService(

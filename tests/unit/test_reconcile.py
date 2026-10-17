@@ -96,7 +96,7 @@ class TestDeterministicReinforce:
         assert plan.collisions == [] and plan.direct_adds == []
         assert llm.calls == []
 
-    async def test_near_duplicate_neighbor_reinforces_without_llm(self) -> None:
+    async def test_near_duplicate_requires_semantic_judgment(self) -> None:
         store, vectors = InMemoryStore(), InMemoryVectorIndex()
         fact = _fact("loves go")
         await _seed(store, vectors, fact, (1.0, 0.0))
@@ -111,8 +111,8 @@ class TestDeterministicReinforce:
             embeddings_by_text={},
         )
 
-        assert [r.id for r, *_ in plan.reinforces] == [fact.id]
-        assert plan.collisions == []
+        assert plan.reinforces == []
+        assert plan.collisions[0].neighbors == (fact,)
         assert llm.calls == []
 
     async def test_mid_band_neighbor_becomes_collision(self) -> None:
@@ -222,7 +222,7 @@ class TestBatchedResolve:
 
         assert decisions == {}
 
-    async def test_noop_without_target_survives(self) -> None:
+    async def test_noop_without_target_is_rejected(self) -> None:
         store, vectors = InMemoryStore(), InMemoryVectorIndex()
         await _seed(store, vectors, _fact("lives in omaha"), (1.0, 0.0))
         embedder = _FixedEmbedder({"still in omaha": (1.0, 1.0)})
@@ -239,8 +239,7 @@ class TestBatchedResolve:
 
         decisions = await reconciler.resolve_collisions(plan.collisions)
 
-        assert decisions[0][0].kind is ReconcileKind.NOOP
-        assert decisions[0][0].target_id is None
+        assert decisions == {}
 
 
 @pytest.mark.parametrize("kind", ["update", "invalidate"])
@@ -251,3 +250,18 @@ def test_wire_schema_accepts_integer_target_ids(kind: str) -> None:
         {"kind": kind, "target_id": 7, "candidate_index": 0}
     )
     assert decision.target_id == "7"
+
+
+async def test_personal_reconciliation_cannot_reinforce_server_fact() -> None:
+    store, vectors = InMemoryStore(), InMemoryVectorIndex()
+    fact = _fact("loves coffee").model_copy(update={"subject_id": None})
+    await _seed(store, vectors, fact, (1.0, 0.0))
+    reconciler = _reconciler(store, vectors, None, _FixedEmbedder({"loves coffee": (1.0, 0.0)}))
+    plan = await reconciler.build_plan(
+        [(_proposal("loves coffee"), USER, USER)],
+        guild_id=GUILD,
+        batch_subject_id=USER,
+        embeddings_by_text={},
+    )
+    assert not plan.reinforces and not plan.collisions
+    assert len(plan.direct_adds) == 1

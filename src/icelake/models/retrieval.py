@@ -10,6 +10,7 @@ from pydantic import Field
 from icelake.models.common import FrozenModel, TokenUsage
 from icelake.models.facts import FactRecord
 from icelake.models.identity import Resolution
+from icelake.permissions import Audience
 
 
 class Scope(StrEnum):
@@ -67,7 +68,7 @@ def discovery_pairs(
     )
     if not related:
         return ()
-    members = (asker_id, *related)
+    members = (asker_id, *related) if asker_id else related
     return tuple(
         (members[i], members[j]) for i in range(len(members)) for j in range(i + 1, len(members))
     )
@@ -103,6 +104,7 @@ class RecallQuery(FrozenModel):
     """Explicit retrieval request (API.md §6.2). Scope enforced store-side."""
 
     guild_id: str
+    audience: Audience | None = None
     text: str | None = None
     subject_ids: tuple[str, ...] = ()
     pair_ids: tuple[tuple[str, str], ...] = ()
@@ -141,6 +143,7 @@ class Citation(FrozenModel):
 
 
 class RecallWarning(StrEnum):
+    AUDIENCE_REQUIRED = "audience_required"
     IDENTITY_AMBIGUOUS = "identity_ambiguous"
     BUDGET_TRIMMED = "budget_trimmed"
     DEGRADED_CHANNEL = "degraded_channel"
@@ -161,6 +164,8 @@ class RecallResult(FrozenModel):
 class PromptContext(FrozenModel):
     """Everything a consumer needs for one LLM turn (API.md §6.1)."""
 
+    guild_id: str | None = None
+    audience: Audience | None = None
     injection_block: str
     facts: tuple[ScoredFact, ...] = ()
     citations: tuple[Citation, ...] = ()

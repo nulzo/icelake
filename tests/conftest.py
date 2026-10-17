@@ -3,16 +3,84 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+import os
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 
+from icelake.adapters.in_memory.store import InMemoryStore
+from icelake.adapters.mongo import MongoStore
+from icelake.adapters.sqlite.store import SqliteStore
 from icelake.api.client import DiscordMemory
 from icelake.config import MemoryConfig
 from icelake.models.events import MessageEvent
 from icelake.ports.clock import FixedClock, IdGen, SystemClock, UlidIdGen
 from icelake.ports.llm import ChatRequest, ChatResponse
+
+MongoStoreFactory = Callable[[], AbstractAsyncContextManager[MongoStore]]
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption("--live-mongo", action="store_true", help="Enable disposable MongoDB tests")
+
+
+def _check_mongo_database(store: MongoStore, database: str) -> None:
+    if store.db.name != database:
+        raise ValueError("Mongo test store must target its exact generated database")
+
+
+@asynccontextmanager
+async def mongo_test_store(config: pytest.Config) -> AsyncIterator[MongoStore]:
+    if not config.getoption("--live-mongo"):
+        pytest.skip("MongoDB tests require --live-mongo")
+    uri = os.environ.get("MONGODB_URI")
+    if not uri:
+        pytest.fail("--live-mongo requires MONGODB_URI")
+    database = f"icelake_test_{uuid4().hex}"
+    store = MongoStore(uri, database=database)
+    try:
+        _check_mongo_database(store, database)
+        try:
+            await store.setup()
+            _check_mongo_database(store, database)
+            if not await store.ping():
+                pytest.fail("MongoDB test database ping failed")
+            yield store
+        finally:
+            _check_mongo_database(store, database)
+            await store.db.client.drop_database(database)
+    finally:
+        await store.close()
+
+
+@pytest.fixture()
+def mongo_store_factory(pytestconfig: pytest.Config) -> MongoStoreFactory:
+    return lambda: mongo_test_store(pytestconfig)
+
+
+@pytest.fixture()
+async def mongo_store(mongo_store_factory: MongoStoreFactory) -> AsyncIterator[MongoStore]:
+    async with mongo_store_factory() as backend:
+        yield backend
+
+
+@pytest.fixture(params=["in_memory", "sqlite", "mongo"])
+async def store(
+    request: pytest.FixtureRequest, mongo_store_factory: MongoStoreFactory
+) -> AsyncIterator[InMemoryStore | SqliteStore | MongoStore]:
+    if request.param == "mongo":
+        async with mongo_store_factory() as backend:
+            yield backend
+        return
+    local = InMemoryStore() if request.param == "in_memory" else SqliteStore("sqlite://:memory:")
+    try:
+        await local.setup()
+        yield local
+    finally:
+        await local.close()
 
 
 class ScriptedLLM:
@@ -76,6 +144,8 @@ def fixed_clock():
 
 def make_config(**overrides) -> MemoryConfig:
     values: dict = {
+        "recovery": {"max_attempts": 1},  # Legacy immediate-dead-letter scenarios.
+        "access": {"require_audience": False},  # Trusted control-plane fixtures.
         "storage": "sqlite://:memory:",
         "batching": {
             "batch_size_messages": 3,
@@ -91,7 +161,8 @@ def make_config(**overrides) -> MemoryConfig:
 
 
 @pytest.fixture()
-def make_client(fixed_clock):
+async def make_client(fixed_clock):
+    clients: list[DiscordMemory] = []
     """Factory producing fully-wired clients with scripted LLMs.
 
     ``llm=False`` builds a client with NO llm (degraded-mode paths).
@@ -107,6 +178,7 @@ def make_client(fixed_clock):
                 id_gen=id_gen or SeqIdGen(),
                 llm=None,
             )
+            clients.append(client)
             return client, None
         resolved_llm = (
             llm
@@ -123,9 +195,12 @@ def make_client(fixed_clock):
             id_gen=id_gen or SeqIdGen(),
             llm=resolved_llm,
         )
+        clients.append(client)
         return client, resolved_llm
 
-    return _make
+    yield _make
+    for client in clients:
+        await client.close(drain=False)
 
 
 @pytest.fixture()

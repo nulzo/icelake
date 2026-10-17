@@ -163,8 +163,8 @@ class TestInMemoryQueueEdges:
         claim = await queue.claim_batch(key, now=NOW, lease_seconds=30, owner="w1", limit=1)
         assert await queue.renew_lease(key, owner="other", now=NOW, lease_seconds=60) is False
         assert await queue.renew_lease(key, owner="w1", now=NOW, lease_seconds=60) is True
-        await queue.release_key(key, owner="w1")
         await queue.complete_messages(tuple(m.message_id for m in claim.messages), owner="w1")
+        await queue.release_key(key, owner="w1")
         recent = await queue.recent_messages("g1", 10)
         assert recent[0].message_id == "keep"
         pruned = await queue.prune_processed(older_than=NOW + timedelta(seconds=1))

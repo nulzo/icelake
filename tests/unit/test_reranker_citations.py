@@ -284,6 +284,95 @@ class TestRerankerDegrade:
         await client.close()
 
 
+@pytest.mark.parametrize("scope", ["guild", "server"])
+async def test_ineligible_candidates_never_cross_reranker_boundary(scope: str) -> None:
+    from collections import Counter
+    from collections.abc import Sequence
+
+    from icelake.adapters.in_memory.store import InMemoryStore
+    from icelake.identity.guards import BotGuard
+    from icelake.models.retrieval import ChannelName, Scope
+
+    records = (
+        _fact("allowed", "allowed").model_copy(update={"subject_id": None}),
+        _fact("blocked", "blocked").model_copy(update={"subject_id": "blocked"}),
+        _fact("bot", "bot").model_copy(update={"subject_id": "bot"}),
+        _fact("excluded", "excluded").model_copy(update={"subject_id": "excluded"}),
+        _fact("inactive", "inactive").model_copy(update={"superseded_by_id": "new"}),
+        _fact("personal", "personal"),
+        _fact("shared private", "shared").model_copy(update={"related_user_ids": ("blocked",)}),
+    )
+
+    class CandidateStore(InMemoryStore):
+        async def top_strength_facts(self, *args, **kwargs):
+            return records
+
+    class RecordingReranker:
+        def __init__(self) -> None:
+            self.documents: list[str] = []
+
+        async def score(self, query: str, documents: Sequence[str]) -> tuple[float, ...]:
+            self.documents.extend(documents)
+            return tuple(0.9 for _ in documents)
+
+    store = CandidateStore()
+    for record in records:
+        await store.insert_fact(record)
+    checks: Counter[str] = Counter()
+
+    async def blocked(guild_id: str, user_id: str) -> bool:
+        checks[user_id] += 1
+        return user_id == "blocked"
+
+    guard = BotGuard()
+    guard.register("bot")
+    reranker = RecordingReranker()
+    service = RecallService(
+        store=store,
+        vectors=None,
+        embedder=None,
+        reranker=reranker,
+        config=RetrievalConfig(),
+        guard=guard,
+        is_subject_blocked=blocked,
+    )
+    result = await service.recall(
+        RecallQuery(
+            guild_id=GUILD,
+            text="private",
+            scope=Scope(scope),
+            exclude_ids=("excluded",),
+            channels=frozenset({ChannelName.BASELINE}),
+        )
+    )
+    expected = {"allowed", "personal"} if scope == "guild" else {"allowed"}
+    assert set(reranker.documents) == expected
+    assert {sf.fact.text for sf in result.facts} == expected
+    assert all(count <= 2 for count in checks.values())
+
+
+async def test_consent_changed_during_rerank_is_checked_again(make_client) -> None:
+    client, _ = make_client(llm=False)
+    await client.start()
+    await client.facts.remember(guild_id=GUILD, subject_id=ALICE, text="plays tennis")
+
+    class OptOutReranker:
+        async def score(self, query, documents):
+            await client._store.set_opt_out(GUILD, ALICE, True)
+            return tuple(0.9 for _ in documents)
+
+    client._reranker = OptOutReranker()
+    result = await client.recall(
+        RecallQuery(
+            guild_id=GUILD,
+            subject_ids=(ALICE,),
+            text="tennis",
+        )
+    )
+    assert not result.facts
+    await client.close(drain=False)
+
+
 class TestCitationEnrichment:
     def test_citation_model_accepts_enriched_fields(self) -> None:
         citation = Citation(
@@ -309,7 +398,7 @@ class TestCitationEnrichment:
         assert citation.channel_id == "c1"
         assert citation.score == 0.9
         assert citation.rerank_score == 0.85
-        assert citation.subject_name == "alice"
+        assert citation.subject_name == ALICE
         assert citation.url.endswith("/c1/m1")
 
     def test_primary_citation_prefers_display_name(self) -> None:

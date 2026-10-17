@@ -31,6 +31,7 @@ def message_to_doc(message: StoredMessage) -> dict[str, Any]:
         "status": PENDING,
         "lease_owner": None,
         "lease_until": None,
+        "governance": dict(message.governance),
     }
 
 
@@ -48,6 +49,7 @@ def doc_to_message(doc: dict[str, Any]) -> StoredMessage:
         author_is_bot=bool(doc.get("author_is_bot")),
         mention_ids=tuple(json.loads(doc.get("mention_ids") or "[]")),
         status=MessageStatus(doc.get("status", "pending")),
+        governance=dict(doc.get("governance", {})),
     )
 
 
@@ -141,7 +143,6 @@ class MongoIngestQueue:
                 {
                     "_id": f"{key.guild_id}:{key.subject_key}",
                     "$or": [
-                        {"owner": owner},
                         {"lease_until": {"$lte": now.isoformat()}},
                     ],
                 },
@@ -158,12 +159,7 @@ class MongoIngestQueue:
         except DuplicateKeyError:
             # A live lease held by another worker rejected the CAS.
             return False
-        if result.upserted_id or result.modified_count:
-            return True
-        held = await self.col.database["dm_batch_leases"].find_one(
-            {"_id": f"{key.guild_id}:{key.subject_key}", "owner": owner},
-        )
-        return held is not None
+        return bool(result.upserted_id or result.modified_count)
 
     async def renew_lease(
         self,
@@ -176,16 +172,40 @@ class MongoIngestQueue:
         from datetime import timedelta
 
         result = await self.col.database["dm_batch_leases"].update_one(
-            {"_id": f"{key.guild_id}:{key.subject_key}", "owner": owner},
+            {
+                "_id": f"{key.guild_id}:{key.subject_key}",
+                "owner": owner,
+                "lease_until": {"$gt": now.isoformat()},
+            },
             {
                 "$set": {
                     "lease_until": (now + timedelta(seconds=lease_seconds)).isoformat(),
                 }
             },
         )
-        return bool(result.modified_count > 0)
+        if not result.matched_count:
+            return False
+        await self.col.update_many(
+            {
+                "guild_id": key.guild_id,
+                "subject_key": key.subject_key,
+                "status": CLAIMED,
+                "lease_owner": owner,
+            },
+            {"$set": {"lease_until": (now + timedelta(seconds=lease_seconds)).isoformat()}},
+        )
+        return True
 
     async def release_key(self, key: BatchKey, *, owner: str) -> None:
+        await self.col.update_many(
+            {
+                "guild_id": key.guild_id,
+                "subject_key": key.subject_key,
+                "status": CLAIMED,
+                "lease_owner": owner,
+            },
+            {"$set": {"status": PENDING, "lease_owner": None, "lease_until": None}},
+        )
         await self.col.database["dm_batch_leases"].delete_one(
             {"_id": f"{key.guild_id}:{key.subject_key}", "owner": owner}
         )
@@ -224,6 +244,7 @@ class MongoIngestQueue:
                     }
                 },
                 sort=[("created_at", 1)],
+                return_document=True,
             )
             if doc is None:
                 break
@@ -238,22 +259,31 @@ class MongoIngestQueue:
         return int(result.modified_count)
 
     async def release_expired_leases(self, now: datetime) -> int:
-        expired = [
-            doc
-            async for doc in self.col.database["dm_batch_leases"].find(
-                {"lease_until": {"$lte": now.isoformat()}},
-            )
-        ]
+        cutoff = ensure_aware(now).isoformat()
+        leases = self.col.database["dm_batch_leases"]
         released = 0
-        for lease in expired:
-            guild_id = lease.get("guild_id", "")
-            subject_key = lease.get("subject_key", "")
+        # Inspect expired rows too: a crash during release may leave no key doc.
+        cursor = self.col.find({"status": CLAIMED, "lease_until": {"$lte": cutoff}})
+        async for row in cursor:
+            key_id = f"{row['guild_id']}:{row['subject_key']}"
+            owner = row.get("lease_owner")
+            await leases.find_one_and_delete(
+                {"_id": key_id, "owner": owner, "lease_until": {"$lte": cutoff}}
+            )
+            current = await leases.find_one({"_id": key_id})
+            if current is not None and current.get("owner") == owner:
+                continue  # heartbeat renewed before our CAS
             result = await self.col.update_many(
-                {"guild_id": guild_id, "subject_key": subject_key, "status": CLAIMED},
+                {
+                    "_id": row["_id"],
+                    "status": CLAIMED,
+                    "lease_owner": owner,
+                    "lease_until": {"$lte": cutoff},
+                },
                 {"$set": {"status": PENDING, "lease_owner": None, "lease_until": None}},
             )
             released += int(result.modified_count)
-            await self.col.database["dm_batch_leases"].delete_one({"_id": lease["_id"]})
+        await leases.delete_many({"lease_until": {"$lte": cutoff}})
         return released
 
     async def dead_letter_messages(
@@ -262,10 +292,9 @@ class MongoIngestQueue:
         owner: str,
     ) -> int:
         result = await self.col.update_many(
-            {"_id": {"$in": list(message_ids)}, "status": CLAIMED},
+            {"_id": {"$in": list(message_ids)}, "status": CLAIMED, "lease_owner": owner},
             {"$set": {"status": DEAD, "lease_owner": None}},
         )
-        del owner
         return int(result.modified_count)
 
     async def requeue_dead_letters(self, guild_id: str | None = None) -> int:
@@ -280,6 +309,18 @@ class MongoIngestQueue:
             {"guild_id": guild_id, "status": PENDING},
         )
         return int(count)
+
+    async def drop_governance(self, guild_id: str, user_id: str) -> int:
+        result = await self.col.delete_many(
+            {
+                "guild_id": guild_id,
+                "$or": [
+                    {"author_id": user_id},
+                    {"mention_ids": {"$regex": f'"{user_id}"'}},
+                ],
+            },
+        )
+        return int(result.deleted_count)
 
     async def dead_letter_count(self, guild_id: str) -> int:
         count = await self.col.count_documents(

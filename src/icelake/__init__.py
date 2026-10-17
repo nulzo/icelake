@@ -17,6 +17,7 @@ Quickstart::
 
 from importlib.metadata import version
 
+from icelake.adapters.citation_verifier import LlmCitationVerifier
 from icelake.api.classify import CommandAction, UserMemoryCommand
 from icelake.api.client import DiscordMemory, MemoryOverrides
 from icelake.attribution import AttributedClaim, AttributedReply, ReplyAttribution, attribute
@@ -28,6 +29,7 @@ from icelake.citations import (
     render_fact_list,
 )
 from icelake.config import (
+    AccessConfig,
     BatchingConfig,
     BudgetsConfig,
     EmbeddingsConfig,
@@ -38,6 +40,7 @@ from icelake.config import (
     MemoryConfig,
     ObserveConfig,
     PrivacyConfig,
+    RecoveryConfig,
     RerankerConfig,
     RerankerProvider,
     RetrievalConfig,
@@ -121,6 +124,9 @@ from icelake.models.events import (
     FactSupersededEvent,
 )
 from icelake.models.operations import ProposedEntity, ProposedFact, ProposedRelation
+from icelake.models.recovery import RecoveryReport
+from icelake.permissions import Audience, ChannelAuthorizer
+from icelake.ports.citations import CitationCandidate, CitationVerification, CitationVerifier
 from icelake.ports.llm import (
     ChatLLM,
     ChatRequest,
@@ -142,24 +148,30 @@ __all__ = [
     "CHANNELS_ALL",
     "CHANNELS_DEFAULT",
     "CHANNELS_DISCOVERY",
+    "AccessConfig",
     "AliasRecord",
     "AliasSource",
     "AttributedClaim",
     "AttributedReply",
     "Attribution",
     "AttributionType",
+    "Audience",
     "BatchCompleted",
     "BatchingConfig",
     "BudgetExceededError",
     "BudgetStep",
     "BudgetsConfig",
+    "ChannelAuthorizer",
     "ChannelName",
     "ChannelSet",
     "ChatLLM",
     "ChatRequest",
     "ChatResponse",
     "Citation",
+    "CitationCandidate",
     "CitationSource",
+    "CitationVerification",
+    "CitationVerifier",
     "Citations",
     "CommandAction",
     "ComponentDegraded",
@@ -189,6 +201,7 @@ __all__ = [
     "IgnoreReason",
     "LifecycleConfig",
     "LlmCapabilityError",
+    "LlmCitationVerifier",
     "LlmConfig",
     "LlmMessage",
     "Memory",
@@ -217,6 +230,8 @@ __all__ = [
     "RecallQuery",
     "RecallResult",
     "RecallWarning",
+    "RecoveryConfig",
+    "RecoveryReport",
     "RejectReason",
     "RelationEdge",
     "RelationVerb",

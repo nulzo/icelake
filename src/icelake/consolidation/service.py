@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from icelake.config import MemoryConfig
+from icelake.consolidation.validity import summary_is_valid, summary_source
 from icelake.models.admin import MeterPurpose
 from icelake.models.facts import FactRecord, ProfileSummary
 from icelake.ports.clock import Clock
@@ -70,17 +71,17 @@ class ConsolidationService:
         threshold = self._config.extraction.auto_consolidate_after_adds
         if adds <= 0 or threshold <= 0:
             return None
-        records = await self._store.top_strength_facts(
+        page = await self._store.list_facts(
             guild_id,
-            subject_ids=(subject_id,),
+            subject_id=subject_id,
             limit=self._config.lifecycle.max_facts_per_user,
         )
-        existing = await self._store.get_summary(guild_id, subject_id)
+        existing = await self._store.get_summary(guild_id, subject_id, now=self._clock.now())
         last = existing.source_fact_count if existing is not None else None
         if not profile_summary_due(
             adds=adds,
             threshold=threshold,
-            fact_count=len(records),
+            fact_count=len(page.items),
             last_source_fact_count=last,
         ):
             return existing
@@ -94,15 +95,21 @@ class ConsolidationService:
         subject_name: str = "",
     ) -> ProfileSummary | None:
         """Rebuild the digest from top-strength active facts."""
-        records = await self._store.top_strength_facts(
+        page = await self._store.list_facts(
             guild_id,
-            subject_ids=(subject_id,) if subject_id else None,
-            server_only=subject_id is None,
+            subject_id=subject_id,
             limit=self._config.lifecycle.max_facts_per_user,
         )
+        records = tuple(sorted(page.items, key=lambda record: record.strength, reverse=True))
         if len(records) < 2 or self._llm is None:
-            return await self._store.get_summary(guild_id, subject_id)
+            return await self._store.get_summary(guild_id, subject_id, now=self._clock.now())
 
+        sources = tuple(summary_source(record) for record in records[:MAX_SUMMARY_FACTS])
+        snapshot = ProfileSummary(
+            guild_id=guild_id, subject_id=subject_id, text="", sources=sources
+        )
+        if not await summary_is_valid(self._store, snapshot, now=self._clock.now()):
+            return None
         label = subject_name or (subject_id or "this server community")
         fact_block = "\n".join(f"- {record.text}" for record in records[:MAX_SUMMARY_FACTS])
         response = await self._llm.complete(
@@ -127,7 +134,7 @@ class ConsolidationService:
         text = response.text.strip()
         if not text or not await self._sane(text, records[:MAX_SUMMARY_FACTS]):
             logger.warning("Summary sanity check failed; keeping previous summary")
-            return await self._store.get_summary(guild_id, subject_id)
+            return await self._store.get_summary(guild_id, subject_id, now=self._clock.now())
 
         summary = ProfileSummary(
             guild_id=guild_id,
@@ -135,20 +142,24 @@ class ConsolidationService:
             text=text,
             generated_at=self._clock.now(),
             source_fact_count=len(records),
+            sources=sources,
         )
+        if not await summary_is_valid(self._store, summary, now=self._clock.now()):
+            return None
         await self._store.put_summary(summary)
-        return summary
+        return await self._store.get_summary(guild_id, subject_id, now=self._clock.now())
 
     async def _sane(self, text: str, records: tuple[FactRecord, ...]) -> bool:
         if self._embedder is None:
             return True
         threshold = self._config.extraction.summary_sanity_threshold
-        (text_embedding,) = await self._embedder.embed((text,))
+        text_embedding, *embeddings = await self._embedder.embed(
+            (text, *(record.text for record in records[:20]))
+        )
         centroid = [0.0] * len(text_embedding)
-        for record in records[:20]:
-            (embedding,) = await self._embedder.embed((record.text,))
+        for embedding in embeddings:
             for index, value in enumerate(embedding):
-                centroid[index] += value / min(len(records), 20)
+                centroid[index] += value / len(embeddings)
         norm = sum(v * v for v in centroid) ** 0.5 or 1.0
         unit_centroid = [v / norm for v in centroid]
         dot = sum(a * b for a, b in zip(text_embedding, unit_centroid, strict=False))

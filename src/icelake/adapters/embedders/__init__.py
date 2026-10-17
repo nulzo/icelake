@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import httpx
+from pydantic import BaseModel, Field, FiniteFloat
 
 from icelake.config import EmbeddingsConfig, EmbeddingsProvider
 from icelake.errors import ConfigError
@@ -60,6 +61,15 @@ class HashingEmbedder:
         vector[index] += sign * weight
 
 
+class _EmbeddingDatum(BaseModel):
+    index: int = Field(ge=0)
+    embedding: tuple[FiniteFloat, ...]
+
+
+class _EmbeddingResponse(BaseModel):
+    data: tuple[_EmbeddingDatum, ...]
+
+
 class OpenAICompatEmbedder:
     """OpenAI ``/embeddings``-compatible adapter (OpenRouter/OpenAI/vLLM/Ollama)."""
 
@@ -84,9 +94,13 @@ class OpenAICompatEmbedder:
                 json={"model": self._config.model, "input": list(chunk)},
             )
             response.raise_for_status()
-            payload = response.json()
-            data = sorted(payload["data"], key=lambda item: item["index"])
-            out.extend(tuple(float(x) for x in item["embedding"]) for item in data)
+            payload = _EmbeddingResponse.model_validate(response.json())
+            data = sorted(payload.data, key=lambda item: item.index)
+            if [item.index for item in data] != list(range(len(chunk))):
+                raise ValueError("embedding response indexes/count do not match the input batch")
+            if any(len(item.embedding) != self.dimensions for item in data):
+                raise ValueError("embedding response dimension differs from configured dimensions")
+            out.extend(item.embedding for item in data)
         return tuple(out)
 
     def _headers(self) -> dict[str, str]:

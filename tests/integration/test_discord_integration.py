@@ -132,6 +132,8 @@ class TestSetupAndCog:
             sent["view"] = view
 
         interaction = SimpleNamespace(
+            id=9001,
+            channel_id=777,
             user=_stub_member(123, "alice"),
             guild_id=555,
             response=SimpleNamespace(send_message=respond),
@@ -168,6 +170,8 @@ class TestSetupAndCog:
             sent["view"] = view
 
         interaction = SimpleNamespace(
+            id=9001,
+            channel_id=777,
             user=_stub_member(123, "alice"),
             guild_id=555,
             response=SimpleNamespace(send_message=respond),
@@ -205,6 +209,8 @@ class TestSetupAndCog:
             sent["text"] = text
 
         interaction = SimpleNamespace(
+            id=9001,
+            channel_id=777,
             user=_stub_member(123, "alice"),
             guild_id=555,
             response=SimpleNamespace(send_message=respond),

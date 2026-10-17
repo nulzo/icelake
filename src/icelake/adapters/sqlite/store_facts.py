@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime
+from typing import Any
 
 from icelake.adapters.sqlite.connection import SqliteConnection, dumps, iso
+from icelake.consolidation.validity import summary_is_valid
+from icelake.governance import fact_fenced, filter_export, generation_map
 from icelake.lifecycle.forget import select_forgotten_facts
 from icelake.lifecycle.prune import select_prune_victims_by_anchor
-from icelake.models.admin import GuildStats, PurgeReport
+from icelake.models.admin import ConsentState, GuildStats, PurgeReport
 from icelake.models.common import Page
 from icelake.models.facts import (
     Attribution,
@@ -75,6 +78,7 @@ def record_from_row(row: sqlite3.Row) -> FactRecord:
         tags=tuple(json.loads(row["tags"] or "[]")),
         expires_at=parse_moment(row["expires_at"]),
         version=int(row["version"]),
+        governance=dict(json.loads(row["governance"] or "{}")),
     )
 
 
@@ -112,13 +116,19 @@ def fact_insert_params(record: FactRecord) -> tuple[object, ...]:
         dumps(list(record.tags)),
         iso(record.expires_at),
         record.version,
+        dumps(dict(record.governance)),
     )
 
 
 class FactsMixin:
-    """Facts/history/summaries/consent/purge/stats over ``self._db``."""
+    """Facts/history/summaries/consent/purge/stats over ``self._db``.
+
+    Composed onto :class:`~icelake.adapters.sqlite.store.SqliteStore`, which
+    provides ``self.queue`` (the purge path deletes queued messages directly).
+    """
 
     _db: SqliteConnection
+    queue: Any
 
     async def insert_fact(self, record: FactRecord) -> None:
         await self._db.execute(
@@ -127,8 +137,8 @@ class FactsMixin:
                  tier, scope, attribution, occurrences, strength, last_reinforced_at,
                  created_at, updated_at, observed_at, valid_from, valid_until,
                  supersedes_id, superseded_by_id, citations, related_user_ids,
-                 entity_slugs, tags, expires_at, version)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 entity_slugs, tags, expires_at, version, governance)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             fact_insert_params(record),
         )
         await self._db.execute(
@@ -142,19 +152,34 @@ class FactsMixin:
             "SELECT * FROM dm_facts WHERE guild_id=? AND id=?",
             (guild_id, fact_id),
         )
-        return record_from_row(row) if row else None
+        if row is None:
+            return None
+        record = record_from_row(row)
+        generations = await generation_map(self, guild_id, (record,))
+        return None if fact_fenced(record, generations) else record
 
     async def get_facts(
         self,
         guild_id: str,
         fact_ids: tuple[str, ...],
     ) -> tuple[FactRecord, ...]:
-        found: list[FactRecord] = []
-        for fact_id in fact_ids:
-            record = await self.get_fact(guild_id, fact_id)
-            if record is not None:
-                found.append(record)
-        return tuple(found)
+        if not fact_ids:
+            return ()
+        records: dict[str, FactRecord] = {}
+        for offset in range(0, len(fact_ids), 500):
+            chunk = fact_ids[offset : offset + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = await self._db.query(
+                f"SELECT * FROM dm_facts WHERE guild_id=? AND id IN ({placeholders})",
+                (guild_id, *chunk),
+            )
+            records.update((row["id"], record_from_row(row)) for row in rows)
+        generations = await generation_map(self, guild_id, tuple(records.values()))
+        return tuple(
+            records[fact_id]
+            for fact_id in fact_ids
+            if fact_id in records and not fact_fenced(records[fact_id], generations)
+        )
 
     async def find_duplicate(
         self,
@@ -317,6 +342,8 @@ class FactsMixin:
             tuple(params),
         )
         items = tuple(record_from_row(r) for r in rows)
+        generations = await generation_map(self, guild_id, items)
+        items = tuple(r for r in items if not fact_fenced(r, generations))
         next_cursor = items[-1].id if len(items) == limit and items else None
         return Page(items=items, next_cursor=next_cursor)
 
@@ -357,7 +384,9 @@ class FactsMixin:
             f"ORDER BY strength DESC, confidence DESC LIMIT ?",
             tuple(params),
         )
-        return tuple(record_from_row(r) for r in rows)
+        records = tuple(record_from_row(r) for r in rows)
+        generations = await generation_map(self, guild_id, records)
+        return tuple(r for r in records if not fact_fenced(r, generations))
 
     async def search_facts_text(
         self,
@@ -407,7 +436,12 @@ class FactsMixin:
         )
         scored = [(record_from_row(r), min(1.0, 1.0 / (1.0 + abs(float(r["rank"]))))) for r in rows]
         scored.sort(key=lambda pair: -pair[1])
-        return tuple(scored[:limit])
+        generations = await generation_map(
+            self, guild_id, tuple(record for record, _score in scored)
+        )
+        return tuple(
+            (record, score) for record, score in scored if not fact_fenced(record, generations)
+        )[:limit]
 
     async def append_history(
         self,
@@ -507,6 +541,8 @@ class FactsMixin:
         self,
         guild_id: str,
         subject_id: str | None,
+        *,
+        now: datetime | None = None,
     ) -> ProfileSummary | None:
         row = await self._db.query_one(
             "SELECT * FROM dm_summaries WHERE guild_id=? AND subject_key=?",
@@ -514,28 +550,33 @@ class FactsMixin:
         )
         if row is None:
             return None
-        return ProfileSummary(
+        provenance = json.loads(row["provenance"])
+        summary = ProfileSummary(
             guild_id=guild_id,
             subject_id=None if row["subject_key"] == "__server__" else row["subject_key"],
             text=row["text"],
             generated_at=parse_moment(row["generated_at"]),
             source_fact_count=int(row["source_fact_count"]),
+            schema_version=provenance.get("schema_version", 1),
+            sources=provenance.get("sources", ()),
         )
+        return summary if await summary_is_valid(self, summary, now=now) else None
 
     async def put_summary(self, summary: ProfileSummary) -> None:
         await self._db.execute(
             """INSERT INTO dm_summaries (guild_id, subject_key, text, generated_at,
-                                         source_fact_count)
-               VALUES (?, ?, ?, ?, ?)
+                                         source_fact_count, provenance)
+               VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(guild_id, subject_key) DO UPDATE SET
                  text=excluded.text, generated_at=excluded.generated_at,
-                 source_fact_count=excluded.source_fact_count""",
+                 source_fact_count=excluded.source_fact_count, provenance=excluded.provenance""",
             (
                 summary.guild_id,
                 summary.subject_id or "__server__",
                 summary.text,
                 iso(summary.generated_at),
                 summary.source_fact_count,
+                summary.model_dump_json(include={"schema_version", "sources"}),
             ),
         )
 
@@ -554,28 +595,63 @@ class FactsMixin:
         return 1
 
     async def set_opt_out(self, guild_id: str, user_id: str, opted_out: bool) -> None:
-        if opted_out:
-            await self._db.execute(
-                "INSERT OR IGNORE INTO dm_optouts (guild_id, user_id) VALUES (?, ?)",
-                (guild_id, user_id),
-            )
-        else:
-            await self._db.execute(
-                "DELETE FROM dm_optouts WHERE guild_id=? AND user_id=?",
-                (guild_id, user_id),
-            )
+        flag = int(opted_out)
+        await self._db.execute(
+            """INSERT INTO dm_governance (guild_id, user_id, opted_out, generation)
+               VALUES (?, ?, ?, 0)
+               ON CONFLICT(guild_id, user_id) DO UPDATE SET opted_out=excluded.opted_out""",
+            (guild_id, user_id, flag),
+        )
 
     async def get_opt_out(self, guild_id: str, user_id: str) -> bool:
+        state = await self.consent_state(guild_id, user_id)
+        return state.opted_out
+
+    async def consent_state(self, guild_id: str, user_id: str) -> ConsentState:
         row = await self._db.query_one(
-            "SELECT user_id FROM dm_optouts WHERE guild_id=? AND user_id=?",
+            "SELECT opted_out, generation FROM dm_governance WHERE guild_id=? AND user_id=?",
             (guild_id, user_id),
         )
-        return row is not None
+        if row is None:
+            return ConsentState()
+        return ConsentState(opted_out=bool(row["opted_out"]), generation=int(row["generation"]))
+
+    async def governance_generations(
+        self,
+        guild_id: str,
+        user_ids: tuple[str, ...],
+    ) -> dict[str, int]:
+        if not user_ids:
+            return {}
+        marks = ",".join("?" * len(user_ids))
+        rows = await self._db.query(
+            f"SELECT user_id, generation FROM dm_governance "
+            f"WHERE guild_id=? AND user_id IN ({marks})",
+            (guild_id, *user_ids),
+        )
+        return {row["user_id"]: int(row["generation"]) for row in rows}
+
+    async def bump_governance_generation(self, guild_id: str, user_id: str) -> int:
+        rows = await self._db.execute_returning(
+            """INSERT INTO dm_governance (guild_id, user_id, opted_out, generation)
+               VALUES (?, ?, COALESCE((SELECT opted_out FROM dm_governance
+                                        WHERE guild_id=? AND user_id=?), 0), 1)
+               ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                 generation = dm_governance.generation + 1
+               RETURNING generation""",
+            (guild_id, user_id, guild_id, user_id),
+        )
+        return int(rows[0]["generation"])
 
     async def purge_user_data(self, guild_id: str, user_id: str, dry_run: bool) -> PurgeReport:
         fact_rows = await self._db.query(
-            "SELECT id, seq FROM dm_facts WHERE guild_id=? AND subject_id=?",
-            (guild_id, user_id),
+            """SELECT id, seq FROM dm_facts WHERE guild_id=? AND (
+               subject_id=? OR json_extract(attribution, '$.speaker_id')=?
+               OR json_extract(attribution, '$.actor_id')=?
+               OR EXISTS(SELECT 1 FROM json_each(related_user_ids) WHERE value=?)
+               OR EXISTS(SELECT 1 FROM json_each(citations)
+                         WHERE json_extract(value, '$.author_id')=?))""",
+            (guild_id, user_id, user_id, user_id, user_id, user_id),
         )
         link_rows = await self._db.query(
             """SELECT memory_id FROM dm_links WHERE guild_id=?
@@ -605,16 +681,26 @@ class FactsMixin:
         )
         if dry_run:
             return report
+        generation = await self.bump_governance_generation(guild_id, user_id)
+        messages_removed = await self.queue.drop_governance(guild_id, user_id)
         for row in fact_rows:
+            await self._db.execute(
+                "DELETE FROM dm_history WHERE guild_id=? AND fact_id=?",
+                (guild_id, row["id"]),
+            )
             await self._db.execute(
                 "DELETE FROM dm_vectors WHERE fact_id=?",
                 (row["id"],),
             )
             await self._db.execute("DELETE FROM dm_facts_fts WHERE rowid=?", (row["seq"],))
-        await self._db.execute(
-            "DELETE FROM dm_facts WHERE guild_id=? AND subject_id=?",
-            (guild_id, user_id),
-        )
+            await self._db.execute(
+                "DELETE FROM dm_facts WHERE guild_id=? AND id=?", (guild_id, row["id"])
+            )
+            await self._db.execute(
+                "DELETE FROM dm_relations WHERE guild_id=? AND EXISTS "
+                "(SELECT 1 FROM json_each(evidence_ids) WHERE value=?)",
+                (guild_id, row["id"]),
+            )
         await self._db.execute(
             "DELETE FROM dm_links WHERE guild_id=? AND node_type='user' AND node_id=?",
             (guild_id, user_id),
@@ -637,11 +723,8 @@ class FactsMixin:
             "DELETE FROM dm_summaries WHERE guild_id=? AND subject_key=?",
             (guild_id, user_id),
         )
-        await self._db.execute(
-            "DELETE FROM dm_optouts WHERE guild_id=? AND user_id=?",
-            (guild_id, user_id),
-        )
-        return report
+        _ = generation
+        return report.model_copy(update={"messages_removed": messages_removed})
 
     async def export_guild(
         self, guild_id: str
@@ -696,7 +779,7 @@ class FactsMixin:
             for r in relation_rows
         )
         facts = tuple(record_from_row(r) for r in fact_rows)
-        return facts, entities, relations
+        return await filter_export(self, guild_id, facts, entities, relations)
 
     async def touch_facts(
         self,
@@ -711,7 +794,7 @@ class FactsMixin:
             return 0
         placeholders = ",".join("?" * len(ids))
         await self._db.execute(
-            f"""UPDATE dm_facts SET last_reinforced_at=?, last_accessed_at=?,
+            f"""UPDATE dm_facts SET last_reinforced_at=?, updated_at=?,
                  version=version+1
                WHERE guild_id=? AND id IN ({placeholders})""",
             (iso(accessed_at), iso(accessed_at), guild_id, *ids),

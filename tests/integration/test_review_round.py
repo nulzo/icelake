@@ -212,7 +212,7 @@ class TestMentionLinksAndSummaryRefresh:
                 event_factory(content=f"message number {i} mentioning chess and long walks")
             )
         await client.flush()
-        doc = await client._store.get_summary(GUILD, ALICE)
+        doc = await client._store.get_summary(GUILD, ALICE, now=client._clock.now())
         assert doc is not None and "chess" in doc.text
         await client.close()
 
@@ -520,7 +520,7 @@ class TestServerFactDedupAndCitations:
         assert primary.guild_id == GUILD
         assert primary.role.value in {"primary", "supporting"}
         ctx = await client.prompt_context(guild_id=GUILD, asker_id=ALICE, text="ranked games")
-        reply = "she mains support in every ranked game"
+        reply = fact.text
         set_ = Citations.from_prompt_context(ctx)
         cited = await client.cite(reply, set_)
         assert "discord.com/channels/" in cited.text

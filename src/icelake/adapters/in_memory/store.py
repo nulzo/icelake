@@ -7,12 +7,19 @@ suite, evals, and small single-process deployments that want zero dependencies.
 from __future__ import annotations
 
 import asyncio
-from contextlib import AbstractAsyncContextManager
-from datetime import datetime
+from collections.abc import AsyncIterator, Callable, Coroutine
+from contextlib import asynccontextmanager
+from copy import deepcopy
+from datetime import UTC, datetime
+from functools import wraps
+from typing import Any, Concatenate
 
+from icelake.concurrency import TaskLock
+from icelake.consolidation.validity import summary_is_valid
+from icelake.governance import fact_fenced, fact_participants, filter_export, generation_map
 from icelake.lifecycle.forget import select_forgotten_facts
 from icelake.lifecycle.prune import select_prune_victims_by_anchor
-from icelake.models.admin import GuildStats, PurgeReport
+from icelake.models.admin import ConsentState, GuildStats, PurgeReport
 from icelake.models.common import Page
 from icelake.models.facts import (
     FactCategory,
@@ -33,7 +40,21 @@ from icelake.models.graph import (
     RelationEdge,
 )
 from icelake.models.identity import AliasRecord, AliasSource
+from icelake.models.recovery import ProjectionJob
 from icelake.ports.store import NodeRef
+
+
+def _serialized[**P, R](
+    operation: Callable[Concatenate[InMemoryStore, P], Coroutine[Any, Any, R]],
+) -> Callable[Concatenate[InMemoryStore, P], Coroutine[Any, Any, R]]:
+    """Readers and direct mutations share the reference transaction's lock."""
+
+    @wraps(operation)
+    async def call(self: InMemoryStore, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        async with self._transaction_lock:
+            return await operation(self, *args, **kwargs)
+
+    return call
 
 
 class InMemoryStore:
@@ -52,24 +73,80 @@ class InMemoryStore:
         self._cursors: dict[tuple[str, str], str] = {}
         self._budgets: dict[tuple[str, str], int] = {}
         self._opt_outs: set[tuple[str, str]] = set()
+        self._governance: dict[tuple[str, str], ConsentState] = {}
+        self._projection_jobs: dict[str, ProjectionJob] = {}
+        self._transaction_owner: asyncio.Task[object] | None = None
+        self._transaction_lock = TaskLock()
         self.closed = False
 
+    @_serialized
     async def setup(self) -> None:
         pass
 
-    def transaction(self) -> AbstractAsyncContextManager[None]:
-        import contextlib
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[None]:
+        """Rollback reference-store mutations on failed or cancelled commits."""
+        if self._transaction_owner is asyncio.current_task():
+            yield
+            return
+        async with self._transaction_lock:
+            self._transaction_owner = asyncio.current_task()
+            snapshot = {
+                key: deepcopy(value)
+                for key, value in vars(self).items()
+                if isinstance(value, (dict, set))
+            }
+            try:
+                yield
+            except BaseException:
+                for key, value in snapshot.items():
+                    setattr(self, key, value)
+                raise
+            finally:
+                self._transaction_owner = None
 
-        return contextlib.nullcontext()
+    @_serialized
+    async def pending_projections(
+        self, limit: int, *, now: datetime | None = None
+    ) -> tuple[ProjectionJob, ...]:
+        moment = now or datetime.now(UTC)
+        return tuple(
+            job
+            for job in self._projection_jobs.values()
+            if job.next_attempt_at is None or job.next_attempt_at <= moment
+        )[:limit]
 
+    @_serialized
+    async def enqueue_projection(self, job: ProjectionJob) -> None:
+        current = self._projection_jobs.get(job.fact_id)
+        if current is None or current.version <= job.version:
+            self._projection_jobs[job.fact_id] = job
+
+    @_serialized
+    async def defer_projection(self, job: ProjectionJob, next_attempt_at: datetime) -> None:
+        current = self._projection_jobs.get(job.fact_id)
+        if current is not None and current.version == job.version:
+            self._projection_jobs[job.fact_id] = job.model_copy(
+                update={"next_attempt_at": next_attempt_at}
+            )
+
+    @_serialized
+    async def complete_projection(self, job: ProjectionJob) -> None:
+        current = self._projection_jobs.get(job.fact_id)
+        if current is not None and current.version == job.version:
+            self._projection_jobs.pop(job.fact_id, None)
+
+    @_serialized
     async def close(self) -> None:
         self.closed = True
 
+    @_serialized
     async def ping(self) -> bool:
         return not self.closed
 
     # -- aliases ---------------------------------------------------------------
 
+    @_serialized
     async def upsert_alias(
         self,
         guild_id: str,
@@ -91,6 +168,7 @@ class InMemoryStore:
             updated_at=datetime.now(),
         )
 
+    @_serialized
     async def resolve_alias_candidates(
         self,
         guild_id: str,
@@ -104,6 +182,7 @@ class InMemoryStore:
         ]
         return tuple(sorted(matches, key=lambda r: -r.weight)[:limit])
 
+    @_serialized
     async def prefix_alias_candidates(
         self,
         guild_id: str,
@@ -119,6 +198,7 @@ class InMemoryStore:
                 seen[record.user_id] = record
         return tuple(sorted(seen.values(), key=lambda r: -r.weight)[:limit])
 
+    @_serialized
     async def aliases_for_user(
         self,
         guild_id: str,
@@ -130,6 +210,7 @@ class InMemoryStore:
             if gid == guild_id and record.user_id == user_id
         )
 
+    @_serialized
     async def delete_aliases_for_user(self, guild_id: str, user_id: str) -> int:
         doomed = [
             key
@@ -142,15 +223,22 @@ class InMemoryStore:
 
     # -- facts -------------------------------------------------------------------
 
+    @_serialized
     async def insert_fact(self, record: FactRecord) -> None:
         self._facts[(record.guild_id, record.id)] = record
 
     def _fact(self, guild_id: str, fact_id: str) -> FactRecord | None:
         return self._facts.get((guild_id, fact_id))
 
+    @_serialized
     async def get_fact(self, guild_id: str, fact_id: str) -> FactRecord | None:
-        return self._fact(guild_id, fact_id)
+        record = self._fact(guild_id, fact_id)
+        if record is None:
+            return None
+        generations = await generation_map(self, guild_id, (record,))
+        return None if fact_fenced(record, generations) else record
 
+    @_serialized
     async def get_facts(
         self,
         guild_id: str,
@@ -159,6 +247,7 @@ class InMemoryStore:
         found = [self._fact(guild_id, fid) for fid in fact_ids]
         return tuple(f for f in found if f is not None)
 
+    @_serialized
     async def find_duplicate(
         self,
         guild_id: str,
@@ -172,6 +261,7 @@ class InMemoryStore:
                 return record
         return None
 
+    @_serialized
     async def reinforce_fact(
         self,
         guild_id: str,
@@ -205,6 +295,7 @@ class InMemoryStore:
         self._facts[(guild_id, fact_id)] = updated
         return updated
 
+    @_serialized
     async def transition_fact(
         self,
         guild_id: str,
@@ -231,6 +322,7 @@ class InMemoryStore:
         self._facts[(guild_id, fact_id)] = new_record
         return new_record
 
+    @_serialized
     async def update_fact_fields(
         self,
         guild_id: str,
@@ -273,6 +365,7 @@ class InMemoryStore:
     def _active(record: FactRecord) -> bool:
         return record.valid_until is None and record.superseded_by_id is None
 
+    @_serialized
     async def list_facts(
         self,
         guild_id: str,
@@ -300,9 +393,12 @@ class InMemoryStore:
         if cursor:
             start = next((i for i, r in enumerate(selected) if r.id > cursor), len(selected))
         window = selected[start : start + limit]
+        generations = await generation_map(self, guild_id, tuple(window))
+        window = [r for r in window if not fact_fenced(r, generations)]
         next_cursor = window[-1].id if len(window) == limit else None
         return Page(items=tuple(window), next_cursor=next_cursor)
 
+    @_serialized
     async def top_strength_facts(
         self,
         guild_id: str,
@@ -325,8 +421,10 @@ class InMemoryStore:
                     continue
             pool.append(record)
         pool.sort(key=lambda r: (-r.strength, -r.confidence, r.id))
-        return tuple(pool[:limit])
+        generations = await generation_map(self, guild_id, tuple(pool[:limit]))
+        return tuple(r for r in pool[:limit] if not fact_fenced(r, generations))
 
+    @_serialized
     async def search_facts_text(
         self,
         guild_id: str,
@@ -365,8 +463,16 @@ class InMemoryStore:
             if hits:
                 scored.append((record, min(1.0, hits / max(1, len(terms)))))
         scored.sort(key=lambda pair: -pair[1])
-        return tuple(scored[:limit])
+        generations = await generation_map(
+            self, guild_id, tuple(record for record, _score in scored[:limit])
+        )
+        return tuple(
+            (record, score)
+            for record, score in scored[:limit]
+            if not fact_fenced(record, generations)
+        )
 
+    @_serialized
     async def append_history(
         self,
         guild_id: str,
@@ -375,6 +481,7 @@ class InMemoryStore:
     ) -> None:
         self._history.setdefault(fact_id, []).append(entry)
 
+    @_serialized
     async def get_history(
         self,
         guild_id: str,
@@ -384,6 +491,7 @@ class InMemoryStore:
 
     # -- links ---------------------------------------------------------------
 
+    @_serialized
     async def add_links(self, rows: tuple[LinkRow, ...]) -> None:
         for row in rows:
             bucket = self._links.setdefault(row.memory_id, [])
@@ -392,6 +500,7 @@ class InMemoryStore:
             ):
                 bucket.append(row)
 
+    @_serialized
     async def links_for_node(
         self,
         guild_id: str,
@@ -425,11 +534,18 @@ class InMemoryStore:
                 elif active_only and not self._active(record):
                     continue
                 results.append((row, record))
-        return tuple(results[:limit])
+        generations = await generation_map(
+            self, guild_id, tuple(record for _row, record in results[:limit])
+        )
+        return tuple(
+            (row, record) for row, record in results[:limit] if not fact_fenced(record, generations)
+        )
 
+    @_serialized
     async def nodes_for_fact(self, guild_id: str, memory_id: str) -> tuple[LinkRow, ...]:
         return tuple(self._links.get(memory_id, ()))
 
+    @_serialized
     async def links_for_nodes(
         self,
         guild_id: str,
@@ -453,7 +569,12 @@ class InMemoryStore:
                     continue
                 per_node[node] = per_node.get(node, 0) + 1
                 results.append((row, record))
-        return tuple(results)
+        generations = await generation_map(
+            self, guild_id, tuple(record for _row, record in results)
+        )
+        return tuple(
+            (row, record) for row, record in results if not fact_fenced(record, generations)
+        )
 
     # -- relations -------------------------------------------------------------
 
@@ -461,6 +582,7 @@ class InMemoryStore:
     def _edge_key(edge: RelationEdge) -> tuple[str, str, str, str, str]:
         return (edge.guild_id, edge.src_id, edge.dst_id, edge.verb, edge.polarity.value)
 
+    @_serialized
     async def upsert_relation(self, edge: RelationEdge) -> RelationEdge:
         key = self._edge_key(edge)
         existing = self._relations.get(key)
@@ -481,6 +603,7 @@ class InMemoryStore:
         self._relations[key] = merged
         return merged
 
+    @_serialized
     async def edges_between(
         self,
         guild_id: str,
@@ -498,6 +621,7 @@ class InMemoryStore:
             and edge.valid_until is None
         )
 
+    @_serialized
     async def incident_edges(
         self,
         guild_id: str,
@@ -515,6 +639,7 @@ class InMemoryStore:
         hits.sort(key=lambda e: -e.weight)
         return tuple(hits[:limit])
 
+    @_serialized
     async def incident_edges_many(
         self,
         guild_id: str,
@@ -546,6 +671,7 @@ class InMemoryStore:
             results.append(edge)
         return tuple(results)
 
+    @_serialized
     async def edges_to_nodes(
         self,
         guild_id: str,
@@ -564,6 +690,7 @@ class InMemoryStore:
         hits.sort(key=lambda e: -e.weight)
         return tuple(hits[:limit])
 
+    @_serialized
     async def drop_evidence_from_edges(
         self,
         guild_id: str,
@@ -587,6 +714,7 @@ class InMemoryStore:
             changed += 1
         return changed
 
+    @_serialized
     async def entity_stance_edges(
         self,
         guild_id: str,
@@ -609,6 +737,7 @@ class InMemoryStore:
 
     # -- entities ----------------------------------------------------------------
 
+    @_serialized
     async def upsert_entity(
         self,
         guild_id: str,
@@ -636,6 +765,7 @@ class InMemoryStore:
             self._entity_aliases.setdefault((guild_id, alias.lower()), slug)
         return record
 
+    @_serialized
     async def bump_entity_facts(self, guild_id: str, slug: str, delta: int = 1) -> None:
         key = (guild_id, slug)
         record = self._entities.get(key)
@@ -646,12 +776,15 @@ class InMemoryStore:
                 }
             )
 
+    @_serialized
     async def get_entity(self, guild_id: str, slug: str) -> EntityRecord | None:
         return self._entities.get((guild_id, slug))
 
+    @_serialized
     async def resolve_entity_alias(self, guild_id: str, alias_norm: str) -> str | None:
         return self._entity_aliases.get((guild_id, alias_norm.lower()))
 
+    @_serialized
     async def entities_linked_to_users(self, guild_id: str) -> dict[str, str]:
         return {
             slug: record.linked_user_id
@@ -659,11 +792,13 @@ class InMemoryStore:
             if gid == guild_id and record.linked_user_id is not None
         }
 
+    @_serialized
     async def link_entity_to_user(self, guild_id: str, slug: str, user_id: str | None) -> None:
         record = self._entities.get((guild_id, slug))
         if record is not None:
             self._entities[(guild_id, slug)] = record.model_copy(update={"linked_user_id": user_id})
 
+    @_serialized
     async def merge_entities(
         self,
         guild_id: str,
@@ -690,17 +825,21 @@ class InMemoryStore:
 
     # -- summaries --------------------------------------------------------------
 
+    @_serialized
     async def get_cursor(self, guild_id: str, key: str) -> str | None:
         return self._cursors.get((guild_id, key))
 
+    @_serialized
     async def set_cursor(self, guild_id: str, key: str, value: str) -> None:
         self._cursors[(guild_id, key)] = value
 
+    @_serialized
     async def list_guild_ids(self) -> tuple[str, ...]:
         # The in-memory queue is a separate object; facts are the durable
         # state this store owns, so they define "active guild" here.
         return tuple(sorted({fact.guild_id for fact in self._facts.values()}))
 
+    @_serialized
     async def charge_guild_tokens(
         self,
         guild_id: str,
@@ -718,6 +857,7 @@ class InMemoryStore:
                 self._budgets[(guild_id, month_key)],
             )
 
+    @_serialized
     async def guild_token_usage(
         self,
         guild_id: str,
@@ -730,36 +870,74 @@ class InMemoryStore:
             self._budgets.get((guild_id, month_key), 0),
         )
 
+    @_serialized
     async def get_summary(
         self,
         guild_id: str,
         subject_id: str | None,
+        *,
+        now: datetime | None = None,
     ) -> ProfileSummary | None:
-        return self._summaries.get((guild_id, subject_id))
+        summary = self._summaries.get((guild_id, subject_id))
+        return summary if summary and await summary_is_valid(self, summary, now=now) else None
 
+    @_serialized
     async def put_summary(self, summary: ProfileSummary) -> None:
         self._summaries[(summary.guild_id, summary.subject_id)] = summary
 
+    @_serialized
     async def delete_summary(self, guild_id: str, subject_id: str | None) -> int:
         return 1 if self._summaries.pop((guild_id, subject_id), None) else 0
 
     # -- governance ----------------------------------------------------------------
 
+    @_serialized
     async def set_opt_out(self, guild_id: str, user_id: str, opted_out: bool) -> None:
         key = (guild_id, user_id)
+        state = self._governance.get(key, ConsentState(opted_out=key in self._opt_outs))
+        self._governance[key] = state.model_copy(update={"opted_out": opted_out})
         if opted_out:
             self._opt_outs.add(key)
         else:
             self._opt_outs.discard(key)
 
+    @_serialized
     async def get_opt_out(self, guild_id: str, user_id: str) -> bool:
         return (guild_id, user_id) in self._opt_outs
 
+    @_serialized
+    async def consent_state(self, guild_id: str, user_id: str) -> ConsentState:
+        return self._governance.get(
+            (guild_id, user_id),
+            ConsentState(opted_out=(guild_id, user_id) in self._opt_outs),
+        )
+
+    @_serialized
+    async def bump_governance_generation(self, guild_id: str, user_id: str) -> int:
+        key = (guild_id, user_id)
+        state = self._governance.get(key, ConsentState(opted_out=key in self._opt_outs))
+        bumped = state.model_copy(update={"generation": state.generation + 1})
+        self._governance[key] = bumped
+        return bumped.generation
+
+    @_serialized
+    async def governance_generations(
+        self,
+        guild_id: str,
+        user_ids: tuple[str, ...],
+    ) -> dict[str, int]:
+        return {
+            user_id: self._governance[(guild_id, user_id)].generation
+            for user_id in user_ids
+            if (guild_id, user_id) in self._governance
+        }
+
+    @_serialized
     async def purge_user_data(self, guild_id: str, user_id: str, dry_run: bool) -> PurgeReport:
         facts_removed = sum(
             1
             for (gid, _), record in self._facts.items()
-            if gid == guild_id and record.subject_id == user_id
+            if gid == guild_id and user_id in fact_participants(record)
         )
         links_removed = 0
         edges_removed = 0
@@ -771,7 +949,7 @@ class InMemoryStore:
                 and (
                     (row.node_type is NodeType.USER and row.node_id == user_id)
                     or any(
-                        rec is not None and rec.subject_id == user_id
+                        rec is not None and user_id in fact_participants(rec)
                         for rec in [self._facts.get((guild_id, row.memory_id))]
                     )
                 )
@@ -800,13 +978,16 @@ class InMemoryStore:
         if dry_run:
             return report
         for (gid, _), record in list(self._facts.items()):
-            if gid == guild_id and record.subject_id == user_id:
+            if gid == guild_id and user_id in fact_participants(record):
                 self._facts.pop((gid, record.id))
+                self._history.pop(record.id, None)
+                self._links.pop(record.id, None)
+        await self.bump_governance_generation(guild_id, user_id)
         await self.delete_aliases_for_user(guild_id, user_id)
         self._summaries.pop((guild_id, user_id), None)
-        self._opt_outs.discard((guild_id, user_id))
         return report
 
+    @_serialized
     async def import_guild(
         self,
         facts: tuple[FactRecord, ...],
@@ -822,6 +1003,7 @@ class InMemoryStore:
                 self._entities[key] = entity
         return len(facts)
 
+    @_serialized
     async def sweep_expired(self, guild_id: str, now: datetime) -> int:
         changed = 0
         for key, record in list(self._facts.items()):
@@ -835,6 +1017,7 @@ class InMemoryStore:
                 changed += 1
         return changed
 
+    @_serialized
     async def prune_to_caps(
         self,
         guild_id: str,
@@ -852,6 +1035,7 @@ class InMemoryStore:
             self._facts[(guild_id, victim.id)] = victim.model_copy(update={"valid_until": now})
         return len(victims)
 
+    @_serialized
     async def apply_forgetting(
         self,
         guild_id: str,
@@ -872,6 +1056,7 @@ class InMemoryStore:
             self._facts[key] = victim.model_copy(update={"valid_until": now})
         return len(victims)
 
+    @_serialized
     async def touch_facts(
         self,
         guild_id: str,
@@ -893,6 +1078,7 @@ class InMemoryStore:
             touched += 1
         return touched
 
+    @_serialized
     async def export_guild(
         self, guild_id: str
     ) -> tuple[
@@ -903,8 +1089,9 @@ class InMemoryStore:
         facts = tuple(r for r in self._facts.values() if r.guild_id == guild_id)
         entities = tuple(e for (gid, _), e in self._entities.items() if gid == guild_id)
         relations = tuple(e for e in self._relations.values() if e.guild_id == guild_id)
-        return facts, entities, relations
+        return await filter_export(self, guild_id, facts, entities, relations)
 
+    @_serialized
     async def guild_stats(self, guild_id: str) -> GuildStats:
         facts = [r for r in self._facts.values() if r.guild_id == guild_id]
         by_tier: dict[MemoryTier, int] = {}

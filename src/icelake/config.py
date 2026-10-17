@@ -137,22 +137,23 @@ class LlmConfig(FrozenModel):
         model = q("model")
         temperature = q("temperature")
         max_tokens_raw = q("max_tokens")
-        config = cls(
+        return cls(
             base_url=base_url,
             api_key=api_key,
             model=model,
+            max_tokens=int(max_tokens_raw) if max_tokens_raw is not None else 1800,
+            temperature=(
+                None
+                if temperature and temperature.strip().lower() == "none"
+                else float(temperature)
+                if temperature is not None
+                else 0.0
+            ),
             small_model=q("small_model"),
             reasoning_effort=q("reasoning"),  # type: ignore[arg-type]  # pydantic validates the Literal
             structured_outputs=q("structured_outputs") or "strict",  # type: ignore[arg-type]
             max_tokens_key=q("max_tokens_key") or "max_tokens",  # type: ignore[arg-type]
         )
-        if max_tokens_raw is not None:
-            object.__setattr__(config, "max_tokens", int(max_tokens_raw))
-        if temperature is not None:
-            # "none" omits the parameter entirely (endpoints that reject it).
-            value = None if temperature.strip().lower() == "none" else float(temperature)
-            object.__setattr__(config, "temperature", value)
-        return config
 
 
 class EmbeddingsProvider(StrEnum):
@@ -213,7 +214,7 @@ class EmbeddingsConfig(FrozenModel):
     provider: EmbeddingsProvider = EmbeddingsProvider.HASHING
     dimensions: int = Field(default=256, ge=32)
     cache_enabled: bool = True
-    cache_max_entries: int = Field(default=50_000, ge=100)
+    cache_max_entries: int = Field(default=2048, ge=100)
     model: str | None = None
     base_url: str | None = None
     api_key: str | None = None
@@ -263,14 +264,20 @@ class BatchingConfig(FrozenModel):
     server_scope_window: int = Field(default=100, ge=10)
 
 
+class RecoveryConfig(FrozenModel):
+    """Bounded worker retries and recoverable vector indexing."""
+
+    max_attempts: int = Field(default=3, ge=1, le=20)
+    retry_initial_seconds: float = Field(default=5, gt=0)
+    retry_max_seconds: float = Field(default=300, gt=0)
+    projection_batch_size: int = Field(default=32, ge=1, le=1000)
+    projection_timeout_seconds: float = Field(default=30, gt=0, le=300)
+
+
 class ExtractionConfig(FrozenModel):
     min_confidence: float = Field(default=0.55, ge=0.0, le=1.0)
     max_candidates_per_batch: int = Field(default=12, ge=1)
     reconcile_collision_threshold: float = Field(default=0.85, ge=0.5, le=1.0)
-    # 0.96, not 0.92: near-dup reinforce bypasses the LLM, so it must only fire
-    # for true paraphrases. At 0.92, refinements like "promoted to charge nurse"
-    # were swallowed into "works as a nurse" without the update ever applying.
-    near_duplicate_threshold: float = Field(default=0.96, ge=0.5, le=1.0)
     noise_gate: bool = True
     auto_consolidate_after_adds: int = Field(
         default=5,
@@ -322,9 +329,8 @@ class RetrievalConfig(FrozenModel):
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
     reranker_threshold: float | None = Field(default=None, ge=0)
     reranker_pool_size: int = Field(default=32, ge=1, le=200)
-    #: Minimum cosine similarity between a reply segment and a source's text
-    #: for the source to be cited at that span. Deterministic attribution
-    #: (``DiscordMemory.cite``) — no LLM, one batched embed per cited turn.
+    #: Candidate-selection threshold when cite() receives a verifier.
+    #: Similarity alone never attaches a citation. Exact restatements need no model.
     citation_min_score: float = Field(default=0.55, ge=0.0, le=1.0)
 
     @field_validator("reranker", mode="before")
@@ -336,6 +342,13 @@ class RetrievalConfig(FrozenModel):
 class BudgetsConfig(FrozenModel):
     guild_daily_prompt_tokens: int | None = None
     guild_monthly_prompt_tokens: int | None = None
+
+
+class AccessConfig(FrozenModel):
+    """Require destination-aware authorization on public retrieval APIs."""
+
+    require_audience: bool = True
+    timeout_seconds: float = Field(default=3.0, gt=0, le=30)
 
 
 class PrivacyConfig(FrozenModel):
@@ -378,6 +391,8 @@ class MemoryConfig(FrozenModel):
     lifecycle: LifecycleConfig = Field(default_factory=LifecycleConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     budgets: BudgetsConfig = Field(default_factory=BudgetsConfig)
+    recovery: RecoveryConfig = Field(default_factory=RecoveryConfig)
+    access: AccessConfig = Field(default_factory=AccessConfig)
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     workers: WorkersConfig = Field(default_factory=WorkersConfig)
 

@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mongo = ["pymongo>=4.10", "dnspython>=2.6"]
+mongo = ["pymongo>=4.17", "dnspython>=2.6"]
 local-embeddings = ["sentence-transformers>=3.0"]
 discord = ["discord.py>=2.4"]
 
@@ -43,7 +43,7 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "discord-py>=2.4",
-    "pymongo>=4.10",
+    "pymongo>=4.17",
     "pyyaml>=6.0",
     "towncrier>=24.8",
 ]

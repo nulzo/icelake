@@ -1,20 +1,8 @@
-"""Claim-level attribution: deterministic matching of reply spans to sources.
+"""Closed-set attribution with conservative defaults and explicit verification.
 
-This is the ALCE ``POSTCITE`` pattern (Gao et al., EMNLP 2023) — the same
-machinery retrieval already uses, pointed at the answer instead of the
-question. Sentences of the reply and the closed set's source texts are
-embedded in one batched call; a source is cited at a span when cosine
-similarity clears the threshold. Dense embeddings absorb paraphrase and
-persona voice the same way they do at retrieval time, so a mutated reply
-("bro is a mayo goblin") still matches the canonical fact text ("klim likes
-mayonnaise").
-
-Why not an LLM: production memory systems (Graphiti, Mem0, Letta) treat
-provenance as data written at ingest and never run a model to attach
-citations; the answer model never sees citation syntax at all. The failure
-mode here is asymmetric by design — a sentence that matches nothing is simply
-uncited; a wrong citation is never produced. No chat completion, no parsing
-of model output, deterministic and unit-testable with a fake embedder.
+Exact restatements can link to their registered evidence. Embeddings only select
+candidate evidence for an optional verifier; similarity is never proof of support.
+A citation indicates provenance, not independent validation of the source's truth.
 """
 
 from __future__ import annotations
@@ -23,6 +11,7 @@ import logging
 
 from icelake.citations import Citations, CitationSource
 from icelake.models.common import FrozenModel
+from icelake.ports.citations import CitationCandidate, CitationVerifier
 from icelake.ports.llm import Embedder
 from icelake.ports.vectors import cosine
 
@@ -87,55 +76,91 @@ class AttributedReply(FrozenModel):
     sources: tuple[CitationSource, ...] = ()
 
 
+def _normalized(text: str) -> str:
+    return " ".join(text.strip().removesuffix(".").split())
+
+
 async def attribute(
     text: str,
     citations: Citations,
-    embedder: Embedder,
+    embedder: Embedder | None = None,
     *,
     threshold: float = DEFAULT_MIN_SCORE,
+    verifier: CitationVerifier | None = None,
 ) -> ReplyAttribution:
-    """Match reply segments to the closed set by embedding similarity.
+    """Attribute exact restatements, or verify bounded semantic candidates.
 
-    One batched embed call per reply, only when there is something to cite.
-    Never raises and never guesses: embedder failure or an empty match set
-    returns an empty attribution, and the caller sends the reply uncited.
+    Without a verifier, no provider is called. With one, embeddings shortlist
+    at most three sources per claim; only explicitly verified pairs are cited.
+    Provider failures abstain. Cancellation propagates to the caller.
     """
     segments = _segments(text)[:MAX_CLAIMS]
-    sources = [
-        (source.excerpt or source.title, source)
-        for source in citations.citable
-        if (source.excerpt or source.title).strip()
-    ]
-    if not segments or not sources:
-        return ReplyAttribution()
-    try:
-        vectors = await embedder.embed(
-            [claim for _, _, claim in segments] + [source_text for source_text, _ in sources]
-        )
-    except Exception:
-        logger.warning("attribution embed failed; reply stays uncited", exc_info=True)
-        return ReplyAttribution()
-    if len(vectors) != len(segments) + len(sources):
-        logger.warning("attribution embed count mismatch; reply stays uncited")
-        return ReplyAttribution()
-    segment_vectors = vectors[: len(segments)]
-    source_vectors = vectors[len(segments) :]
-    claims: list[AttributedClaim] = []
-    for (start, end, claim), segment_vector in zip(segments, segment_vectors, strict=True):
-        ranked = sorted(
-            (
-                (cosine(segment_vector, source_vector), source)
-                for source_vector, (_, source) in zip(source_vectors, sources, strict=True)
-            ),
-            key=lambda pair: pair[0],
-            reverse=True,
-        )
-        matched = tuple(dict.fromkeys(source for score, source in ranked if score >= threshold))[
+    sources = [source for source in citations.citable if source.excerpt.strip()][:100]
+    matches = {
+        index: [source for source in sources if _normalized(claim) == _normalized(source.excerpt)][
             :MAX_SOURCES_PER_CLAIM
         ]
-        if matched:
-            claims.append(AttributedClaim(claim=claim, start=start, end=end, sources=matched))
-    return ReplyAttribution(claims=tuple(claims))
+        for index, (_, _, claim) in enumerate(segments)
+    }
+    if verifier is not None and embedder is not None and segments and sources:
+        try:
+            verified = await _verify_candidates(segments, sources, embedder, verifier, threshold)
+            for index, supported in verified.items():
+                matches[index] = list(dict.fromkeys([*matches[index], *supported]))[
+                    :MAX_SOURCES_PER_CLAIM
+                ]
+        except Exception:
+            logger.warning(
+                "citation verification failed; uncertain claims stay uncited", exc_info=True
+            )
+    return ReplyAttribution(
+        claims=tuple(
+            AttributedClaim(claim=claim, start=start, end=end, sources=tuple(matches[index]))
+            for index, (start, end, claim) in enumerate(segments)
+            if matches[index]
+        )
+    )
+
+
+async def _verify_candidates(
+    segments: list[tuple[int, int, str]],
+    sources: list[CitationSource],
+    embedder: Embedder,
+    verifier: CitationVerifier,
+    threshold: float,
+) -> dict[int, list[CitationSource]]:
+    vectors = await embedder.embed(
+        [claim for _, _, claim in segments] + [source.excerpt[:4000] for source in sources]
+    )
+    if len(vectors) != len(segments) + len(sources):
+        return {}
+    candidates: list[CitationCandidate] = []
+    bindings: dict[int, tuple[int, CitationSource]] = {}
+    for index, (_, _, claim) in enumerate(segments):
+        if len(claim) > 4000:
+            continue
+        ranked = sorted(
+            zip(sources, vectors[len(segments) :], strict=True),
+            key=lambda pair: cosine(vectors[index], pair[1]),
+            reverse=True,
+        )
+        for source, vector in ranked[:MAX_SOURCES_PER_CLAIM]:
+            if cosine(vectors[index], vector) < threshold:
+                continue
+            candidate_id = len(candidates)
+            candidates.append(
+                CitationCandidate(id=candidate_id, claim=claim, evidence=source.excerpt[:4000])
+            )
+            bindings[candidate_id] = (index, source)
+    if not candidates:
+        return {}
+    result = await verifier.verify(tuple(candidates))
+    supported: dict[int, list[CitationSource]] = {}
+    for candidate_id in dict.fromkeys(result.supported_ids):
+        if candidate_id in bindings:
+            index, source = bindings[candidate_id]
+            supported.setdefault(index, []).append(source)
+    return supported
 
 
 def _segments(text: str) -> list[tuple[int, int, str]]:

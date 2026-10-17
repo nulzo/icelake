@@ -25,6 +25,7 @@ import discord
 from discord.ext import commands
 
 from icelake import (
+    Audience,
     ChatRequest,
     CommandAction,
     DiscordMemory,
@@ -32,10 +33,13 @@ from icelake import (
     MemoryConfig,
     MessageEvent,
     MessageRole,
+    RecallQuery,
+    SourceRef,
     UserMemoryCommand,
 )
 from icelake.adapters.llm_openai_compat import OpenAICompatLLM, build_chat_llm
 from icelake.config import LlmConfig
+from icelake.integrations.discord_permissions import DiscordChannelAuthorizer
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ping-bot")
@@ -45,7 +49,7 @@ log = logging.getLogger("ping-bot")
 LLM_URL = "openai://$OPENROUTER_API_KEY@openrouter.ai/api/v1?model=z-ai/glm-5.3-flash&reasoning=low"
 
 
-def build_memory() -> DiscordMemory:
+def build_memory(client: discord.Client) -> DiscordMemory:
     """Compose the memory client. Swap storage/embeddings here for production."""
     return DiscordMemory(
         MemoryConfig(
@@ -53,19 +57,20 @@ def build_memory() -> DiscordMemory:
             llm=LLM_URL,
             batching={"batch_size_messages": 8, "max_age_seconds": 180},
             budgets={"guild_daily_prompt_tokens": 200_000},
-        )
+        ),
+        channel_authorizer=DiscordChannelAuthorizer(client),
     )
 
 
 class PingReplyBot(commands.Bot):
     """Replies only when pinged. Learns from everyone all the time."""
 
-    def __init__(self, memory: DiscordMemory) -> None:
+    def __init__(self, memory: DiscordMemory | None = None) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
         super().__init__(command_prefix="!", intents=intents)
-        self.memory = memory
+        self.memory = memory if memory is not None else build_memory(self)
 
     async def setup_hook(self) -> None:
         await self.memory.start()
@@ -138,6 +143,9 @@ class PingReplyBot(commands.Bot):
         ctx = await self.memory.prompt_context(
             guild_id=guild_id,
             asker_id=str(message.author.id),
+            audience=Audience(
+                channel_id=str(message.channel.id), requester_id=str(message.author.id)
+            ),
             text=question,
             mentioned_ids=mentioned_ids,
             thread_participant_ids=thread,
@@ -146,7 +154,7 @@ class PingReplyBot(commands.Bot):
         if ctx.warnings:
             log.info("turn warnings: %s", [w.value for w in ctx.warnings])
 
-        history = await _recent_channel_history(message, limit=6)
+        history: list[tuple[str, str]] = []
         system_prompt = (
             "You are a helpful community bot. Use the labeled MEMORY CONTEXT "
             "below. Facts belong ONLY to the person named in their header.\n\n"
@@ -190,19 +198,38 @@ class PingReplyBot(commands.Bot):
                 subject_id=user_id,
                 text=command.target_text,
                 actor_id=user_id,
+                idempotency_key=str(message.id),
+                source_refs=(
+                    SourceRef(
+                        message_id=str(message.id),
+                        guild_id=guild_id,
+                        channel_id=str(message.channel.id),
+                        author_id=user_id,
+                        content_snippet=message.content,
+                        created_at=message.created_at,
+                        message_url=message.jump_url,
+                    ),
+                ),
             )
             confirm = f'Got it, noted: "{fact.text}"'
         elif command.action is CommandAction.FORGET:
-            page = await self.memory.facts.list_for_subject(
-                guild_id,
-                user_id,
-                include_server=False,
-                limit=25,
+            result = await self.memory.recall(
+                RecallQuery(
+                    guild_id=guild_id,
+                    subject_ids=(user_id,),
+                    top_k=25,
+                    max_per_subject=25,
+                    audience=Audience(
+                        channel_id=str(message.channel.id),
+                        requester_id=user_id,
+                    ),
+                )
             )
+            facts = [item.fact for item in result.facts if item.fact.subject_id == user_id]
             matches = (
-                [fact for fact in page.items if command.target_text.lower() in fact.text.lower()]
+                [fact for fact in facts if command.target_text.lower() in fact.text.lower()]
                 if command.target_text
-                else list(page.items)[:1]
+                else facts[:1]
             )
             if not matches:
                 confirm = "I couldn't find a matching memory to forget."
@@ -214,7 +241,7 @@ class PingReplyBot(commands.Bot):
                         reason="user request",
                         actor_id=user_id,
                     )
-                confirm = f"Forgot {len(matches)} memory(ies) you asked about."
+                confirm = f"Forgot {len(matches[:3])} memory(ies) you asked about."
         else:
             return  # query/update intents: leave to your normal reply path
 
@@ -253,24 +280,11 @@ def _strip_mention(content: str, bot_user_id: int) -> str:
     return re.sub(rf"<@!?{bot_user_id}>", "", content)
 
 
-async def _recent_channel_history(message: discord.Message, *, limit: int):
-    """Hydrate the recent channel window as simple (author, content) turns."""
-    turns: list[tuple[str, str]] = []
-    try:
-        async for msg in message.channel.history(limit=limit, before=message):
-            if not msg.author.bot:
-                turns.append((msg.author.display_name, msg.content))
-    except (discord.HTTPException, discord.Forbidden):
-        pass
-    turns.reverse()
-    return turns
-
-
 _reply_llm: OpenAICompatLLM | None = None
 
 
 def _reply_llm_client() -> OpenAICompatLLM:
-    """One shared reply-model client, built from the same URL as extraction."""
+    """Reuse one reply client for the bot's lifetime."""
     global _reply_llm
     if _reply_llm is None:
         _reply_llm = build_chat_llm(LlmConfig.from_url(LLM_URL))
@@ -304,7 +318,7 @@ def main() -> None:
     token = os.environ.get("DISCORD_TOKEN")
     if not token:
         raise SystemExit("set DISCORD_TOKEN")
-    bot = PingReplyBot(build_memory())
+    bot = PingReplyBot()
 
     @bot.command(name="mystats")
     async def my_stats(ctx: commands.Context) -> None:

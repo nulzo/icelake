@@ -11,14 +11,14 @@ fact fails the build.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
+from tests.conftest import ScriptedLLM
 
 from icelake import DiscordMemory, MessageEvent
-from tests.conftest import ScriptedLLM
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 
@@ -27,7 +27,7 @@ GOLDEN_DIR = Path(__file__).parent / "golden"
 class ExpectedFact:
     """A fact that MUST exist on a subject's profile after the scenario."""
 
-    subject_id: str
+    subject_id: str | None
     text_contains: str
 
 
@@ -107,7 +107,6 @@ async def run_scenario(
 
     memory.observe = tracking_observe  # type: ignore[method-assign]
 
-    now = datetime.now(UTC)
     counter = {"n": 0}
     for msg_spec in scenario.messages:
         counter["n"] += 1
@@ -127,16 +126,13 @@ async def run_scenario(
     failures: list[str] = []
 
     # Check expected facts exist.
-    all_facts: dict[str, list[str]] = {}
-    for subject_id in {ef.subject_id for ef in scenario.expected_facts} | {
-        m["author_id"] for m in scenario.messages
-    }:
-        page = await memory.facts.list_for_subject(
-            scenario.guild_id,
-            subject_id,
-            include_server=False,
-        )
-        all_facts[subject_id] = [f.text.lower() for f in page.items]
+    all_facts: dict[str | None, list[str]] = {}
+    exported = await memory.admin.export_guild(scenario.guild_id)
+    for fact in exported.facts:
+        all_facts.setdefault(fact.subject_id, []).append(fact.text.lower())
+    for expected_skip in scenario.expected_skips:
+        if expected_skip not in skip_reasons:
+            failures.append(f"MISSING SKIP: {expected_skip}")
 
     for ef in scenario.expected_facts:
         subject_texts = all_facts.get(ef.subject_id, [])

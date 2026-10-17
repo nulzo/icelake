@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Coroutine
+from pathlib import Path
 from typing import Any
 
+from icelake.governance import fact_participants
 from icelake.graph.collapse import collapse_edges, twin_refs
 from icelake.identity.aliases import normalize_alias, weight_for_source
+from icelake.identity.guards import BotGuard, ConsentPolicy, SubjectGate
 from icelake.identity.resolver import IdentityResolver
 from icelake.models.admin import MemoryExport, PurgeReport
+from icelake.models.backup import BackupManifest
 from icelake.models.common import Page
 from icelake.models.graph import (
     EntityKind,
@@ -22,7 +26,11 @@ from icelake.models.graph import (
     StanceSummary,
 )
 from icelake.models.identity import AliasRecord, AliasSource, Resolution
+from icelake.models.recovery import ProjectionJob
+from icelake.ports.backup import BackupProvider
+from icelake.ports.queue import IngestQueue
 from icelake.ports.store import MemoryStore, NodeRef
+from icelake.ports.vectors import VectorIndex
 
 
 async def _noop_gate() -> None:
@@ -125,15 +133,40 @@ class GraphApi:
         *,
         store: MemoryStore,
         startup_gate: Callable[[], Coroutine[Any, Any, None]] | None = None,
+        subject_gate: SubjectGate | None = None,
     ) -> None:
         self._store = store
         self._gate = startup_gate or _noop_gate
+        self._subject_gate = subject_gate or SubjectGate(BotGuard(), ConsentPolicy(store))
 
     async def _collapse(
         self, guild_id: str, edges: tuple[RelationEdge, ...]
     ) -> tuple[RelationEdge, ...]:
         """Rewrite entity endpoints that are bridged members into user nodes."""
-        return collapse_edges(edges, await self._store.entities_linked_to_users(guild_id))
+        await self._gate()
+        edges = collapse_edges(edges, await self._store.entities_linked_to_users(guild_id))
+        evidence_ids = tuple(dict.fromkeys(fid for edge in edges for fid in edge.evidence_fact_ids))
+        records = await self._store.get_facts(guild_id, evidence_ids) if evidence_ids else ()
+        participants = {uid for record in records for uid in fact_participants(record)}
+        participants.update(
+            uid
+            for edge in edges
+            for kind, uid in ((edge.src_type, edge.src_id), (edge.dst_type, edge.dst_id))
+            if kind is NodeType.USER
+        )
+        allowed = await self._subject_gate.allowed_ids(guild_id, participants)
+        eligible = {
+            record.id
+            for record in records
+            if record.is_active and allowed.issuperset(fact_participants(record))
+        }
+        return tuple(
+            edge
+            for edge in edges
+            if (edge.src_type is not NodeType.USER or edge.src_id in allowed)
+            and (edge.dst_type is not NodeType.USER or edge.dst_id in allowed)
+            and (not edge.evidence_fact_ids or eligible.intersection(edge.evidence_fact_ids))
+        )
 
     async def _incident(
         self, guild_id: str, user_id: str, *, limit: int
@@ -144,13 +177,14 @@ class GraphApi:
         member mentioned by name before they spoke lives as an entity twin,
         and those edges count too.
         """
+        await self._gate()
         linked = await self._store.entities_linked_to_users(guild_id)
         refs = twin_refs(user_id, linked)
         if len(refs) == 1:
             raw = await self._store.incident_edges(guild_id, refs[0], limit=limit)
         else:
             raw = await self._store.incident_edges_many(guild_id, refs, limit_per_node=limit)
-        return collapse_edges(raw, linked)
+        return await self._collapse(guild_id, raw)
 
     async def between(
         self,
@@ -203,6 +237,7 @@ class GraphApi:
     ) -> StanceSummary:
         from icelake.identity.aliases import alias_slug
 
+        await self._gate()
         slug = await self._store.resolve_entity_alias(
             guild_id,
             normalize_alias(entity_name_or_slug),
@@ -303,6 +338,7 @@ class GraphApi:
         """
         from icelake.identity.aliases import alias_slug
 
+        await self._gate()
         slug = await self._store.resolve_entity_alias(
             guild_id,
             normalize_alias(entity_name_or_slug),
@@ -327,10 +363,13 @@ class GraphApi:
                 )
             )
 
+        records = await self._subject_gate.filter_records(
+            guild_id, tuple(record for _row, record in linked_rows if record.is_active)
+        )
         mentioned = tuple(
             dict.fromkeys(
                 user_id
-                for _row, record in linked_rows
+                for record in records
                 for user_id in (record.subject_id, record.attribution.speaker_id)
                 if user_id
             )
@@ -442,14 +481,20 @@ class AdminApi:
         self,
         store: MemoryStore,
         startup_gate: Callable[[], Coroutine[Any, Any, None]] | None = None,
+        queue: IngestQueue | None = None,
+        vectors: VectorIndex | None = None,
     ) -> None:
         self._store = store
         self._gate = startup_gate or _noop_gate
+        self._queue = queue
+        self._vectors = vectors
 
     async def set_opt_out(self, guild_id: str, user_id: str, opted_out: bool) -> None:
+        await self._gate()
         await self._store.set_opt_out(guild_id, user_id, opted_out)
 
     async def get_opt_out(self, guild_id: str, user_id: str) -> bool:
+        await self._gate()
         return await self._store.get_opt_out(guild_id, user_id)
 
     async def purge_user(
@@ -459,22 +504,47 @@ class AdminApi:
         *,
         dry_run: bool = True,
     ) -> PurgeReport:
-
         await self._gate()
-        return await self._store.purge_user_data(guild_id, user_id, dry_run=dry_run)
+        report = await self._store.purge_user_data(guild_id, user_id, dry_run=dry_run)
+        if not dry_run and self._queue is not None:
+            messages_removed = await self._queue.drop_governance(guild_id, user_id)
+            report = report.model_copy(
+                update={"messages_removed": report.messages_removed + messages_removed}
+            )
+        return report
+
+    async def backup(self, directory: Path) -> BackupManifest:
+        """Snapshot a built-in SQLite deployment into a new directory.
+
+        Independent queue/vector resources need coordinated provider snapshots.
+        Mongo deployments use MongoReplicaBackup or managed service backups.
+        """
+        await self._gate()
+        if not isinstance(self._store, BackupProvider):
+            raise NotImplementedError("use the deployment's native backup adapter")
+        if self._queue is not None and self._queue is not getattr(self._store, "queue", None):
+            raise ValueError("independent queue requires its own coordinated backup")
+        if self._vectors is not None and self._vectors is not getattr(self._store, "vectors", None):
+            raise ValueError("independent vector index requires its own backup or rebuild plan")
+        return await self._store.backup(directory)
 
     async def import_guild(self, export: MemoryExport) -> int:
-        """Restore a previously exported guild. Returns fact count inserted."""
-        result = await self._store.import_guild(
-            export.facts,
-            export.entities,
-            export.relations,
-        )
+        """Import portable content; this is NOT operational backup restoration."""
+        await self._gate()
+        async with self._store.transaction():
+            result = await self._store.import_guild(export.facts, export.entities, export.relations)
+            for record in export.facts:
+                await self._store.enqueue_projection(
+                    ProjectionJob(
+                        guild_id=record.guild_id, fact_id=record.id, version=record.version
+                    )
+                )
         return result
 
     async def export_guild(self, guild_id: str) -> MemoryExport:
         from datetime import datetime
 
+        await self._gate()
         facts, entities, relations = await self._store.export_guild(guild_id)
         return MemoryExport(
             guild_id=guild_id,

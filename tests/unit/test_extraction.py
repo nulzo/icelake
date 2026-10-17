@@ -294,3 +294,30 @@ class TestNoLlmDegradation:
             existing_memories_block="",
         )
         assert not result.has_candidates
+
+
+@pytest.mark.parametrize("indexes", [(), (0,), (-1,), (3,), (1, 99)])
+async def test_invalid_or_missing_multimessage_evidence_is_rejected(roster, indexes) -> None:
+    from tests.conftest import extraction_response
+
+    llm = ScriptedLLM(
+        {
+            "extraction": extraction_response(
+                [
+                    {
+                        "subject_token": "p0",
+                        "text": "alice enjoys learning new programming languages",
+                        "source_message_indexes": list(indexes),
+                        "confidence": 0.9,
+                    }
+                ]
+            )
+        }
+    )
+    result = await FactExtractor(llm, ExtractionConfig()).extract(
+        roster=roster,
+        messages=(("alice", "learning rust"), ("bob", "learning go")),
+        existing_memories_block="",
+    )
+    assert result.vetted == []
+    assert result.rejected[0][1] == "invalid_source_indexes"

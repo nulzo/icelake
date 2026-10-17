@@ -76,7 +76,7 @@ _TRAILING_NOISE = frozenset(
 _SELF_NAME_PATTERNS = (
     (re.compile(rf"\bmy name(?:'s| is) {_NAME}", re.IGNORECASE), 0.88),
     (re.compile(rf"\bcall me {_NAME}", re.IGNORECASE), 0.86),
-    (re.compile(rf"\bgoes by {_NAME}", re.IGNORECASE), 0.85),
+    (re.compile(rf"\bi go by {_NAME}", re.IGNORECASE), 0.85),
 )
 
 # Third-person forms found in extracted fact text ("nulzo's name is Nolan
@@ -108,7 +108,7 @@ def extract_self_name_aliases(text: str) -> list[tuple[str, float]]:
     """Mine self-referential name mentions from raw message text.
 
     Matches 1-2-token names after first-person markers like ``my name is X`` /
-    ``call me X`` / ``goes by X``. Bind results to the message author only.
+    ``call me X`` / ``I go by X``. Bind results to the message author only.
     """
     return _collect(text, _SELF_NAME_PATTERNS)
 

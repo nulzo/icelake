@@ -91,6 +91,25 @@ class TestInjectionBuilder:
         assert "REFERENCED USER: bob" in block
         assert "REFERENCED USER: alice" not in block
 
+    def test_missing_display_name_falls_back_to_canonical_subject_id(self) -> None:
+        """No resolved alias → the header falls back to the canonical subject id,
+        never the speaker name stored on the fact (audit A2)."""
+        builder = InjectionBuilder()
+        fact = _fact("was called a hacker by alice", subject_id="200000000000000002")
+        fact = fact.model_copy(
+            update={"attribution": fact.attribution.model_copy(update={"speaker_name": "alice"})}
+        )
+        block, _citations, _trimmed = builder.build(
+            asker_id="u-asker",
+            facts_by_section={"user:200000000000000002": (self._scored(fact),)},
+            summaries={},
+            token_budget=10_000,
+            guild_id="g1",
+        )
+        assert "REFERENCED USER: 200000000000000002" in block
+        assert "REFERENCED USER: alice" not in block
+        assert "REFERENCED USER: user:" not in block
+
     def test_budget_forces_trim(self) -> None:
         builder = InjectionBuilder()
         facts = tuple(
@@ -237,7 +256,7 @@ class TestMiscUtils:
         assert "/g/0/m" in url
 
     def test_estimate_tokens_positive(self) -> None:
-        assert estimate_tokens("") >= 1
+        assert estimate_tokens("") == 0
         assert estimate_tokens("x" * 400) == 100
 
 

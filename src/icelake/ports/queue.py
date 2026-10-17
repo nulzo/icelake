@@ -10,6 +10,8 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
+from pydantic import Field
+
 from icelake.models.common import FrozenModel, ensure_aware
 
 
@@ -35,6 +37,7 @@ class StoredMessage(FrozenModel):
     author_is_bot: bool = False
     mention_ids: tuple[str, ...] = ()
     status: MessageStatus = MessageStatus.PENDING
+    governance: dict[str, int] = Field(default_factory=dict)
 
     def __post_init__(self) -> None:
         ensure_aware(self.created_at)
@@ -93,7 +96,7 @@ class IngestQueue(Protocol):
         owner: str,
         limit: int,
     ) -> ClaimOutcome:
-        """Atomically flip up to ``limit`` pending messages to CLAIMED under a lease."""
+        """Claim under an exclusive lease; use a unique owner token per attempt."""
 
     async def renew_lease(
         self,
@@ -106,7 +109,7 @@ class IngestQueue(Protocol):
         """Heartbeat: extend our live lease. False if lost/stolen."""
 
     async def release_key(self, key: BatchKey, *, owner: str) -> None:
-        """Drop our key lease when the batch finishes so no other owner stalls."""
+        """Requeue our unfinished claims and drop our key lease (owner-checked)."""
 
     async def complete_messages(self, message_ids: tuple[str, ...], owner: str) -> int:
         """Mark OUR claimed messages processed (owner-checked, idempotent)."""
@@ -123,6 +126,14 @@ class IngestQueue(Protocol):
     async def requeue_dead_letters(self, guild_id: str | None = None) -> int: ...
 
     async def pending_count(self, guild_id: str) -> int: ...
+
+    async def drop_governance(self, guild_id: str, user_id: str) -> int:
+        """Delete every message authored by or mentioning ``user_id``.
+
+        Removes pending, claimed, processed and dead rows — erasure applies to
+        queued content regardless of processing state. Returns the deleted count.
+        """
+        ...
 
     async def dead_letter_count(self, guild_id: str) -> int: ...
 

@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
+from icelake.identity.guards import BotGuard, ConsentPolicy, SubjectGate
+from icelake.models.facts import FactRecord
+from icelake.permissions import source_channels
 from icelake.ports.store import MemoryStore
 from icelake.ports.vectors import VectorIndex
 
@@ -9,13 +14,13 @@ MAX_ANCHOR_FACTS = 6
 MAX_RELEVANT_FACTS = 12
 
 
-def render_memory_lines(records: tuple[object, ...]) -> str:
+def render_memory_lines(records: tuple[FactRecord, ...]) -> str:
     """Format fact records as compact context lines (deduped by identity)."""
     seen: set[str] = set()
     lines: list[str] = []
     for record in records:
-        fact_id = getattr(record, "id", "")
-        text = getattr(record, "text", "")
+        fact_id = record.id
+        text = record.text
         if not fact_id or fact_id in seen or not text:
             continue
         seen.add(fact_id)
@@ -31,6 +36,8 @@ async def build_extraction_context(
     subject_id: str | None,
     batch_text: str,
     batch_embedding: tuple[float, ...] | None,
+    now: datetime | None = None,
+    source_channel: str | None = None,
 ) -> str:
     """Anchor core facts plus semantically relevant prior memories for the LLM."""
     anchors = await store.top_strength_facts(
@@ -39,7 +46,7 @@ async def build_extraction_context(
         server_only=subject_id is None,
         limit=MAX_ANCHOR_FACTS,
     )
-    relevant: tuple[object, ...] = ()
+    relevant: tuple[FactRecord, ...] = ()
     if vectors is not None and batch_embedding is not None:
         scope_ids = (subject_id,) if subject_id else None
         hits = await vectors.search(
@@ -59,5 +66,13 @@ async def build_extraction_context(
             for hit in hits
             if hit.id in by_id and by_id[hit.id].is_active and hit.score >= 0.5
         )
-    combined = list(anchors) + list(relevant)
-    return render_memory_lines(tuple(combined))
+    moment = now or datetime.now(UTC)
+    combined = tuple(
+        record
+        for record in (*anchors, *relevant)
+        if record.is_active
+        and record.is_valid_at(moment)
+        and (source_channel is None or source_channels(record) == {source_channel})
+    )
+    gate = SubjectGate(BotGuard(), ConsentPolicy(store))
+    return render_memory_lines(await gate.filter_records(guild_id, tuple(combined)))

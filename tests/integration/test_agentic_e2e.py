@@ -151,7 +151,12 @@ class TestMultiTurnAgentLifetime:
                 ]
             )
 
-        llm = ScriptedLLM({"extraction": extract})
+        llm = ScriptedLLM(
+            {
+                "extraction": extract,
+                "reconcile": '{"decisions":[{"kind":"noop","candidate_index":0,"target_id":"0"}]}',
+            }
+        )
         memory = make_memory(
             llm,
             config_overrides={

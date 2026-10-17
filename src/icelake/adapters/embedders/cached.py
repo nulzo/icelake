@@ -18,7 +18,9 @@ from icelake.ports.llm import Embedder
 class CachedEmbedder:
     """LRU-cached wrapper implementing the Embedder protocol."""
 
-    def __init__(self, inner: Embedder, *, max_entries: int = 50_000) -> None:
+    def __init__(self, inner: Embedder, *, max_entries: int = 2048) -> None:
+        if max_entries < 0:
+            raise ValueError("max_entries must be nonnegative")
         self._inner = inner
         self._max_entries = max_entries
         self._cache: OrderedDict[str, tuple[float, ...]] = OrderedDict()
@@ -52,13 +54,15 @@ class CachedEmbedder:
                 self._cache.move_to_end(key)
 
         if missing_indices:
-            uncached_texts = [texts[i] for i in missing_indices]
-            new_vectors = await self._inner.embed(uncached_texts)
-            for local_idx, vector in zip(missing_indices, new_vectors, strict=True):
-                cached[local_idx] = vector
-                with self._lock:
-                    self._cache[keys[local_idx]] = vector
-                    self._evict_if_needed()
+            unique = {keys[i]: texts[i] for i in missing_indices}
+            new_vectors = await self._inner.embed(list(unique.values()))
+            by_key = dict(zip(unique, new_vectors, strict=True))
+            with self._lock:
+                for key, vector in by_key.items():
+                    self._cache[key] = vector
+                self._evict_if_needed()
+            for index in missing_indices:
+                cached[index] = by_key[keys[index]]
 
         return tuple(cached[i] for i in range(len(texts)))
 

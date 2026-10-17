@@ -25,10 +25,11 @@ from icelake.models.facts import (
     SourceRef,
 )
 from icelake.models.operations import ProposedFact
+from icelake.models.recovery import ProjectionJob
 from icelake.ports.clock import Clock, IdGen
 from icelake.ports.llm import Embedder
 from icelake.ports.store import MemoryStore
-from icelake.ports.vectors import VectorIndex, VectorItem
+from icelake.ports.vectors import VectorIndex
 
 logger = logging.getLogger(__name__)
 
@@ -77,11 +78,16 @@ class FactCommitter:
         mentioned_ids: tuple[str, ...] = (),
         source_refs: tuple[SourceRef, ...] = (),
         skip_embedding: bool = False,
+        embedding: tuple[float, ...] | None = None,
+        governance: dict[str, int] | None = None,
     ) -> FactRecord:
         now = self._clock.now()
         text = roster.bind_names(proposal.text.strip())
         third_party = bool(speaker_id and subject_id and speaker_id != subject_id)
         named_id = speaker_id if third_party else subject_id
+        stamped = dict(governance) if governance is not None else {}
+        if subject_id is not None and subject_id not in stamped:
+            stamped[subject_id] = (await self._store.consent_state(guild_id, subject_id)).generation
         tier, expires_after = assign_tier(
             text=text,
             category=proposal.category,
@@ -115,6 +121,7 @@ class FactCommitter:
             expires_at=(now + expires_after) if expires_after is not None else None,
             supersedes_id=supersedes_id,
             citations=source_refs,
+            governance=stamped,
         )
         record = record.model_copy(
             update={
@@ -131,11 +138,19 @@ class FactCommitter:
         # Embed BEFORE the unit of work: network I/O never happens inside a
         # database transaction (a held write lock on a single-writer store
         # would stall every other guild's commits for the embed's latency).
-        embedding = await self._embed(record) if not skip_embedding else None
+        if embedding is None and not skip_embedding:
+            embedding = await self._embed(record)
         async with self._store.transaction():
             await self._store.insert_fact(record)
-            if embedding is not None:
-                await self._upsert_embedding(record, embedding)
+            if self._vectors is not None and self._embedder is not None:
+                await self._store.enqueue_projection(
+                    ProjectionJob(
+                        guild_id=record.guild_id,
+                        fact_id=record.id,
+                        version=record.version,
+                        embedding=embedding,
+                    )
+                )
             await self._write_graph(
                 guild_id=guild_id,
                 record=record,
@@ -154,7 +169,13 @@ class FactCommitter:
             )
         return record
 
-    async def commit_reinforce(self, existing: FactRecord, proposal: ProposedFact) -> FactRecord:
+    async def commit_reinforce(
+        self,
+        existing: FactRecord,
+        proposal: ProposedFact,
+        *,
+        source_refs: tuple[SourceRef, ...] = (),
+    ) -> FactRecord:
         now = self._clock.now()
         new_strength = reinforced_strength(existing.strength)
         new_confidence = max(existing.confidence, proposal.confidence)
@@ -176,6 +197,7 @@ class FactCommitter:
             expires_at=(now + expires_after) if expires_after is not None else None,
             tier=tier,
             confidence=new_confidence,
+            extra_citations=source_refs,
         )
         return updated or existing
 
@@ -191,24 +213,25 @@ class FactCommitter:
         roster: RosterLike,
         mentioned_ids: tuple[str, ...] = (),
         source_refs: tuple[SourceRef, ...] = (),
+        governance: dict[str, int] | None = None,
     ) -> tuple[FactRecord, FactRecord]:
         """Insert refined fact linked to the old one; old stays queryable history."""
-        fresh = await self.commit_add(
-            proposal=proposal,
-            subject_id=subject_id or old_record.subject_id,
-            speaker_id=speaker_id,
-            guild_id=guild_id,
-            roster=roster,
-            supersedes_id=old_record.id,
-            mentioned_ids=mentioned_ids,
-            source_refs=source_refs,
-        )
+        embedding = None
         now = self._clock.now()
-        # Second unit of work: retire the old fact. Kept separate from the
-        # insert above so the embed never runs inside a transaction; a crash
-        # between the two leaves the old fact active, which reconcile will
-        # re-collide with the fresh one — self-healing, not corrupt.
         async with self._store.transaction():
+            fresh = await self.commit_add(
+                proposal=proposal,
+                subject_id=subject_id,
+                speaker_id=speaker_id,
+                guild_id=guild_id,
+                roster=roster,
+                supersedes_id=old_record.id,
+                mentioned_ids=mentioned_ids,
+                source_refs=source_refs,
+                governance=governance,
+                skip_embedding=True,
+                embedding=embedding,
+            )
             await self._store.transition_fact(
                 guild_id,
                 old_record.id,
@@ -262,19 +285,6 @@ class FactCommitter:
             return None
         (embedding,) = await self._embedder.embed((record.text,))
         return embedding
-
-    async def _upsert_embedding(self, record: FactRecord, embedding: tuple[float, ...]) -> None:
-        assert self._vectors is not None
-        await self._vectors.upsert(
-            (
-                VectorItem(
-                    id=record.id,
-                    guild_id=record.guild_id,
-                    subject_id=record.subject_id,
-                    embedding=embedding,
-                ),
-            )
-        )
 
     async def _write_graph(
         self,

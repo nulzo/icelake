@@ -36,7 +36,7 @@ def snippet(text: str, max_chars: int = MAX_FACT_CHARS) -> str:
 
 def estimate_tokens(text: str) -> int:
     """Cheap deterministic token estimate (~4 chars/token)."""
-    return max(1, len(text) // CHARS_PER_TOKEN)
+    return (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN
 
 
 def message_url(guild_id: str, channel_id: str, message_id: str) -> str:
@@ -60,7 +60,10 @@ class InjectionBuilder:
     ) -> tuple[str, tuple[Citation, ...], bool]:
         """``alias_notes`` maps section-key -> coreference line ("Also known as…").
         ``display_names`` maps section-key -> the subject's resolved name for
-        referenced-user headers (never the speaker name stored on the fact).
+        referenced-user headers. Referenced-user labels fall back to the
+        canonical subject id — never to the speaker name stored on a fact.
+        Supply ``display_names`` for every referenced subject to render names
+        instead of ids.
 
         Returns ``(block, citations, trimmed)``.
 
@@ -76,7 +79,13 @@ class InjectionBuilder:
             "",
         ]
         citations: list[Citation] = []
-        used_tokens = len("\n".join(lines)) // CHARS_PER_TOKEN
+
+        def fits(candidate_lines: list[str]) -> bool:
+            block = "\n".join([*candidate_lines, "", USAGE_GUIDELINES]).rstrip() + "\n"
+            return estimate_tokens(block) <= token_budget
+
+        if not fits(lines):
+            return "", (), True
         trimmed = False
 
         header_map = {
@@ -95,12 +104,7 @@ class InjectionBuilder:
                 header = header_map["server"]
                 label = "Community-wide traits:"
             else:
-                display = (
-                    (display_names or {}).get(section_key)
-                    or facts[0].fact.attribution.speaker_name
-                    or subject_id
-                    or section_key
-                )
+                display = (display_names or {}).get(section_key) or subject_id or section_key
                 header = f"REFERENCED USER: {display}"
                 label = f"Facts about {display} ONLY. Do NOT attribute these to the asker."
             summary_text = summaries.get(section_key)
@@ -111,8 +115,7 @@ class InjectionBuilder:
             if summary_text:
                 section_lines.append(f"Summary: {snippet(summary_text, 480)}")
             section_lines.append(label)
-            section_tokens = estimate_tokens("\n".join(section_lines))
-            if used_tokens + section_tokens > token_budget:
+            if not fits([*lines, *section_lines, ""]):
                 trimmed = True
                 continue
 
@@ -121,29 +124,24 @@ class InjectionBuilder:
             for scored in facts:
                 ref_number = len(citations) + 1
                 fact_line = f"- {snippet(scored.fact.text)}"
-                cost = estimate_tokens(fact_line)
-                if used_tokens + section_tokens + cost > token_budget:
+                if not fits([*lines, *section_lines, fact_line, ""]):
                     trimmed = True
                     break
                 primary = _primary_citation(scored, guild_id, ref_number, display_name=display)
                 if primary is not None:
                     citations.append(primary)
                     section_lines.append(fact_line)
-                    section_tokens += cost
                     emitted += 1
                 else:
                     section_lines.append(f"- {snippet(scored.fact.text)}")
-                    section_tokens += cost
                     emitted += 1
             if emitted == 0 and not summary_text:
                 continue
             lines.extend(section_lines)
             lines.append("")
-            used_tokens += section_tokens
 
-        if citations:
-            lines.append("")
-            lines.append(USAGE_GUIDELINES)
+        lines.append("")
+        lines.append(USAGE_GUIDELINES)
         block = "\n".join(lines).rstrip() + "\n"
         return block, tuple(citations), trimmed
 
@@ -164,7 +162,6 @@ def _primary_citation(
     snippet_text = ""
     message_id: str | None = None
     channel_id: str | None = None
-    author_name = ""
     if source_ref is not None:
         url = source_ref.message_url or message_url(
             guild_id,
@@ -174,7 +171,6 @@ def _primary_citation(
         snippet_text = source_ref.content_snippet
         message_id = source_ref.message_id
         channel_id = source_ref.channel_id
-        author_name = source_ref.author_name
     elif record.subject_id:
         return None
     if not url:
@@ -185,7 +181,7 @@ def _primary_citation(
         url=url,
         snippet=snippet_text,
         subject_id=record.subject_id,
-        subject_name=display_name or author_name or record.attribution.speaker_name or "",
+        subject_name=display_name or record.subject_id or "",
         message_id=message_id,
         channel_id=channel_id,
         score=scored.score,

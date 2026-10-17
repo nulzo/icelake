@@ -141,6 +141,50 @@ async def test_unknown_identifier_resolves_none(populated_store: InMemoryStore) 
     assert not resolution.ambiguous
 
 
+async def test_alias_rival_beyond_display_limit_is_ambiguous() -> None:
+    store = InMemoryStore()
+    for index in range(5):
+        await store.upsert_alias("g", "alex", "leader", tuple(AliasSource)[index], 1.0)
+    await store.upsert_alias("g", "alex", "rival", AliasSource.DISCORD_USERNAME, 0.9)
+    resolution = await IdentityResolver(store).resolve("g", "alex")
+    assert resolution.ambiguous
+    assert resolution.resolved is None
+
+
+async def test_authoritative_alias_beyond_display_limit_is_returned() -> None:
+    store = InMemoryStore()
+    for index in range(5):
+        await store.upsert_alias("g", "alex", f"weak-{index}", AliasSource.DISPLAY_NAME, 1.0)
+    await store.upsert_alias("g", "alex", "strong", AliasSource.DISCORD_USERNAME, 0.7)
+    resolution = await IdentityResolver(store).resolve("g", "alex")
+    assert resolution.resolved is not None
+    assert resolution.resolved.user_id == "strong"
+    assert resolution.resolved in resolution.candidates
+
+
+@pytest.mark.parametrize("prefix", [False, True])
+async def test_saturated_alias_candidates_never_establish_uniqueness(prefix: bool) -> None:
+    store = InMemoryStore()
+    for index in range(9):
+        await store.upsert_alias(
+            "g",
+            f"alex{index}" if prefix else "alex",
+            f"user-{index}",
+            AliasSource.DISCORD_USERNAME if index == 0 else AliasSource.DISPLAY_NAME,
+            1.0 if index == 0 else 0.1,
+        )
+    resolution = await IdentityResolver(store).resolve("g", "alex")
+    assert resolution.resolved is None
+    assert resolution.ambiguous
+
+
+def test_third_person_goes_by_is_not_a_self_alias() -> None:
+    from icelake.identity.aliases import extract_self_name_aliases
+
+    assert extract_self_name_aliases("Bob goes by Robert") == []
+    assert extract_self_name_aliases("I go by Robert") == [("Robert", 0.85)]
+
+
 class TestBotGuard:
     def test_registered_and_observed_bots(self) -> None:
         guard = BotGuard()

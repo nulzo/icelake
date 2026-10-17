@@ -104,9 +104,7 @@ async def demo_cite(memory: Memory) -> None:
     )
     citations.add_source(MINECRAFT_URL, title="bob", excerpt=MINECRAFT_FACT, kind="memory")
 
-    reply = (
-        "You've been learning rust for about a year. bob hosts sunday minecraft builds. lol yeah."
-    )
+    reply = f"{RUST_FACT}. {MINECRAFT_FACT}. lol yeah."
     cited = await memory.cite(reply, citations)
     print(f"  woven:\n    {cited.text}")
     print(f"  claims: {[claim.claim for claim in cited.claims]}")
@@ -125,7 +123,7 @@ async def demo_cite(memory: Memory) -> None:
 
 
 async def demo_paraphrase_limit(memory: Memory) -> None:
-    print("=== 5. Hashing embeddings are lexical. Persona paraphrase can miss ===")
+    print("=== 5. Paraphrases require a verifier ===")
     citations = Citations()
     citations.add_source(
         RUST_URL,
@@ -133,12 +131,11 @@ async def demo_paraphrase_limit(memory: Memory) -> None:
         excerpt=RUST_FACT,
         kind="memory",
     )
-    near = await memory.cite("You've been learning rust for about a year.", citations)
+    near = await memory.cite(RUST_FACT, citations)
     voice = await memory.cite("bro has been grinding rust for like a year now", citations)
     print(f"  near-verbatim cited: {bool(near.sources)}  ->  {near.text}")
     print(f"  persona voice cited: {bool(voice.sources)}  ->  {voice.text}")
-    print("  default hashing is fine for tests. a live bot should set")
-    print('  embeddings="openai://..." or embeddings="local" so paraphrase still matches.')
+    print("  pass a CitationVerifier to check paraphrases; similarity alone never cites.")
     print()
 
 

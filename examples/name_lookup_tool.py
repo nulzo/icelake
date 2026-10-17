@@ -180,7 +180,9 @@ async def seed(memory: DiscordMemory) -> None:
 
 
 async def main() -> None:
-    memory = DiscordMemory(MemoryConfig(storage="sqlite://:memory:", llm=None))
+    memory = DiscordMemory(
+        MemoryConfig(access={"require_audience": False}, storage="sqlite://:memory:", llm=None)
+    )
     async with memory:
         await seed(memory)
 

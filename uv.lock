@@ -743,7 +743,7 @@ requires-dist = [
     { name = "dnspython", marker = "extra == 'mongo'", specifier = ">=2.6" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.9" },
-    { name = "pymongo", marker = "extra == 'mongo'", specifier = ">=4.10" },
+    { name = "pymongo", marker = "extra == 'mongo'", specifier = ">=4.17" },
     { name = "sentence-transformers", marker = "extra == 'local-embeddings'", specifier = ">=3.0" },
 ]
 provides-extras = ["mongo", "local-embeddings", "discord"]
@@ -752,7 +752,7 @@ provides-extras = ["mongo", "local-embeddings", "discord"]
 dev = [
     { name = "discord-py", specifier = ">=2.4" },
     { name = "mypy", specifier = ">=1.13" },
-    { name = "pymongo", specifier = ">=4.10" },
+    { name = "pymongo", specifier = ">=4.17" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "pytest-cov", specifier = ">=5.0" },

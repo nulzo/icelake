@@ -1,16 +1,26 @@
 """Ingestion pipeline: claims leased batches, extracts, reconciles, commits (§4).
 
 Guarantees: claim is atomic; failures dead-letter instead of silently acking (B4);
-leases expire so crashed workers never strand messages (B2); the extraction LLM only
-ever sees minted roster tokens (§3.1).
+leases expire so crashed workers never strand messages (B2);
+
+Cohesion exception: orchestration stays here rather than scattering the commit
+branches across modules. The commit function is intentionally one auditable unit
+covering plan validation, all mutations, receipts and post-commit notifications;
+recovery, retries, extraction and reconciliation remain separate concerns.
+
+The extraction LLM only ever sees minted roster tokens (§3.1).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
+from hashlib import sha256
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from icelake.config import MemoryConfig
 from icelake.identity.aliases import (
@@ -27,6 +37,7 @@ from icelake.ingest.executor import CommitSummary, FactCommitter
 from icelake.ingest.extraction import ExtractionResult, FactExtractor
 from icelake.ingest.gates import batch_worth_extracting, normalize_text
 from icelake.ingest.reconcile import Reconciler
+from icelake.ingest.retries import RetryState, after_failure, read_retry, save_retry
 from icelake.ingest.roster import Roster
 from icelake.models.admin import BudgetStep
 from icelake.models.events import BatchCompleted, ExtractionFailed
@@ -37,7 +48,8 @@ from icelake.ports.clock import Clock, IdGen
 from icelake.ports.llm import ChatLLM, Embedder, Meter
 from icelake.ports.queue import BatchKey, IngestQueue, StoredMessage
 from icelake.ports.store import MemoryStore
-from icelake.ports.vectors import VectorIndex, VectorItem
+from icelake.ports.vectors import VectorIndex
+from icelake.recovery import recover_projections
 
 if TYPE_CHECKING:
     from icelake.api.events import EventBus
@@ -47,6 +59,11 @@ logger = logging.getLogger(__name__)
 
 SERVER_SUBJECT_KEY = "__server__"
 _SNIPPET_CHARS = 160
+
+
+def _receipt_key(key: BatchKey, message_id: str) -> str:
+    scope = "server" if key.subject_key == SERVER_SUBJECT_KEY else "user"
+    return "ingest:" + scope + ":" + sha256(message_id.encode()).hexdigest()
 
 
 def _snippet(text: str) -> str:
@@ -98,11 +115,11 @@ def _pick_citations(indexes: tuple[int, ...], refs: tuple[SourceRef, ...]) -> tu
     if not refs:
         return ()
     picked: list[SourceRef] = []
-    for index in indexes or (1,):
+    for index in dict.fromkeys(indexes):
         if 1 <= index <= len(refs):
             picked.append(refs[index - 1])
     if not picked:
-        picked = [refs[0]]
+        return ()
     primary = picked[-1].model_copy(update={"role": SourceRole.PRIMARY})
     return (*picked[:-1], primary)
 
@@ -144,7 +161,7 @@ class IngestPipeline:
         self._subject_gate = subject_gate
         self._extractor = FactExtractor(llm, config.extraction, max_tokens=config.llm.max_tokens)
         self._reconciler = Reconciler(
-            store, vectors, reconcile_llm or llm, embedder, config.extraction
+            store, vectors, reconcile_llm or llm, embedder, config.extraction, clock=clock
         )
         self._committer = FactCommitter(
             store=store,
@@ -155,7 +172,7 @@ class IngestPipeline:
             config=config,
             bot_guard=subject_gate._guard if subject_gate else None,
         )
-        self.owner = f"pipeline-{id(self):x}"
+        self.owner = f"pipeline-{uuid4().hex}"
         self.event_bus: EventBus | None = None
         self.consolidation: ConsolidationService | None = None
 
@@ -223,48 +240,65 @@ class IngestPipeline:
         return await self._process_server_window(key)
 
     async def process_key(self, key: BatchKey) -> BatchReport:
+        retry = await read_retry(self._store, key)
+        if retry.attempts >= self._config.recovery.max_attempts:
+            retry = RetryState()  # New pending input after a terminal batch starts a fresh budget.
+        if retry.next_attempt_at is not None and retry.next_attempt_at > self._clock.now():
+            return self._skip_batch(key, reason="retry_backoff")
         limit = (
             self._config.batching.server_scope_window
             if key.subject_key == SERVER_SUBJECT_KEY
             else self._config.batching.batch_size_messages
         )
+        owner = f"{self.owner}:{uuid4().hex}"
         claim = await self._queue.claim_batch(
             key,
             now=self._clock.now(),
             lease_seconds=self._config.batching.lease_seconds,
-            owner=self.owner,
+            owner=owner,
             limit=limit,
         )
         if claim.locked_by_other or not claim.messages:
+            if not claim.locked_by_other:
+                await self._queue.release_key(key, owner=owner)
             reason = "locked" if claim.locked_by_other else "empty"
             return self._skip_batch(key, reason=reason, messages=claim.messages)
         message_ids = tuple(m.message_id for m in claim.messages)
 
-        async def _heartbeat() -> None:
-            interval = max(5.0, self._config.batching.lease_seconds / 3)
-            while True:
-                await asyncio.sleep(interval)
-                await self._queue.renew_lease(
-                    key,
-                    owner=self.owner,
-                    now=self._clock.now(),
-                    lease_seconds=self._config.batching.lease_seconds,
-                )
-
-        heartbeat = asyncio.create_task(_heartbeat())
+        heartbeat = asyncio.create_task(self._heartbeat(key, owner, asyncio.current_task()))
         try:
-            report = await self._process_claimed(key, claim.messages)
-            await self._queue.complete_messages(message_ids, owner=self.owner)
+            report = await self._process_claimed(key, claim.messages, lease_owner=owner)
+            if report.skipped_reason != "budget":
+                await self._queue.complete_messages(message_ids, owner=owner)
+            await save_retry(self._store, key, RetryState())
+            await recover_projections(
+                self._store,
+                self._vectors,
+                self._embedder,
+                limit=self._config.recovery.projection_batch_size,
+                timeout_seconds=self._config.recovery.projection_timeout_seconds,
+                retry_delay_seconds=self._config.recovery.retry_initial_seconds,
+            )
             return report
         except Exception as exc:
-            logger.exception("Batch %s failed permanently", key.as_tuple)
-            await self._queue.dead_letter_messages(message_ids, owner=self.owner)
+            logger.exception("Batch %s retained after failure", key.as_tuple)
+            settings = self._config.recovery
+            retry = after_failure(
+                retry,
+                now=self._clock.now(),
+                error=exc,
+                initial_seconds=settings.retry_initial_seconds,
+                max_seconds=settings.retry_max_seconds,
+            )
+            await save_retry(self._store, key, retry)
+            if retry.attempts >= settings.max_attempts:
+                await self._queue.dead_letter_messages(message_ids, owner=owner)
             if self.event_bus is not None:
                 self.event_bus.publish(
                     ExtractionFailed(
                         guild_id=key.guild_id,
                         subject_key=key.subject_key,
-                        attempt=1,
+                        attempt=retry.attempts,
                         error_kind=type(exc).__name__,
                     )
                 )
@@ -276,7 +310,25 @@ class IngestPipeline:
             # would stall other processes/owners for the remaining lease window.
             # Empty claims skip it: the lease belongs to the in-flight batch.
             if message_ids:
-                await self._queue.release_key(key, owner=self.owner)
+                await self._queue.release_key(key, owner=owner)
+
+    async def _heartbeat(
+        self, key: BatchKey, owner: str, processing_task: asyncio.Task[object] | None
+    ) -> None:
+        try:
+            while True:
+                await asyncio.sleep(max(5.0, self._config.batching.lease_seconds / 3))
+                if not await self._queue.renew_lease(
+                    key,
+                    owner=owner,
+                    now=self._clock.now(),
+                    lease_seconds=self._config.batching.lease_seconds,
+                ):
+                    break
+        except Exception:
+            logger.exception("ingest lease renewal failed")
+        if processing_task is not None:
+            processing_task.cancel("ingest lease lost")
 
     async def _process_server_window(self, key: BatchKey) -> BatchReport:
         """Community-scope extraction over the recent guild window.
@@ -284,15 +336,22 @@ class IngestPipeline:
         The ``__server__`` key lease is won first (same CAS as user batches), so
         concurrent workers cannot double-extract the community window.
         """
+        retry = await read_retry(self._store, key)
+        if retry.attempts >= self._config.recovery.max_attempts:
+            return self._skip_batch(key, reason="server_retry_exhausted")
+        if retry.next_attempt_at is not None and retry.next_attempt_at > self._clock.now():
+            return self._skip_batch(key, reason="retry_backoff")
+        owner = f"{self.owner}:{uuid4().hex}"
         claim = await self._queue.claim_batch(
             key,
             now=self._clock.now(),
             lease_seconds=self._config.batching.lease_seconds,
-            owner=self.owner,
+            owner=owner,
             limit=self._config.batching.server_scope_window,
         )
         if claim.locked_by_other:
             return self._skip_batch(key, reason="locked")
+        heartbeat = asyncio.create_task(self._heartbeat(key, owner, asyncio.current_task()))
         try:
             window: tuple[StoredMessage, ...] = claim.messages or await self._queue.recent_messages(
                 key.guild_id,
@@ -324,10 +383,24 @@ class IngestPipeline:
 
             summary = CommitSummary()
             try:
-                report = await self._process_claimed(key, window)
+                report = await self._process_claimed(key, window, lease_owner=owner)
+                if report.skipped_reason == "budget":
+                    return report
                 if report.summary is not None:
                     summary = report.summary
-            except Exception:
+            except Exception as exc:
+                settings = self._config.recovery
+                await save_retry(
+                    self._store,
+                    key,
+                    after_failure(
+                        retry,
+                        now=self._clock.now(),
+                        error=exc,
+                        initial_seconds=settings.retry_initial_seconds,
+                        max_seconds=settings.retry_max_seconds,
+                    ),
+                )
                 logger.exception("Server window %s failed", key.as_tuple)
                 return self._skip_batch(key, reason="error", messages=window)
             # Advance the watermark to the newest processed message so the next
@@ -338,24 +411,71 @@ class IngestPipeline:
                 "server_window",
                 f"{newest.created_at.isoformat()}|{newest.message_id}",
             )
+            await save_retry(self._store, key, RetryState())
             return BatchReport(
                 key=key,
                 messages_processed=len(window),
                 summary=summary,
             )
         finally:
-            await self._queue.release_key(key, owner=self.owner)
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+            await self._queue.release_key(key, owner=owner)
 
     async def _process_claimed(
         self,
         key: BatchKey,
         messages: tuple[StoredMessage, ...],
+        *,
+        lease_owner: str | None = None,
     ) -> BatchReport:
+        reports = []
+        for channel in dict.fromkeys(message.channel_id for message in messages):
+            subset = tuple(message for message in messages if message.channel_id == channel)
+            reports.append(await self._process_channel(key, subset, lease_owner=lease_owner))
+        summary = CommitSummary()
+        for report in reports:
+            if report.summary is not None:
+                summary.adds += report.summary.adds
+                summary.reinforces += report.summary.reinforces
+                summary.supersessions += report.summary.supersessions
+                summary.invalidations += report.summary.invalidations
+        return BatchReport(
+            key=key,
+            messages_processed=sum(r.messages_processed for r in reports),
+            summary=summary if any(r.summary is not None for r in reports) else None,
+            skipped_reason=next(
+                (r.skipped_reason for r in reports if r.skipped_reason == "budget"),
+                reports[-1].skipped_reason if reports else "empty",
+            ),
+        )
+
+    async def _process_channel(
+        self,
+        key: BatchKey,
+        messages: tuple[StoredMessage, ...],
+        *,
+        lease_owner: str | None = None,
+    ) -> BatchReport:
+        messages = tuple(
+            [
+                message
+                for message in messages
+                if await self._store.get_cursor(key.guild_id, _receipt_key(key, message.message_id))
+                is None
+            ]
+        )
+        if not messages:
+            return self._skip_batch(key, reason="already_committed")
         guild_id = key.guild_id
         is_server_scope = key.subject_key == SERVER_SUBJECT_KEY
         subject_key_author = None if is_server_scope else key.subject_key
 
-        await self._mine_message_aliases(guild_id, messages)
+        snapshot = await self._governance_snapshot(key, messages, [])
+        if await self._consent_revoked(key, messages, [], snapshot):
+            return self._skip_batch(key, reason="consent_revoked", messages=messages)
+        if not self._config.access.require_audience:
+            await self._mine_message_aliases(guild_id, messages)
 
         # store_raw_messages=False stores a content hash for audit/dedup. The
         # hash is not message text — sending it to the LLM would be a privacy
@@ -386,6 +506,8 @@ class IngestPipeline:
             subject_id=None if is_server_scope else key.subject_key,
             batch_text=joined_text,
             batch_embedding=batch_embedding,
+            now=self._clock.now(),
+            source_channel=messages[0].channel_id,
         )
 
         result = await self._extractor.extract(
@@ -409,6 +531,18 @@ class IngestPipeline:
         seen_norms: set[tuple[str | None, str]] = set()
         candidates = []
         for vetted in result.vetted:
+            authors = tuple(
+                dict.fromkeys(
+                    messages[index - 1].author_id
+                    for index in vetted.proposal.source_message_indexes
+                )
+            )
+            if vetted.speaker_id is not None and vetted.speaker_id not in authors:
+                result.rejected.append((vetted.proposal.text, "speaker_not_in_sources"))
+                continue
+            if vetted.speaker_id is None and authors:
+                primary_index = tuple(dict.fromkeys(vetted.proposal.source_message_indexes))[-1]
+                vetted.speaker_id = messages[primary_index - 1].author_id
             bound = vetted.proposal.model_copy(
                 update={"text": roster.bind_names(vetted.proposal.text)},
             )
@@ -423,6 +557,13 @@ class IngestPipeline:
                 continue
             seen_norms.add(key_tuple)
             candidates.append((bound, vetted.subject_id, vetted.speaker_id))
+        if await self._consent_revoked(key, messages, candidates, snapshot):
+            return self._skip_batch(
+                key,
+                reason="consent_revoked",
+                messages=messages,
+                detail="opt-out or purge during extraction; LLM output discarded",
+            )
         if is_server_scope:
             # The community pass owns guild-scope facts only. User-anchored
             # facts belong to per-user batches — otherwise both passes extract
@@ -441,7 +582,8 @@ class IngestPipeline:
         )
         source_refs = _build_source_refs(messages)
         if candidates:
-            await self._mine_fact_aliases(guild_id, candidates)
+            if not self._config.access.require_audience:
+                await self._mine_fact_aliases(guild_id, candidates)
             await self._commit_candidates(
                 guild_id=guild_id,
                 key=key,
@@ -453,7 +595,18 @@ class IngestPipeline:
                 mentioned_ids=mentioned_ids,
                 source_refs=source_refs,
                 skip_reconcile=step is BudgetStep.SKIP_RECONCILE,
+                governance=snapshot,
+                lease_owner=lease_owner,
             )
+
+        else:
+            async with self._store.transaction():
+                for message in messages:
+                    await self._store.set_cursor(
+                        guild_id,
+                        _receipt_key(key, message.message_id),
+                        self._clock.now().isoformat(),
+                    )
 
         skip_reason = _extract_skip_reason(result, candidates, summary)
         if skip_reason is not None:
@@ -483,6 +636,67 @@ class IngestPipeline:
             summary=summary,
             skipped_reason=skip_reason,
         )
+
+    async def _governance_snapshot(
+        self,
+        key: BatchKey,
+        messages: tuple[StoredMessage, ...],
+        candidates: list[tuple[ProposedFact, str | None, str | None]],
+    ) -> dict[str, int]:
+        """Per-participant erasure generations captured BEFORE any mutation.
+
+        The snapshot is the fence: facts written from this batch carry it, so a
+        purge by any participant afterwards invalidates them on every read.
+        Generations come from the enqueue-time message stamps (not fresh reads)
+        so work already pending before a purge stays fenced after it.
+        """
+        users: set[str] = set()
+        if key.subject_key != SERVER_SUBJECT_KEY:
+            users.add(key.subject_key)
+        users.update(message.author_id for message in messages)
+        users.update(mention_id for message in messages for mention_id in message.mention_ids)
+        for _proposal, subject_id, speaker_id in candidates:
+            users.update(uid for uid in (subject_id, speaker_id) if uid)
+        return {
+            user_id: min(
+                (
+                    message.governance.get(user_id, 0)
+                    for message in messages
+                    if user_id == message.author_id or user_id in message.mention_ids
+                ),
+                default=0,
+            )
+            for user_id in users
+        }
+
+    async def _consent_revoked(
+        self,
+        key: BatchKey,
+        messages: tuple[StoredMessage, ...],
+        candidates: list[tuple[ProposedFact, str | None, str | None]],
+        snapshot: dict[str, int],
+    ) -> bool:
+        """Post-LLM recheck: consent or purge landed since the snapshot.
+
+        The claim lease cannot fence this — the user may have purged between
+        claim and commit. Compares CURRENT generations against the snapshot so
+        LLM output predating a purge is discarded, not stored.
+        """
+        guild_id = key.guild_id
+        if (
+            key.subject_key != SERVER_SUBJECT_KEY
+            and await self._subject_gate.allows(guild_id, key.subject_key) is False
+        ):
+            return True
+        for message in messages:
+            if await self._subject_gate.allows(guild_id, message.author_id) is False:
+                return True
+        for _proposal, subject_id, speaker_id in candidates:
+            for user_id in (subject_id, speaker_id):
+                if user_id is not None and not await self._subject_gate.allows(guild_id, user_id):
+                    return True
+        current = await self._store.governance_generations(guild_id, tuple(snapshot))
+        return any(current.get(user_id, 0) > generation for user_id, generation in snapshot.items())
 
     async def _maybe_refresh_summary(
         self,
@@ -514,8 +728,11 @@ class IngestPipeline:
         mentioned_ids: tuple[str, ...] = (),
         source_refs: tuple[SourceRef, ...] = (),
         skip_reconcile: bool = False,
+        governance: dict[str, int] | None = None,
+        lease_owner: str | None = None,
     ) -> None:
         batch_subject = None if key.subject_key == SERVER_SUBJECT_KEY else key.subject_key
+        stamped = governance if governance is not None else {}
         if candidates and self._embedder is not None:
             # One batched embed call per batch; reconcile lookups and the
             # commit upsert reuse these instead of embedding per candidate.
@@ -533,143 +750,200 @@ class IngestPipeline:
             guild_id=guild_id,
             batch_subject_id=batch_subject,
             embeddings_by_text=embeddings_by_text,
+            source_channel=source_refs[0].channel_id if source_refs else None,
         )
-        # SKIP_RECONCILE: near budget. Keep deterministic reinforces and direct
-        # adds; demote LLM collisions to adds rather than paying for judgment.
+        # Budget degradation never invents a reconciliation judgment.
         decisions_map: dict[int, tuple[ReconcileDecision, ...]] = {}
         if not skip_reconcile:
             decisions_map = await self._reconciler.resolve_collisions(
                 plan.collisions, guild_id=guild_id
             )
 
-        committed_records = []
-        for record, proposal, _subject_id, _speaker_id in plan.reinforces:
-            # Deterministic reinforce: exact/near-duplicate — no LLM judgment needed.
-            await self._committer.commit_reinforce(record, proposal)
-            summary.reinforces += 1
-
-        for proposal, subject_id, speaker_id in plan.direct_adds:
-            record = await self._committer.commit_add(
-                proposal=proposal,
-                subject_id=subject_id,
-                speaker_id=speaker_id,
-                guild_id=guild_id,
-                roster=roster,
-                mentioned_ids=mentioned_ids,
-                source_refs=_pick_citations(proposal.source_message_indexes, source_refs),
-                skip_embedding=True,
+        if any(not decisions_map.get(index) for index in range(len(plan.collisions))):
+            raise RuntimeError(
+                "reconciliation unresolved; batch retained in dead letters for retry"
             )
-            summary.adds += 1
-            committed_records.append(record)
-            self._publish_fact(record, reinforced=False)
 
-        for index, collision in enumerate(plan.collisions):
-            resolved = False
-            add_candidate = False
-            invalidated: tuple[str, str] | None = None  # (old_fact_id, reason)
-            for decision in decisions_map.get(index, ()):
-                if decision.kind is ReconcileKind.NOOP:
-                    # "same meaning" => strengthen the existing fact.
+        if lease_owner is not None and not await self._queue.renew_lease(
+            key,
+            owner=lease_owner,
+            now=self._clock.now(),
+            lease_seconds=self._config.batching.lease_seconds,
+        ):
+            raise asyncio.CancelledError("ingest lease lost before commit")
+        current = await self._store.governance_generations(guild_id, tuple(stamped))
+        if any(generation < current.get(user_id, 0) for user_id, generation in stamped.items()):
+            logger.debug(
+                "batch stale after reconcile planning guild=%s subject=%s — mutations dropped",
+                guild_id,
+                key.subject_key,
+            )
+            return
+        notifications: list[Callable[[], None]] = []
+        async with self._store.transaction():
+            # A guild commit fence also serializes Mongo snapshot writers. Planning
+            # happens outside transactions; changed neighbors invalidate the plan.
+            await self._store.set_cursor(guild_id, "commit_fence", uuid4().hex)
+            if any(
+                [
+                    await self._store.get_cursor(guild_id, _receipt_key(key, ref.message_id))
+                    is not None
+                    for ref in source_refs
+                ]
+            ):
+                raise RuntimeError("input committed concurrently; retry with remaining messages")
+            targets = [record for record, *_ in plan.reinforces]
+            targets.extend(
+                record for collision in plan.collisions for record in collision.neighbors
+            )
+            for planned_record in targets:
+                current_record = await self._store.get_fact(guild_id, planned_record.id)
+                if current_record is None or current_record.version != planned_record.version:
+                    raise RuntimeError("reconciliation plan changed; retry from current memory")
+            for proposal, subject, _speaker in plan.direct_adds:
+                duplicate = await self._store.find_duplicate(
+                    guild_id, subject, normalize_text(proposal.text)
+                )
+                if duplicate is not None and duplicate.is_active:
+                    from icelake.permissions import source_channels
+
+                    if not source_refs or source_channels(duplicate) == {source_refs[0].channel_id}:
+                        raise RuntimeError("concurrent duplicate; rebuild reconciliation plan")
+            for record, proposal, _subject_id, _speaker_id in plan.reinforces:
+                # Deterministic reinforce: exact/near-duplicate — no LLM judgment needed.
+                await self._committer.commit_reinforce(
+                    record,
+                    proposal,
+                    source_refs=_pick_citations(proposal.source_message_indexes, source_refs),
+                )
+                summary.reinforces += 1
+
+            for proposal, subject_id, speaker_id in plan.direct_adds:
+                record = await self._committer.commit_add(
+                    proposal=proposal,
+                    subject_id=subject_id,
+                    speaker_id=speaker_id,
+                    guild_id=guild_id,
+                    roster=roster,
+                    mentioned_ids=mentioned_ids,
+                    source_refs=_pick_citations(proposal.source_message_indexes, source_refs),
+                    skip_embedding=True,
+                    embedding=embeddings_by_text.get(normalize_text(proposal.text)),
+                    governance=stamped,
+                )
+                summary.adds += 1
+                notifications.append(partial(self._publish_fact, record, reinforced=False))
+
+            for index, collision in enumerate(plan.collisions):
+                resolved = False
+                add_candidate = False
+                invalidated: tuple[str, str] | None = None  # (old_fact_id, reason)
+                for decision in decisions_map.get(index, ()):
+                    if decision.kind is ReconcileKind.NOOP:
+                        # "same meaning" => strengthen the existing fact.
+                        target = next(
+                            (n for n in collision.neighbors if n.id == decision.target_id),
+                            None,
+                        )
+                        if target is not None:
+                            await self._committer.commit_reinforce(
+                                target,
+                                collision.candidate,
+                                source_refs=_pick_citations(
+                                    collision.candidate.source_message_indexes, source_refs
+                                ),
+                            )
+                            summary.reinforces += 1
+                            resolved = True
+                            break
+                        continue
+                    if decision.kind is ReconcileKind.ADD:
+                        add_candidate = True
+                        break
                     target = next(
-                        (
-                            n
-                            for n in collision.neighbors
-                            if n.id == decision.target_id or len(collision.neighbors) == 1
-                        ),
+                        (n for n in collision.neighbors if n.id == decision.target_id),
                         None,
                     )
-                    if target is not None:
-                        await self._committer.commit_reinforce(
-                            target,
-                            collision.candidate,
+                    if target is None:
+                        continue
+                    if decision.kind is ReconcileKind.UPDATE:
+                        fresh, _old = await self._committer.commit_supersede(
+                            old_record=target,
+                            proposal=collision.candidate,
+                            subject_id=collision.subject_id,
+                            speaker_id=collision.speaker_id,
+                            reason=decision.reason,
+                            guild_id=guild_id,
+                            roster=roster,
+                            mentioned_ids=mentioned_ids,
+                            source_refs=_pick_citations(
+                                collision.candidate.source_message_indexes,
+                                source_refs,
+                            ),
+                            governance=stamped,
                         )
-                        summary.reinforces += 1
+                        summary.supersessions += 1
+                        notifications.append(
+                            partial(
+                                self._publish_superseded,
+                                guild_id,
+                                target.id,
+                                fresh.id,
+                                decision.reason,
+                            )
+                        )
                         resolved = True
                         break
+                    if decision.kind is ReconcileKind.INVALIDATE:
+                        await self._committer.commit_invalidate(
+                            old_record=target,
+                            reason=decision.reason,
+                        )
+                        summary.invalidations += 1
+                        invalidated = (target.id, decision.reason)
+                        # The candidate is the new truth — commit it below.
+                        add_candidate = True
+                        break
+                if resolved:
                     continue
-                if decision.kind is ReconcileKind.ADD:
-                    add_candidate = True
-                    break
-                target = next(
-                    (n for n in collision.neighbors if n.id == decision.target_id),
-                    None,
+                if not add_candidate:
+                    # Similarity cannot establish agreement. Preserve the existing
+                    # fact unchanged when no valid reconciliation judgment exists.
+                    continue
+                record = await self._committer.commit_add(
+                    proposal=collision.candidate,
+                    subject_id=collision.subject_id,
+                    speaker_id=collision.speaker_id,
+                    guild_id=guild_id,
+                    roster=roster,
+                    mentioned_ids=mentioned_ids,
+                    source_refs=_pick_citations(
+                        collision.candidate.source_message_indexes,
+                        source_refs,
+                    ),
+                    skip_embedding=True,
+                    embedding=embeddings_by_text.get(normalize_text(collision.candidate.text)),
+                    governance=stamped,
                 )
-                if target is None:
-                    continue
-                if decision.kind is ReconcileKind.UPDATE:
-                    fresh, _old = await self._committer.commit_supersede(
-                        old_record=target,
-                        proposal=collision.candidate,
-                        subject_id=collision.subject_id,
-                        speaker_id=collision.speaker_id,
-                        reason=decision.reason,
-                        guild_id=guild_id,
-                        roster=roster,
-                        mentioned_ids=mentioned_ids,
-                        source_refs=_pick_citations(
-                            collision.candidate.source_message_indexes,
-                            source_refs,
-                        ),
+                summary.adds += 1
+                notifications.append(partial(self._publish_fact, record, reinforced=False))
+                if invalidated is not None:
+                    notifications.append(
+                        partial(
+                            self._publish_superseded,
+                            guild_id,
+                            invalidated[0],
+                            record.id,
+                            invalidated[1],
+                        )
                     )
-                    summary.supersessions += 1
-                    self._publish_superseded(guild_id, target.id, fresh.id, decision.reason)
-                    resolved = True
-                    break
-                if decision.kind is ReconcileKind.INVALIDATE:
-                    await self._committer.commit_invalidate(
-                        old_record=target,
-                        reason=decision.reason,
-                    )
-                    summary.invalidations += 1
-                    invalidated = (target.id, decision.reason)
-                    # The candidate is the new truth — commit it below.
-                    add_candidate = True
-                    break
-            if resolved:
-                continue
-            if not add_candidate:
-                # Conservative default on unresolved collisions: reinforce the
-                # strongest semantic neighbor instead of adding a near-duplicate.
-                neighbor = collision.semantic_neighbors[0] if collision.semantic_neighbors else None
-                if neighbor is not None:
-                    await self._committer.commit_reinforce(neighbor, collision.candidate)
-                    summary.reinforces += 1
-                    continue
-            record = await self._committer.commit_add(
-                proposal=collision.candidate,
-                subject_id=collision.subject_id,
-                speaker_id=collision.speaker_id,
-                guild_id=guild_id,
-                roster=roster,
-                mentioned_ids=mentioned_ids,
-                source_refs=_pick_citations(
-                    collision.candidate.source_message_indexes,
-                    source_refs,
-                ),
-                skip_embedding=True,
-            )
-            summary.adds += 1
-            committed_records.append(record)
-            self._publish_fact(record, reinforced=False)
-            if invalidated is not None:
-                self._publish_superseded(guild_id, invalidated[0], record.id, invalidated[1])
+            for ref in source_refs:
+                await self._store.set_cursor(
+                    guild_id, _receipt_key(key, ref.message_id), self._clock.now().isoformat()
+                )
 
-        # One vector upsert pass; candidates were embedded before build_plan.
-        if committed_records and self._vectors is not None:
-            for record in committed_records:
-                embedding = embeddings_by_text.get(normalize_text(record.text))
-                if embedding is None:
-                    continue
-                await self._vectors.upsert(
-                    (
-                        VectorItem(
-                            id=record.id,
-                            guild_id=record.guild_id,
-                            subject_id=record.subject_id,
-                            embedding=embedding,
-                        ),
-                    )
-                )
+        for notify in notifications:
+            notify()
 
     async def _mine_message_aliases(
         self,

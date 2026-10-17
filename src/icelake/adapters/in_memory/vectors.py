@@ -20,7 +20,9 @@ class InMemoryVectorIndex:
     async def upsert(self, items: tuple[VectorItem, ...]) -> None:
         async with self._lock:
             for item in items:
-                self._items[item.id] = item
+                old = self._items.get(item.id)
+                if old is None or item.version >= old.version:
+                    self._items[item.id] = item
 
     async def delete(self, ids: tuple[str, ...]) -> int:
         removed = 0

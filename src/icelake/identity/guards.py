@@ -6,8 +6,11 @@ recalled. ``user_id=None`` (server scope) is always allowed.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 
+from icelake.governance import fact_participants
+from icelake.models.facts import FactRecord
 from icelake.ports.store import MemoryStore
 
 
@@ -58,6 +61,28 @@ class SubjectGate:
         if self._guard.is_bot(user_id):
             return False
         return not await self._consent.is_blocked(guild_id, user_id)
+
+    async def allowed_ids(self, guild_id: str, user_ids: Iterable[str]) -> frozenset[str]:
+        """Check each distinct participant once for a bounded result set."""
+        unique = tuple(dict.fromkeys(user_ids))
+        allowed = await asyncio.gather(*(self.allows(guild_id, uid) for uid in unique))
+        return frozenset(uid for uid, ok in zip(unique, allowed, strict=True) if ok)
+
+    async def filter_records(
+        self, guild_id: str, records: tuple[FactRecord, ...]
+    ) -> tuple[FactRecord, ...]:
+        """Hide facts involving any participant barred from memory."""
+        participants = tuple(fact_participants(record) for record in records)
+        allowed = await self.allowed_ids(guild_id, (uid for ids in participants for uid in ids))
+        return tuple(
+            record
+            for record, ids in zip(records, participants, strict=True)
+            if allowed.issuperset(ids)
+        )
+
+    async def allows_fact(self, record: FactRecord) -> bool:
+        """Check every participant governing a fact's visibility."""
+        return bool(await self.filter_records(record.guild_id, (record,)))
 
     def exclude_bots(self, user_ids: Iterable[str]) -> tuple[str, ...]:
         return self._guard.exclude(user_ids)

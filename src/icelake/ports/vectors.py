@@ -1,4 +1,4 @@
-"""Vector index port. Backends: in-memory brute force, SQLite, Postgres (pgvector)."""
+"""Vector index port. Backends: in-memory brute force, SQLite, MongoDB."""
 
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ def cosine(a: tuple[float, ...], b: tuple[float, ...]) -> float:
     dot = sum(x * y for x, y in zip(a, b, strict=True))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
+    if not math.isfinite(dot) or not math.isfinite(norm_a * norm_b):
+        return 0.0
     if norm_a == 0.0 or norm_b == 0.0:
         return 0.0
     return max(0.0, min(1.0, dot / (norm_a * norm_b)))
@@ -27,6 +29,7 @@ class VectorItem(FrozenModel):
     guild_id: str
     subject_id: str | None
     embedding: tuple[float, ...]
+    version: int = 1
 
 
 class VectorHit(FrozenModel):
@@ -46,7 +49,9 @@ class VectorIndex(Protocol):
 
     async def setup(self) -> None: ...
 
-    async def upsert(self, items: tuple[VectorItem, ...]) -> None: ...
+    async def upsert(self, items: tuple[VectorItem, ...]) -> None:
+        """Idempotent write; atomically ignore versions older than the indexed item."""
+        ...
 
     async def delete(self, ids: tuple[str, ...]) -> int: ...
 

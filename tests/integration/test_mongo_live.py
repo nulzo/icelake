@@ -1,55 +1,19 @@
 from __future__ import annotations
 
-import socket
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-pytest.importorskip("pymongo")
-
-
-def _mongo_available() -> bool:
-    import os
-
-    if os.environ.get("MONGODB_URI"):
-        return True
-    try:
-        with socket.create_connection(("127.0.0.1", 27017), timeout=0.3):
-            return True
-    except OSError:
-        return False
-
-
-if not _mongo_available():
-    pytest.skip(
-        "no MongoDB at localhost:27017 (set MONGODB_URI to enable)", allow_module_level=True
-    )
-
-from icelake.adapters.mongo import MongoStore  # noqa: E402
-from icelake.models.facts import MemoryTier  # noqa: E402
-from icelake.models.graph import EntityKind, LinkRow, NodeType  # noqa: E402
-from icelake.models.identity import AliasSource  # noqa: E402
-from tests.integration.test_store_conformance import make_fact  # noqa: E402
+from icelake.adapters.mongo import MongoStore
+from icelake.models.facts import MemoryTier
+from icelake.models.graph import EntityKind, LinkRow, NodeType
+from icelake.models.identity import AliasSource
+from tests.integration.test_store_conformance import make_fact
 
 
 @pytest.fixture()
-async def store() -> AsyncIterator[MongoStore]:
-
-    backend = MongoStore("mongodb://127.0.0.1:27017/icelake_test")
-    await backend.setup()
-    # clean test database between scenarios
-    await backend.db["dm_facts"].delete_many({})
-    await backend.db["dm_messages"].delete_many({})
-    await backend.db["dm_aliases"].delete_many({})
-    await backend.db["dm_links"].delete_many({})
-    await backend.db["dm_relations"].delete_many({})
-    await backend.db["dm_entities"].delete_many({})
-    await backend.db["dm_entity_aliases"].delete_many({})
-    await backend.db["dm_summaries"].delete_many({})
-    await backend.db["dm_optouts"].delete_many({})
-    yield backend
-    await backend.close()
+def store(mongo_store: MongoStore) -> MongoStore:
+    return mongo_store
 
 
 class TestMongoConformance:
@@ -147,9 +111,18 @@ class TestMongoConformance:
         assert target is not None and target.fact_count >= 3
 
     async def test_summaries_consent_stats_export(self, store: MongoStore) -> None:
+        from icelake.consolidation.validity import summary_source
         from icelake.models.facts import ProfileSummary
 
-        summary = ProfileSummary(guild_id="g", subject_id="u1", text="digest", source_fact_count=2)
+        source = make_fact(id="summary-source", guild_id="g")
+        await store.insert_fact(source)
+        summary = ProfileSummary(
+            guild_id="g",
+            subject_id="u1",
+            text="digest",
+            source_fact_count=1,
+            sources=(summary_source(source),),
+        )
         await store.put_summary(summary)
         loaded = await store.get_summary("g", "u1")
         assert loaded is not None and loaded.text == "digest"
@@ -206,3 +179,18 @@ class TestMongoConformance:
         assert forgotten >= 0
         report = await store.purge_user_data("g1", "u1", dry_run=False)
         assert report.facts_removed >= 1
+
+
+async def test_concurrent_governance_updates_do_not_lose_erasure_or_consent(
+    store: MongoStore,
+) -> None:
+    import asyncio
+
+    await store.set_opt_out("g", "u", False)
+    await asyncio.gather(
+        *(store.bump_governance_generation("g", "u") for _ in range(20)),
+        store.set_opt_out("g", "u", True),
+    )
+    state = await store.consent_state("g", "u")
+    assert state.generation == 20
+    assert state.opted_out

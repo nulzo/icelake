@@ -40,7 +40,7 @@ def test_lifecycle_example_runs_end_to_end(
     assert "FactCommitted fired: 1" in out
     assert "action=remember" in out
     assert "observe after opt-out ignored=True" in out
-    assert "import into a fresh store: 3 facts" in out
+    assert "import into a fresh store: 2 facts" in out  # opted-out evidence is excluded
     assert "healthy=True" in out
 
 
@@ -111,7 +111,11 @@ def test_prompt_context_separates_asker_and_referenced_users() -> None:
         }
     )
     memory = DiscordMemory(
-        MemoryConfig(storage="sqlite://:memory:", workers={"enabled": False}),
+        MemoryConfig(
+            storage="sqlite://:memory:",
+            workers={"enabled": False},
+            access={"require_audience": False},
+        ),
         llm=llm,
     )
 
@@ -122,19 +126,19 @@ def test_prompt_context_separates_asker_and_referenced_users() -> None:
                     message_id="1",
                     guild_id="g",
                     channel_id="c",
-                    author_id="alice_id",
+                    author_id="100000000000000001",
                     content="@bot bob is such a hacker lol",
                     created_at=datetime.now(UTC),
                     author_display_name="alice",
-                    mention_ids=("bob_id",),
+                    mention_ids=("200000000000000002",),
                 )
             )
             await memory.flush()
             ctx = await memory.prompt_context(
                 guild_id="g",
-                asker_id="carol_id",
+                asker_id="300000000000000003",
                 text="what happened between alice and bob?",
-                mentioned_ids=("alice_id", "bob_id"),
+                mentioned_ids=("100000000000000001", "200000000000000002"),
             )
         return ctx.injection_block
 
@@ -191,7 +195,11 @@ def test_omni_style_turn_with_coreference_and_citations(
         }
     )
     memory = DiscordMemory(
-        MemoryConfig(storage="sqlite://:memory:", workers={"enabled": False}),
+        MemoryConfig(
+            storage="sqlite://:memory:",
+            workers={"enabled": False},
+            access={"require_audience": False},
+        ),
         llm=llm,
     )
 
@@ -201,12 +209,18 @@ def test_omni_style_turn_with_coreference_and_citations(
             for mid, author_id, name, content, mentions in (
                 (
                     "1",
-                    "alice_id",
+                    "100000000000000001",
                     "alice",
                     "everyone saw bob cheating in that ranked match honestly",
-                    ("bob_id",),
+                    ("200000000000000002",),
                 ),
-                ("2", "bob_id", "bob", "that loss was absolutely not fair and you all know it", ()),
+                (
+                    "2",
+                    "200000000000000002",
+                    "bob",
+                    "that loss was absolutely not fair and you all know it",
+                    (),
+                ),
             ):
                 await memory.observe(
                     MessageEvent(
@@ -223,11 +237,11 @@ def test_omni_style_turn_with_coreference_and_citations(
             await memory.flush()
             ctx = await memory.prompt_context(
                 guild_id="g1",
-                asker_id="carol_id",
+                asker_id="300000000000000003",
                 text="what happened between alice and bob?",
-                mentioned_ids=("alice_id", "bob_id"),
+                mentioned_ids=("100000000000000001", "200000000000000002"),
             )
-            reply = "bob was called a hacker during the match."
+            reply = "bob was called a hacker by alice during the ranked match"
             set_ = Citations.from_prompt_context(ctx)
             cited = await memory.cite(reply, set_)
             return ctx.injection_block, len(cited.text)
@@ -239,3 +253,50 @@ def test_omni_style_turn_with_coreference_and_citations(
     assert block.count("bonds over late night") == 1
     # attribution wove a jump link into the plain reply
     assert link_len > len("bob was called a hacker during the match.")
+
+
+@pytest.mark.parametrize("command", ["show", "lookup"])
+async def test_live_bot_profile_commands_enforce_channel_audience(command):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from icelake import DiscordMemory, MemoryConfig, SourceRef
+
+    module = importlib.import_module("examples.omni_style_bot")
+    memory = DiscordMemory(MemoryConfig(storage="sqlite://:memory:", workers={"enabled": False}))
+    bot = module.OmniStyleBot(memory)
+    async with memory:
+        for channel, text in (("10", "likes coffee"), ("20", "private address is secret")):
+            await memory.facts.remember(
+                guild_id="1",
+                subject_id="2",
+                text=text,
+                source_refs=(
+                    SourceRef(
+                        message_id=channel,
+                        guild_id="1",
+                        channel_id=channel,
+                        author_id="2",
+                    ),
+                ),
+            )
+        interaction = SimpleNamespace(
+            guild_id=1,
+            channel_id=10,
+            user=SimpleNamespace(id=3),
+            response=SimpleNamespace(send_message=AsyncMock()),
+        )
+        if command == "show":
+            await module.OmniStyleBot.memory_show.callback(
+                bot,
+                interaction,
+                SimpleNamespace(id=2, display_name="Alice"),
+            )
+        else:
+            bot._resolve_lookup = AsyncMock(return_value=("2", "Alice"))
+            await module.OmniStyleBot.memory_lookup.callback(bot, interaction, "Alice")
+        sent = interaction.response.send_message.call_args.args[0]
+        assert "likes coffee" in sent
+        assert "private address" not in sent
+        assert interaction.response.send_message.call_args.kwargs["ephemeral"]
+    await bot.close()

@@ -12,6 +12,7 @@ from datetime import timedelta
 
 from icelake.config import MemoryConfig
 from icelake.ports.clock import Clock
+from icelake.ports.queue import IngestQueue
 from icelake.ports.store import MemoryStore
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,9 @@ class MaintenanceService:
         store: MemoryStore,
         config: MemoryConfig,
         clock: Clock,
+        queue: IngestQueue | None = None,
     ) -> None:
+        self._queue = queue
         self._store = store
         self._config = config
         self._clock = clock
@@ -68,8 +71,8 @@ class MaintenanceService:
             max_server=self._config.lifecycle.max_server_facts,
             now=now,
         )
-        if hasattr(self._store, "queue"):
-            await self._store.queue.prune_processed(
+        if self._queue is not None:
+            await self._queue.prune_processed(
                 older_than=now - timedelta(days=self._config.privacy.processed_retention_days),
             )
         self.mark_run(guild_id)

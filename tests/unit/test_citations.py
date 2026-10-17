@@ -16,6 +16,7 @@ from icelake import (
 )
 from icelake.attribution import MAX_SOURCES_PER_CLAIM, attribute
 from icelake.models import Citation, FactRecord, PromptContext, ScoredFact, SourceRef
+from icelake.ports.citations import CitationCandidate, CitationVerification
 
 URL_MEM = "https://discord.com/channels/g1/c1/m1"
 URL_A = "https://example.com/a"
@@ -169,21 +170,24 @@ def _mayo_embedder() -> KeywordEmbedder:
 
 
 @pytest.mark.asyncio
-async def test_attribute_cites_segment_matching_source() -> None:
+async def test_attribute_cites_exact_restatement_without_provider() -> None:
     reg = _memory()
-    result = await attribute("he likes mayo.", reg, _mayo_embedder())
+    result = await attribute("klim likes mayo.", reg, ExplodingEmbedder())
     assert len(result.claims) == 1
     claim = result.claims[0]
     # Span excludes the trailing period so the link lands before it.
-    assert (claim.claim, claim.start, claim.end) == ("he likes mayo", 0, 13)
+    assert (claim.claim, claim.start, claim.end) == ("klim likes mayo", 0, 15)
     assert [source.url for source in claim.sources] == [URL_MEM]
 
 
 @pytest.mark.asyncio
-async def test_attribute_persona_paraphrase_still_matches() -> None:
-    # Voice mutation keeps the semantic content; embeddings absorb it.
+async def test_attribute_paraphrase_requires_explicit_verification() -> None:
+    # This fake tests verifier composition, not model accuracy.
     reg = _memory()
-    result = await attribute("bro is a mayo goblin", reg, _mayo_embedder())
+    assert not (await attribute("bro is a mayo goblin", reg, _mayo_embedder())).claims
+    result = await attribute(
+        "bro is a mayo goblin", reg, _mayo_embedder(), verifier=AcceptCandidates()
+    )
     assert [source.url for source in result.claims[0].sources] == [URL_MEM]
 
 
@@ -195,9 +199,9 @@ async def test_attribute_leaves_unmatched_segments_uncited() -> None:
 
 @pytest.mark.asyncio
 async def test_attribute_cites_only_matching_segment_in_mixed_reply() -> None:
-    result = await attribute("he likes mayo. the sky is blue.", _memory(), _mayo_embedder())
+    result = await attribute("klim likes mayo. the sky is blue.", _memory(), _mayo_embedder())
     assert len(result.claims) == 1
-    assert result.claims[0].claim == "he likes mayo"
+    assert result.claims[0].claim == "klim likes mayo"
 
 
 @pytest.mark.asyncio
@@ -205,8 +209,12 @@ async def test_attribute_respects_threshold() -> None:
     reg = _memory()
     # Segment "mayo support ranked" vs fact "klim likes mayo": cosine 1/√3 ≈ 0.577.
     text = "mayo support ranked"
-    assert (await attribute(text, reg, _mayo_embedder(), threshold=0.5)).claims
-    assert (await attribute(text, reg, _mayo_embedder(), threshold=0.6)).claims == ()
+    assert (
+        await attribute(text, reg, _mayo_embedder(), threshold=0.5, verifier=AcceptCandidates())
+    ).claims
+    assert (
+        await attribute(text, reg, _mayo_embedder(), threshold=0.6, verifier=AcceptCandidates())
+    ).claims == ()
 
 
 @pytest.mark.asyncio
@@ -227,14 +235,18 @@ async def test_attribute_skips_embed_when_text_blank() -> None:
 
 @pytest.mark.asyncio
 async def test_attribute_embed_failure_returns_empty_never_raises() -> None:
-    result = await attribute("he likes mayo", _memory(), ExplodingEmbedder())
+    result = await attribute(
+        "he likes mayo", _memory(), ExplodingEmbedder(), verifier=AcceptCandidates()
+    )
     assert result.claims == ()
 
 
 @pytest.mark.asyncio
 async def test_attribute_embeds_segments_and_sources_in_one_batch() -> None:
     embedder = _mayo_embedder()
-    await attribute("he likes mayo. the sky is blue.", _memory(), embedder)
+    await attribute(
+        "he likes mayo. the sky is blue.", _memory(), embedder, verifier=AcceptCandidates()
+    )
     assert embedder.calls == [("he likes mayo", "the sky is blue", "klim likes mayo")]
 
 
@@ -307,3 +319,69 @@ def test_render_fact_list_rebuilds_url_from_snowflakes() -> None:
 
 def test_render_fact_list_bare_when_no_source() -> None:
     assert render_fact_list([_record("bare fact")]) == "- bare fact"
+
+
+class AcceptCandidates:
+    """Wiring fake only; real verifiers must evaluate entailment."""
+
+    async def verify(self, candidates: tuple[CitationCandidate, ...]) -> CitationVerification:
+        return CitationVerification(supported_ids=tuple(c.id for c in candidates))
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "Alice never likes coffee.",
+        "Bob likes coffee.",
+        "Alice likes coffee and owns a cafe.",
+        "Alice used to like coffee.",
+    ],
+)
+async def test_semantic_similarity_alone_never_cites(reply: str) -> None:
+    reg = Citations()
+    reg.add_source(URL_A, excerpt="Alice likes coffee")
+    embedder = KeywordEmbedder({"coffee": 0})
+    assert not (await attribute(reply, reg, embedder)).claims
+    assert embedder.calls == []
+
+
+async def test_verifier_cannot_mint_sources_or_bypass_abstention() -> None:
+    class UnknownIds:
+        async def verify(self, candidates):
+            return CitationVerification(supported_ids=(999, -1))
+
+    assert not (
+        await attribute("he likes mayo", _memory(), _mayo_embedder(), verifier=UnknownIds())
+    ).claims
+
+
+async def test_verifier_failure_abstains() -> None:
+    class Unavailable:
+        async def verify(self, candidates):
+            raise TimeoutError("offline")
+
+    assert not (
+        await attribute("he likes mayo", _memory(), _mayo_embedder(), verifier=Unavailable())
+    ).claims
+
+
+def test_renderer_rejects_forged_registry_members_and_invalid_spans() -> None:
+    from icelake.citations import CitationSource
+
+    registry = _memory()
+    text = "klim likes mayo"
+    forged = CitationSource(ref="mem:1", url=URL_B, excerpt=text)
+    for claim in (
+        AttributedClaim(claim=text, start=0, end=len(text), sources=(forged,)),
+        AttributedClaim(claim=text, start=-1, end=len(text), sources=(registry.sources[0],)),
+        AttributedClaim(claim="wrong text", start=0, end=len(text), sources=(registry.sources[0],)),
+    ):
+        assert registry.apply(text, _attribution(claim)) == text
+
+
+@pytest.mark.parametrize(
+    "url", ["javascript:alert(1)", "https://example.com/>bad", "https://a/\nb"]
+)
+def test_citation_url_rejects_unsafe_masked_link_content(url: str) -> None:
+    with pytest.raises(ValueError):
+        Citations().add_source(url)

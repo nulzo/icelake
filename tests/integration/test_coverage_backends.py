@@ -2,54 +2,9 @@
 
 from __future__ import annotations
 
-import socket
 from datetime import UTC, datetime, timedelta
 
-import pytest
-
-
-def _mongo_available() -> bool:
-    try:
-        with socket.create_connection(("127.0.0.1", 27017), timeout=0.3):
-            return True
-    except OSError:
-        return False
-
-
-@pytest.fixture(params=["in_memory", "sqlite", "mongo"])
-async def store(request):
-    if request.param == "in_memory":
-        from icelake.adapters.in_memory.store import InMemoryStore
-
-        backend = InMemoryStore()
-    elif request.param == "sqlite":
-        from icelake.adapters.sqlite.store import SqliteStore
-
-        backend = SqliteStore("sqlite://:memory:")
-    else:
-        pytest.importorskip("pymongo")
-        if not _mongo_available():
-            pytest.skip("no MongoDB at localhost:27017")
-        from icelake.adapters.mongo import MongoStore
-
-        backend = MongoStore("mongodb://127.0.0.1:27017/icelake_maint_test")
-    await backend.setup()
-    if request.param == "mongo":
-        for collection in (
-            "dm_facts",
-            "dm_aliases",
-            "dm_links",
-            "dm_relations",
-            "dm_entities",
-            "dm_entity_aliases",
-            "dm_summaries",
-            "dm_optouts",
-            "dm_history",
-            "dm_messages",
-        ):
-            await backend.db[collection].delete_many({})
-    yield backend
-    await backend.close()
+from icelake.adapters.mongo import MongoStore
 
 
 def _seed_fact(
@@ -188,20 +143,11 @@ def _fact(fact_id: str, *, expires_at=None):
     )
 
 
-@pytest.mark.skipif(not _mongo_available(), reason="no MongoDB")
 class TestMongoQueueEdges:
-    async def test_release_requeue_recent_counts(self) -> None:
-        from pymongo import AsyncMongoClient
-
-        from icelake.adapters.mongo.queue import MongoIngestQueue
+    async def test_release_requeue_recent_counts(self, mongo_store: MongoStore) -> None:
         from icelake.ports.queue import BatchKey, StoredMessage
 
-        client = AsyncMongoClient("mongodb://127.0.0.1:27017", serverSelectionTimeoutMS=3000)
-        db = client["icelake_queue_edge"]
-        await db["dm_messages"].delete_many({})
-        await db["dm_batch_leases"].delete_many({})
-        queue = MongoIngestQueue(db)
-        await queue.setup()
+        queue = mongo_store.queue
 
         message = StoredMessage(
             message_id="qe1",
@@ -245,20 +191,11 @@ class TestMongoQueueEdges:
             limit=5,
         )
         assert len(claim2.messages) == 1
-        await db["dm_messages"].delete_many({})
-        await client.close()
 
 
-@pytest.mark.skipif(not _mongo_available(), reason="no MongoDB")
 class TestMongoStoreEdges:
-    async def test_list_cursor_search_branches(self) -> None:
-
-        from icelake.adapters.mongo import MongoStore
-
-        store = MongoStore("mongodb://127.0.0.1:27017/icelake_edges")
-        await store.setup()
-        for collection in ("dm_facts", "dm_aliases", "dm_links"):
-            await store.db[collection].delete_many({})
+    async def test_list_cursor_search_branches(self, mongo_store: MongoStore) -> None:
+        store = mongo_store
         for index in range(3):
             await store.insert_fact(_fact(f"curs{index}", expires_at=None))
         page_one = await store.list_facts("g1", subject_id="u1", limit=2)
@@ -270,15 +207,11 @@ class TestMongoStoreEdges:
         hits = await store.search_facts_text("g1", "seeded fact body")
         assert hits
         assert await store.search_facts_text("g1", "   ") == ()
-        await store.close()
 
-    async def test_transition_missing_returns_none(self) -> None:
-
-        from icelake.adapters.mongo import MongoStore
+    async def test_transition_missing_returns_none(self, mongo_store: MongoStore) -> None:
         from icelake.models.facts import MemoryTier
 
-        store = MongoStore("mongodb://127.0.0.1:27017/icelake_edges")
-        await store.setup()
+        store = mongo_store
         result = await store.transition_fact(
             "g",
             "fct_nope",
@@ -306,4 +239,3 @@ class TestMongoStoreEdges:
             )
             is None
         )
-        await store.close()

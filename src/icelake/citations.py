@@ -1,7 +1,6 @@
 """Reply-side citations: a closed source set with structured attribution.
 
-This mirrors how production grounded systems (ChatGPT, Claude, Perplexity,
-Graphiti/Zep) keep citations reliable, expressed as a model-agnostic SDK:
+The citation contract separates provenance, support checks, and rendering:
 
 1. **Closed set.** Code — never the model — registers every source a reply may
    cite: memory bindings from :class:`PromptContext`, tool results, web
@@ -22,6 +21,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
+
+from pydantic import field_validator
 
 from icelake.models.common import FrozenModel
 from icelake.models.facts import FactRecord
@@ -45,6 +47,20 @@ class CitationSource(FrozenModel):
     #: Origin namespace (``memory``, ``web``, ``message``) for consumers that
     #: want to group or label sources by kind.
     kind: str = "web"
+
+    @field_validator("url")
+    @classmethod
+    def _safe_url(cls, value: str) -> str:
+        if not value:
+            return value
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or any(char.isspace() or ord(char) < 32 or char in "<>" for char in value)
+        ):
+            raise ValueError("citation URL must be an absolute HTTP(S) URL safe for masked links")
+        return value
 
 
 class Citations:
@@ -167,16 +183,28 @@ class Citations:
         used_offsets: set[int] = set()
         for end_index, ref in self._anchors:
             source = self._by_ref.get(ref)
-            offset = min(end_index, len(text))
+            if not 0 <= end_index <= len(text):
+                continue
+            offset = end_index
             if source is None or not source.url or offset in used_offsets:
                 continue  # providers repeat spans; one link per anchor point
             used_offsets.add(offset)
             insertions.append((offset, f" [[{positions[source.ref]}]](<{source.url}>)"))
         for claim in attribution.claims if attribution is not None else ():
+            if (
+                not (0 <= claim.start < claim.end <= len(text))
+                or text[claim.start : claim.end] != claim.claim
+            ):
+                continue
+            registered = tuple(
+                dict.fromkeys(
+                    self._by_ref[source.ref]
+                    for source in claim.sources
+                    if source.ref in positions and self._by_ref.get(source.ref) == source
+                )
+            )
             links = "".join(
-                f" [[{positions[source.ref]}]](<{source.url}>)"
-                for source in claim.sources
-                if source.url
+                f" [[{positions[source.ref]}]](<{source.url}>)" for source in registered
             )
             if links:
                 insertions.append((claim.end, links))

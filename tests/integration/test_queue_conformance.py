@@ -33,9 +33,12 @@ def msg(message_id: str, *, author: str = "u1") -> StoredMessage:
     )
 
 
-@pytest.fixture(params=["in_memory", "sqlite"])
-async def queue(request):
-    if request.param == "in_memory":
+@pytest.fixture(params=["in_memory", "sqlite", "mongo"])
+async def queue(request, mongo_store_factory):
+    if request.param == "mongo":
+        async with mongo_store_factory() as store:
+            yield store.queue
+    elif request.param == "in_memory":
         yield InMemoryIngestQueue()
     else:
         connection = SqliteConnection("sqlite://:memory:")
@@ -124,3 +127,38 @@ class TestQueueConformance:
             now=NOW + timedelta(days=1), batch_size=1, max_age_seconds=0, limit=5
         )
         assert any(key.subject_key == "__server__" for key in keys)
+
+
+async def test_attempt_cannot_reenter_its_own_live_lease(queue) -> None:
+    for i in range(6):
+        await queue.put_message(msg(str(i)))
+    key = BatchKey(guild_id="g1", subject_key="u1")
+    first = await queue.claim_batch(key, now=NOW, lease_seconds=30, owner="attempt", limit=3)
+    second = await queue.claim_batch(key, now=NOW, lease_seconds=30, owner="attempt", limit=3)
+    assert len(first.messages) == 3
+    assert second.locked_by_other and not second.messages
+
+
+async def test_release_requeues_unfinished_work_and_rejects_stale_owner(queue) -> None:
+    await queue.put_message(msg("m"))
+    key = BatchKey(guild_id="g1", subject_key="u1")
+    await queue.claim_batch(key, now=NOW, lease_seconds=30, owner="old", limit=1)
+    await queue.release_key(key, owner="old")
+    assert await queue.pending_count("g1") == 1
+    await queue.claim_batch(key, now=NOW, lease_seconds=30, owner="new", limit=1)
+    assert await queue.complete_messages(("m",), owner="old") == 0
+    assert await queue.dead_letter_messages(("m",), owner="old") == 0
+    await queue.release_key(key, owner="old")
+    assert await queue.complete_messages(("m",), owner="new") == 1
+
+
+async def test_expired_owner_cannot_renew_and_new_owner_survives_reclaim(queue) -> None:
+    await queue.put_message(msg("m"))
+    key = BatchKey(guild_id="g1", subject_key="u1")
+    await queue.claim_batch(key, now=NOW, lease_seconds=30, owner="old", limit=1)
+    later = NOW + timedelta(seconds=31)
+    assert not await queue.renew_lease(key, owner="old", now=later, lease_seconds=30)
+    assert await queue.release_expired_leases(later) == 1
+    await queue.claim_batch(key, now=later, lease_seconds=30, owner="new", limit=1)
+    assert await queue.release_expired_leases(later) == 0
+    assert await queue.complete_messages(("m",), owner="new") == 1

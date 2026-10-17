@@ -23,6 +23,7 @@ class InMemoryIngestQueue:
         self._order: list[str] = []
         self._lease_owner: dict[tuple[str, str], str] = {}
         self._lease_until: dict[tuple[str, str], datetime] = {}
+        self._claims: dict[str, tuple[str, datetime]] = {}
         self.max_pending = max_pending
 
     async def put_message(
@@ -90,8 +91,7 @@ class InMemoryIngestQueue:
         lease_key = key.as_tuple
         async with self._lock:
             deadline = self._lease_until.get(lease_key)
-            holder = self._lease_owner.get(lease_key)
-            if deadline is not None and deadline > now and holder != owner:
+            if deadline is not None and deadline > now:
                 return ClaimOutcome(key=key, locked_by_other=True)
             candidates = [
                 message
@@ -101,54 +101,55 @@ class InMemoryIngestQueue:
                 and message.subject_key == key.subject_key
                 and message.status is MessageStatus.PENDING
             ]
-            if not candidates:
-                return ClaimOutcome(key=key)
             window = sorted(candidates, key=lambda m: m.created_at)[:limit]
             claimed: list[StoredMessage] = []
             for message in window:
                 updated = message.model_copy(update={"status": MessageStatus.CLAIMED})
                 self._messages[message.message_id] = updated
                 claimed.append(updated)
+                self._claims[message.message_id] = (owner, now + timedelta(seconds=lease_seconds))
             self._lease_owner[lease_key] = owner
             self._lease_until[lease_key] = now + timedelta(seconds=lease_seconds)
             return ClaimOutcome(key=key, messages=tuple(claimed))
 
     async def complete_messages(self, message_ids: tuple[str, ...], owner: str) -> int:
-        del owner
         count = 0
         async with self._lock:
             for message_id in message_ids:
                 message = self._messages.get(message_id)
-                if message is None or message.status is not MessageStatus.CLAIMED:
+                if (
+                    message is None
+                    or message.status is not MessageStatus.CLAIMED
+                    or self._claims.get(message_id, (None,))[0] != owner
+                ):
                     continue
                 self._messages[message_id] = message.model_copy(
                     update={
                         "status": MessageStatus.PROCESSED,
                     }
                 )
+                self._claims.pop(message_id, None)
                 count += 1
         return count
 
     async def release_expired_leases(self, now: datetime) -> int:
         now = ensure_aware(now)
         async with self._lock:
-            expired_keys = [key for key, deadline in self._lease_until.items() if deadline <= now]
             released = 0
-            for key in expired_keys:
-                for message in self._messages.values():
-                    if (
-                        message.guild_id == key[0]
-                        and message.subject_key == key[1]
-                        and message.status is MessageStatus.CLAIMED
-                    ):
-                        self._messages[message.message_id] = message.model_copy(
-                            update={
-                                "status": MessageStatus.PENDING,
-                            }
-                        )
-                        released += 1
-                self._lease_until.pop(key, None)
-                self._lease_owner.pop(key, None)
+            for message_id, (_, deadline) in list(self._claims.items()):
+                if deadline > now:
+                    continue
+                message = self._messages.get(message_id)
+                if message is not None and message.status is MessageStatus.CLAIMED:
+                    self._messages[message_id] = message.model_copy(
+                        update={"status": MessageStatus.PENDING}
+                    )
+                    released += 1
+                self._claims.pop(message_id, None)
+            for key, deadline in list(self._lease_until.items()):
+                if deadline <= now:
+                    self._lease_until.pop(key, None)
+                    self._lease_owner.pop(key, None)
             return released
 
     async def dead_letter_messages(
@@ -156,18 +157,22 @@ class InMemoryIngestQueue:
         message_ids: tuple[str, ...],
         owner: str,
     ) -> int:
-        del owner
         count = 0
         async with self._lock:
             for message_id in message_ids:
                 message = self._messages.get(message_id)
-                if message is None or message.status is not MessageStatus.CLAIMED:
+                if (
+                    message is None
+                    or message.status is not MessageStatus.CLAIMED
+                    or self._claims.get(message_id, (None,))[0] != owner
+                ):
                     continue
                 self._messages[message_id] = message.model_copy(
                     update={
                         "status": MessageStatus.DEAD,
                     }
                 )
+                self._claims.pop(message_id, None)
                 count += 1
         return count
 
@@ -184,8 +189,22 @@ class InMemoryIngestQueue:
                         "status": MessageStatus.PENDING,
                     }
                 )
+                self._claims.pop(message_id, None)
                 count += 1
         return count
+
+    async def drop_governance(self, guild_id: str, user_id: str) -> int:
+        async with self._lock:
+            doomed = [
+                message_id
+                for message_id, message in self._messages.items()
+                if message.guild_id == guild_id
+                and (message.author_id == user_id or user_id in message.mention_ids)
+            ]
+            for message_id in doomed:
+                del self._messages[message_id]
+                self._order.remove(message_id)
+            return len(doomed)
 
     async def pending_count(self, guild_id: str) -> int:
         return sum(
@@ -220,14 +239,29 @@ class InMemoryIngestQueue:
         lease_key = key.as_tuple
         async with self._lock:
             holder = self._lease_owner.get(lease_key)
-            if holder != owner:
+            if holder != owner or self._lease_until[lease_key] <= now:
                 return False
-            self._lease_until[lease_key] = now + timedelta(seconds=lease_seconds)
+            deadline = now + timedelta(seconds=lease_seconds)
+            self._lease_until[lease_key] = deadline
+            for message_id, (claim_owner, _) in self._claims.items():
+                if claim_owner == owner:
+                    self._claims[message_id] = (owner, deadline)
             return True
 
     async def release_key(self, key: BatchKey, *, owner: str) -> None:
         lease_key = key.as_tuple
         async with self._lock:
+            for message_id, (claim_owner, _) in list(self._claims.items()):
+                message = self._messages.get(message_id)
+                if (
+                    claim_owner == owner
+                    and message is not None
+                    and (message.guild_id, message.subject_key) == lease_key
+                ):
+                    self._messages[message_id] = message.model_copy(
+                        update={"status": MessageStatus.PENDING}
+                    )
+                    self._claims.pop(message_id, None)
             if self._lease_owner.get(lease_key) == owner:
                 self._lease_owner.pop(lease_key, None)
                 self._lease_until.pop(lease_key, None)

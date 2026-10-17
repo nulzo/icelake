@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from icelake.config import ExtractionConfig
@@ -112,6 +113,12 @@ class FactExtractor:
         share = ephemeral_share_gate(operation.text)
         if not share.allowed:
             return share
+        indexes = operation.source_message_indexes
+        if not indexes and len(messages) == 1:
+            indexes = (1,)
+            operation = operation.model_copy(update={"source_message_indexes": indexes})
+        if not indexes or any(index < 1 or index > len(messages) for index in indexes):
+            return GateDecision(False, "invalid_source_indexes")
         source_texts = tuple(
             content
             for index, content in enumerate((content for _, content in messages), 1)
@@ -127,6 +134,15 @@ class FactExtractor:
         token = operation.subject_token.strip()
         if not roster.knows(token):
             return GateDecision(False, "unknown_subject_token")
+        # An individual's self-report cannot establish a community-wide trait.
+        # This is a conservative scope check, not semantic entailment verification.
+        evidence = " ".join(source_texts).casefold()
+        if (
+            token == "server"
+            and re.search(r"\b(i|my|me|mine)\b", evidence)
+            and not re.search(r"\b(we|our|us|community|server|guild)\b", evidence)
+        ):
+            return GateDecision(False, "personal_evidence_for_community")
         subject_id = None if token == "server" else roster.user_id_for(token)
 
         speaker_id = None

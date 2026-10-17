@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from icelake.config import RetrievalConfig
+from icelake.governance import fact_participants
 from icelake.identity.guards import BotGuard
 from icelake.lifecycle.strength import retention, strength_signal
 from icelake.models.facts import FactRecord
@@ -23,6 +24,7 @@ from icelake.models.retrieval import (
     ScoreComponents,
     ScoredFact,
 )
+from icelake.permissions import AudienceGate
 from icelake.ports.clock import Clock
 from icelake.ports.llm import Embedder, Reranker
 from icelake.ports.store import MemoryStore, NodeRef
@@ -37,8 +39,6 @@ from icelake.scoring.fusion import (
 )
 
 logger = logging.getLogger(__name__)
-
-_FUTURE = datetime.max.replace(tzinfo=UTC)
 
 
 class RecallService:
@@ -57,7 +57,9 @@ class RecallService:
         on_recalled: Any = None,
         clock: Clock | None = None,
         stability_days: float = 1.0,
+        audience_gate: AudienceGate | None = None,
     ) -> None:
+        self._audience_gate = audience_gate or AudienceGate()
         self._store = store
         self._vectors = vectors
         self._embedder = embedder
@@ -72,6 +74,14 @@ class RecallService:
         self._stability_days = stability_days
 
     async def recall(self, query: RecallQuery) -> RecallResult:
+        """Retrieve eligible memories, keeping explicit guild and entity discovery available."""
+        if (
+            query.scope is Scope.SUBJECTS
+            and not query.subject_ids
+            and not query.pair_ids
+            and not query.entity_hint
+        ):
+            return RecallResult(warnings=(RecallWarning.SUBJECT_UNRESOLVED,))
         selected = query.channels if query.channels else CHANNELS_DEFAULT
         subject_ids: tuple[str, ...] | None = tuple(query.subject_ids) or None
         server_only = query.scope is Scope.SERVER
@@ -84,6 +94,11 @@ class RecallService:
             # the entity node even on the default channel set (Graphiti-style
             # BFS from query entities), bounded by hop_depth / fan_out config.
             selected = frozenset({*selected, ChannelName.GRAPH_HOP})
+
+        if query.audience is not None:
+            # Relation aggregates are not audience-partitioned. Walking them can
+            # reveal private relationships even when the final fact is public.
+            selected = frozenset(name for name in selected if name is not ChannelName.GRAPH_HOP)
 
         # Identity-collapse map: subject reads expand to entity twins so a
         # member mentioned by name before speaking still recalls fully.
@@ -127,6 +142,16 @@ class RecallService:
         # One fetch for the fused pool: feeds the strength component and is
         # reused by _materialize instead of a second get_facts round-trip.
         pool_records = await self._store.get_facts(query.guild_id, tuple(c.fact_id for c in fused))
+        if query.audience is not None:
+            pool_records = await self._audience_gate.filter(
+                query.guild_id, query.audience, pool_records
+            )
+        eligibility: dict[str, bool] = {}
+        pool_records = tuple(
+            [record for record in pool_records if await self._eligible(query, record, eligibility)]
+        )
+        eligible_ids = {record.id for record in pool_records}
+        fused = [candidate for candidate in fused if candidate.fact_id in eligible_ids]
         semantic_map: dict[str, float] = {}
         lexical_map: dict[str, float] = {}
         entity_map: dict[str, float] = {}
@@ -159,7 +184,31 @@ class RecallService:
             records=pool_records,
             rerank_scores=rerank_scores,
             hop_paths=hop_paths,
+            eligibility={} if self._reranker is not None and query.text else eligibility,
         )
+
+    async def _eligible(
+        self, query: RecallQuery, record: FactRecord, eligibility: dict[str, bool]
+    ) -> bool:
+        if record.guild_id != query.guild_id:
+            return False
+        if query.scope is Scope.SERVER and record.subject_id is not None:
+            return False
+        moment = query.as_of or (self._clock.now() if self._clock else datetime.now(UTC))
+        if not record.is_valid_at(moment) or (query.as_of is None and not record.is_active):
+            return False
+        participants = fact_participants(record)
+        for subject in participants:
+            if subject in query.exclude_ids or (self._guard and self._guard.is_bot(subject)):
+                return False
+            if subject not in eligibility:
+                eligibility[subject] = not (
+                    self._is_subject_blocked is not None
+                    and await self._is_subject_blocked(query.guild_id, subject)
+                )
+            if not eligibility[subject]:
+                return False
+        return True
 
     async def _apply_reranker(
         self,
@@ -318,7 +367,7 @@ class RecallService:
 
         Each side reads its user node plus entity twins (one batched
         ``links_for_nodes``), so a member's pre-speech twin facts count.
-        All pairs resolve concurrently, so cost stays O(pairs), not O(facts).
+        Each distinct user is read once, so storage calls grow with users.
         """
         if not query.pair_ids:
             return []
@@ -335,13 +384,11 @@ class RecallService:
                 )
             }
 
-        async def intersect(a: str, b: str) -> list[str]:
-            by_a, by_b = await asyncio.gather(linked_ids(a), linked_ids(b))
-            return [fact_id for fact_id in by_a if fact_id in by_b]
-
-        intersections = await asyncio.gather(
-            *(intersect(a, b) for a, b in query.pair_ids if a != b)
+        users = tuple(dict.fromkeys(uid for pair in query.pair_ids for uid in pair))
+        linked = dict(
+            zip(users, await asyncio.gather(*(linked_ids(uid) for uid in users)), strict=True)
         )
+        intersections = [sorted(linked[a] & linked[b]) for a, b in query.pair_ids if a != b]
         ranked: list[str] = []
         seen: set[str] = set()
         for fact_ids in intersections:
@@ -390,8 +437,11 @@ class RecallService:
         records: tuple[FactRecord, ...],
         rerank_scores: dict[str, float] | None = None,
         hop_paths: dict[str, tuple[str, ...]] | None = None,
+        eligibility: dict[str, bool] | None = None,
     ) -> RecallResult:
         fact_ids = [fact_id for fact_id, score, _, _ in scored]
+        if query.audience is not None:
+            records = await self._audience_gate.filter(query.guild_id, query.audience, records)
         by_id = {record.id: record for record in records}
         scores = {fact_id: score for fact_id, score, _, _ in scored}
         components_map = {fact_id: comps for fact_id, _, comps, _ in scored}
@@ -402,36 +452,14 @@ class RecallService:
         facts: list[ScoredFact] = []
         warnings: list[RecallWarning] = []
         trimmed = False
+        eligibility = eligibility if eligibility is not None else {}
         for fact_id in fact_ids:
             record = by_id.get(fact_id)
             if record is None:
                 continue
-            if query.as_of is not None:
-                # Time travel: validity window decides; supersession flags are
-                # irrelevant because they describe LATER knowledge.
-                start = record.valid_from
-                end = record.valid_until or _FUTURE
-                if start is not None and start > query.as_of:
-                    continue
-                if end <= query.as_of:
-                    continue
-            elif not record.is_active:
-                continue
             if scores[fact_id] < query.min_score:
                 continue
-            subject = record.subject_id
-            guarded = (
-                self._guard is not None and subject is not None and (self._guard.is_bot(subject))
-            )
-            if guarded:
-                continue
-            if (
-                self._is_subject_blocked is not None
-                and subject is not None
-                and await self._is_subject_blocked(query.guild_id, subject)
-            ):
-                continue
-            if record.subject_id and record.subject_id in query.exclude_ids:
+            if not await self._eligible(query, record, eligibility):
                 continue
             cap_key = record.subject_id or "__server__"
             if per_subject.get(cap_key, 0) >= query.max_per_subject:

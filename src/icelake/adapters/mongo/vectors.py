@@ -37,16 +37,29 @@ class MongoVectorIndex:
 
     async def upsert(self, items: tuple[VectorItem, ...]) -> None:
         for item in items:
+            # A pipeline update keeps insert-or-ignore atomic without duplicate-key
+            # failures when an older worker races a newer projection.
+            payload = {
+                "_id": item.id,
+                "guild_id": item.guild_id,
+                "subject_id": item.subject_id,
+                "dim": len(item.embedding),
+                "embedding": _pack(item.embedding),
+                "version": item.version,
+            }
             await self.col.update_one(
                 {"_id": item.id},
-                {
-                    "$set": {
-                        "guild_id": item.guild_id,
-                        "subject_id": item.subject_id,
-                        "dim": len(item.embedding),
-                        "embedding": _pack(item.embedding),
+                [
+                    {
+                        "$replaceWith": {
+                            "$cond": [
+                                {"$lte": [{"$ifNull": ["$version", 0]}, item.version]},
+                                {"$literal": payload},
+                                "$$ROOT",
+                            ]
+                        }
                     }
-                },
+                ],
                 upsert=True,
             )
 

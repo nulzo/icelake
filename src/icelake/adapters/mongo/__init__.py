@@ -11,8 +11,10 @@ from __future__ import annotations
 import asyncio
 import re
 import typing
-from contextlib import AbstractAsyncContextManager
-from datetime import datetime
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from datetime import UTC, datetime
 from typing import Any
 
 from icelake.adapters.mongo.mapping import (
@@ -31,9 +33,12 @@ from icelake.adapters.mongo.mapping import (
     summary_to_doc,
 )
 from icelake.adapters.mongo.queue import CLAIMED
+from icelake.consolidation.validity import summary_is_valid
+from icelake.errors import StorageUnavailableError
+from icelake.governance import fact_fenced, filter_export, generation_map
 from icelake.lifecycle.forget import select_forgotten_facts
 from icelake.lifecycle.prune import select_prune_victims_by_anchor
-from icelake.models.admin import GuildStats, PurgeReport
+from icelake.models.admin import ConsentState, GuildStats, PurgeReport
 from icelake.models.common import Page
 from icelake.models.facts import (
     FactCategory,
@@ -52,6 +57,7 @@ from icelake.models.graph import (
     RelationEdge,
 )
 from icelake.models.identity import AliasRecord, AliasSource
+from icelake.models.recovery import ProjectionJob
 
 
 def _iso(moment: datetime | None) -> str | None:
@@ -70,33 +76,117 @@ class MongoStore:
             from pymongo import AsyncMongoClient
         except ImportError as exc:  # pragma: no cover - requires the extra
             raise ImportError(
-                "the MongoDB adapter requires pymongo>=4.10 (pip install icelake[mongo])",
+                "the MongoDB adapter requires pymongo>=4.17 (pip install icelake[mongo])",
             ) from exc
         self._client: Any = AsyncMongoClient(url, serverSelectionTimeoutMS=5000)
         self.db = self._client[database]
+        self._transaction_owner: ContextVar[asyncio.Task[Any] | None] = ContextVar(
+            "mongo_transaction_owner", default=None
+        )
         from icelake.adapters.mongo.queue import MongoIngestQueue
         from icelake.adapters.mongo.vectors import MongoVectorIndex
 
         self.queue = MongoIngestQueue(self.db)
         self.vectors = MongoVectorIndex(self.db)
 
-    def transaction(self) -> AbstractAsyncContextManager[None]:
-        """Best-effort unit-of-work. Causal sessions need a replica set."""
-        import contextlib
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[None]:
+        """Real snapshot transaction; standalone Mongo fails rather than partially committing.
 
-        return contextlib.nullcontext()
+        PyMongo's bound sessions (4.17+) propagate all adapter operations. Nested
+        scopes join the owner task; child tasks must never share a session.
+        """
+        owner = self._transaction_owner.get()
+        if owner is not None:
+            if owner is not asyncio.current_task():
+                raise RuntimeError("parallel operations in a Mongo transaction are unsupported")
+            yield
+            return
+        from pymongo.read_concern import ReadConcern
+        from pymongo.write_concern import WriteConcern
+
+        async with self._client.start_session() as session, session.bind(end_session=False):
+            token = self._transaction_owner.set(asyncio.current_task())
+            try:
+                async with await session.start_transaction(
+                    read_concern=ReadConcern("snapshot"),
+                    write_concern=WriteConcern("majority"),
+                    max_commit_time_ms=10000,
+                ):
+                    yield
+            finally:
+                self._transaction_owner.reset(token)
+
+    async def pending_projections(
+        self, limit: int, *, now: datetime | None = None
+    ) -> tuple[ProjectionJob, ...]:
+        cursor = (
+            self.db["dm_projection_jobs"]
+            .find(
+                {
+                    "$or": [
+                        {"next_attempt_at": None},
+                        {"next_attempt_at": {"$lte": (now or datetime.now(UTC)).isoformat()}},
+                    ]
+                },
+                {"_id": 0},
+            )
+            .sort("fact_id", 1)
+            .limit(limit)
+        )
+        return tuple([ProjectionJob.model_validate(doc) async for doc in cursor])
+
+    async def enqueue_projection(self, job: ProjectionJob) -> None:
+        await self.db["dm_projection_jobs"].update_one(
+            {"_id": job.fact_id},
+            [
+                {
+                    "$replaceWith": {
+                        "$cond": [
+                            {"$lte": [{"$ifNull": ["$version", 0]}, job.version]},
+                            {"$literal": {"_id": job.fact_id, **job.model_dump(mode="json")}},
+                            "$$ROOT",
+                        ]
+                    }
+                }
+            ],
+            upsert=True,
+        )
+
+    async def defer_projection(self, job: ProjectionJob, next_attempt_at: datetime) -> None:
+        await self.db["dm_projection_jobs"].update_one(
+            {"_id": job.fact_id, "guild_id": job.guild_id, "version": job.version},
+            {"$set": {"next_attempt_at": next_attempt_at.isoformat()}},
+        )
+
+    async def complete_projection(self, job: ProjectionJob) -> None:
+        await self.db["dm_projection_jobs"].delete_one(
+            {"_id": job.fact_id, "guild_id": job.guild_id, "version": job.version}
+        )
 
     # -- lifecycle -------------------------------------------------------------
 
     async def setup(self) -> None:
         from pymongo import ASCENDING as ASC
 
+        hello = await self.db.command("hello")
+        if not hello.get("setName") and hello.get("msg") != "isdbgrid":
+            raise StorageUnavailableError(
+                "Mongo memory requires a replica set or transaction-capable cluster"
+            )
+        await self.db["dm_projection_jobs"].create_index([("next_attempt_at", 1), ("fact_id", 1)])
+
+        await self.db["dm_cursors"].create_index([("guild_id", ASC), ("key", ASC)], unique=True)
         facts = self.db["dm_facts"]
         await facts.create_index([("guild_id", ASC), ("subject_id", ASC)])
         await facts.create_index(
             [("guild_id", ASC), ("subject_id", ASC), ("text_normalized", ASC)],
         )
         await facts.create_index([("guild_id", ASC), ("strength", DESC := -1)])
+        await self.db["dm_governance"].create_index(
+            [("guild_id", ASC), ("user_id", ASC)],
+            unique=True,
+        )
         await self.db["dm_aliases"].create_index(
             [("guild_id", ASC), ("alias_norm", ASC), ("weight", DESC)],
         )
@@ -231,7 +321,11 @@ class MongoStore:
 
     async def get_fact(self, guild_id: str, fact_id: str) -> FactRecord | None:
         doc = await self.db["dm_facts"].find_one({"_id": fact_id, "guild_id": guild_id})
-        return fact_from_doc(doc) if doc else None
+        if doc is None:
+            return None
+        record = fact_from_doc(doc)
+        generations = await generation_map(self, guild_id, (record,))
+        return None if fact_fenced(record, generations) else record
 
     async def get_facts(
         self,
@@ -247,7 +341,9 @@ class MongoStore:
         # $in does not preserve request order; callers pair these with scored
         # hits by id, so return them in the order they were asked for.
         by_id = {doc["_id"]: fact_from_doc(doc) async for doc in cursor}
-        return tuple(by_id[fact_id] for fact_id in fact_ids if fact_id in by_id)
+        records = tuple(by_id[fact_id] for fact_id in fact_ids if fact_id in by_id)
+        generations = await generation_map(self, guild_id, records)
+        return tuple(record for record in records if not fact_fenced(record, generations))
 
     async def find_duplicate(
         self,
@@ -383,6 +479,8 @@ class MongoStore:
             await self.db["dm_facts"].find(query).sort("_id", 1).limit(limit + 1).to_list(limit + 1)
         )
         items = tuple(fact_from_doc(d) for d in docs[:limit])
+        generations = await generation_map(self, guild_id, items)
+        items = tuple(r for r in items if not fact_fenced(r, generations))
         next_cursor = items[-1].id if len(docs) > limit and items else None
         return Page(items=items, next_cursor=next_cursor)
 
@@ -419,7 +517,9 @@ class MongoStore:
             .limit(limit)
             .to_list(limit)
         )
-        return tuple(fact_from_doc(d) for d in docs)
+        records = tuple(fact_from_doc(d) for d in docs)
+        generations = await generation_map(self, guild_id, records)
+        return tuple(r for r in records if not fact_fenced(r, generations))
 
     async def search_facts_text(
         self,
@@ -467,7 +567,14 @@ class MongoStore:
                     continue
             scored.append((record, min(1.0, hits / max(1, len(terms)))))
         scored.sort(key=lambda pair: -pair[1])
-        return tuple(scored[:limit])
+        generations = await generation_map(
+            self, guild_id, tuple(record for record, _score in scored[:limit])
+        )
+        return tuple(
+            (record, score)
+            for record, score in scored[:limit]
+            if not fact_fenced(record, generations)
+        )
 
     async def append_history(
         self,
@@ -568,7 +675,12 @@ class MongoStore:
             results.append((row, fact_from_doc(doc["fact"])))
             if len(results) >= limit:
                 break
-        return tuple(results)
+        generations = await generation_map(
+            self, guild_id, tuple(record for _row, record in results)
+        )
+        return tuple(
+            (row, record) for row, record in results if not fact_fenced(record, generations)
+        )
 
     async def nodes_for_fact(self, guild_id: str, memory_id: str) -> tuple[LinkRow, ...]:
         cursor = self.db["dm_links"].find(
@@ -625,7 +737,12 @@ class MongoStore:
                 continue
             per_node[key] = per_node.get(key, 0) + 1
             results.append((link_from_doc(doc), fact_from_doc(doc["fact"])))
-        return tuple(results)
+        generations = await generation_map(
+            self, guild_id, tuple(record for _row, record in results)
+        )
+        return tuple(
+            (row, record) for row, record in results if not fact_fenced(record, generations)
+        )
 
     # -- relations --------------------------------------------------------------------
 
@@ -926,11 +1043,14 @@ class MongoStore:
         self,
         guild_id: str,
         subject_id: str | None,
+        *,
+        now: datetime | None = None,
     ) -> ProfileSummary | None:
         doc = await self.db["dm_summaries"].find_one(
             {"guild_id": guild_id, "subject_key": subject_id or "__server__"},
         )
-        return summary_from_doc(doc) if doc else None
+        summary = summary_from_doc(doc) if doc else None
+        return summary if summary and await summary_is_valid(self, summary, now=now) else None
 
     async def put_summary(self, summary: ProfileSummary) -> None:
         await self.db["dm_summaries"].replace_one(
@@ -948,6 +1068,11 @@ class MongoStore:
     # -- consent & governance ------------------------------------------------------------
 
     async def set_opt_out(self, guild_id: str, user_id: str, opted_out: bool) -> None:
+        await self.db["dm_governance"].update_one(
+            {"guild_id": guild_id, "user_id": user_id},
+            {"$set": {"opted_out": opted_out}, "$setOnInsert": {"generation": 0}},
+            upsert=True,
+        )
         if opted_out:
             await self.db["dm_optouts"].update_one(
                 {"guild_id": guild_id, "user_id": user_id},
@@ -960,13 +1085,62 @@ class MongoStore:
             )
 
     async def get_opt_out(self, guild_id: str, user_id: str) -> bool:
+        state = await self.consent_state(guild_id, user_id)
+        return state.opted_out
+
+    async def consent_state(self, guild_id: str, user_id: str) -> ConsentState:
+        doc = await self.db["dm_governance"].find_one(
+            {"guild_id": guild_id, "user_id": user_id},
+        )
+        if doc is None:
+            return ConsentState(opted_out=await self._legacy_opt_out(guild_id, user_id))
+        return ConsentState(
+            opted_out=bool(doc.get("opted_out", False)),
+            generation=int(doc.get("generation", 0)),
+        )
+
+    async def _legacy_opt_out(self, guild_id: str, user_id: str) -> bool:
         doc = await self.db["dm_optouts"].find_one(
             {"guild_id": guild_id, "user_id": user_id},
         )
         return doc is not None
 
+    async def bump_governance_generation(self, guild_id: str, user_id: str) -> int:
+        from pymongo import ReturnDocument
+
+        legacy_opted_out = await self._legacy_opt_out(guild_id, user_id)
+        doc = await self.db["dm_governance"].find_one_and_update(
+            {"guild_id": guild_id, "user_id": user_id},
+            {"$inc": {"generation": 1}, "$setOnInsert": {"opted_out": legacy_opted_out}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        assert doc is not None
+        return int(doc["generation"])
+
+    async def governance_generations(
+        self,
+        guild_id: str,
+        user_ids: tuple[str, ...],
+    ) -> dict[str, int]:
+        if not user_ids:
+            return {}
+        cursor = self.db["dm_governance"].find(
+            {"guild_id": guild_id, "user_id": {"$in": list(user_ids)}},
+        )
+        return {doc["user_id"]: int(doc.get("generation", 0)) async for doc in cursor}
+
     async def purge_user_data(self, guild_id: str, user_id: str, dry_run: bool) -> PurgeReport:
-        owned_query = {"guild_id": guild_id, "subject_id": user_id}
+        owned_query = {
+            "guild_id": guild_id,
+            "$or": [
+                {"subject_id": user_id},
+                {"attribution.speaker_id": user_id},
+                {"attribution.actor_id": user_id},
+                {"related_user_ids": user_id},
+                {"citations.author_id": user_id},
+            ],
+        }
         facts_removed = await self.db["dm_facts"].count_documents(owned_query)
         links_removed = await self.db["dm_links"].count_documents(
             {
@@ -1008,6 +1182,8 @@ class MongoStore:
         )
         if dry_run:
             return report
+        generation = await self.bump_governance_generation(guild_id, user_id)
+        messages_removed = await self.queue.drop_governance(guild_id, user_id)
         owned_ids = [
             d["_id"]
             async for d in self.db["dm_facts"].find(
@@ -1040,8 +1216,11 @@ class MongoStore:
         )
         await self.delete_aliases_for_user(guild_id, user_id)
         await self.delete_summary(guild_id, user_id)
-        await self.set_opt_out(guild_id, user_id, False)
-        return report
+        await self.db["dm_history"].delete_many(
+            {"guild_id": guild_id, "fact_id": {"$in": owned_ids}},
+        )
+        _ = generation
+        return report.model_copy(update={"messages_removed": messages_removed})
 
     async def export_guild(
         self, guild_id: str
@@ -1062,7 +1241,7 @@ class MongoStore:
                 async for d in self.db["dm_relations"].find({"guild_id": guild_id})
             ]
         )
-        return facts, entities, relations
+        return await filter_export(self, guild_id, facts, entities, relations)
 
     # -- maintenance ----------------------------------------------------------------------
 

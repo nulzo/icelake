@@ -10,7 +10,7 @@ from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from icelake.models.admin import GuildStats, PurgeReport
+from icelake.models.admin import ConsentState, GuildStats, PurgeReport
 from icelake.models.common import Page
 from icelake.models.facts import (
     FactCategory,
@@ -30,6 +30,7 @@ from icelake.models.graph import (
     RelationEdge,
 )
 from icelake.models.identity import AliasRecord, AliasSource
+from icelake.models.recovery import ProjectionJob
 
 NodeRef = tuple[NodeType, str]
 
@@ -45,15 +46,34 @@ class MemoryStore(Protocol):
     """
 
     # -- lifecycle ------------------------------------------------------------
+    async def pending_projections(
+        self, limit: int, *, now: datetime | None = None
+    ) -> tuple[ProjectionJob, ...]:
+        """Bounded durable outbox; rows survive until a matching version is acknowledged."""
+        ...
+
+    async def enqueue_projection(self, job: ProjectionJob) -> None:
+        """Enqueue inside the same transaction that changes the authoritative fact."""
+        ...
+
+    async def defer_projection(self, job: ProjectionJob, next_attempt_at: datetime) -> None:
+        """Delay a failed revision without blocking other facts' index work."""
+        ...
+
+    async def complete_projection(self, job: ProjectionJob) -> None:
+        """Compare-and-delete: never acknowledge a newer version's work."""
+        ...
+
     async def setup(self) -> None: ...
     async def close(self) -> None: ...
     async def ping(self) -> bool: ...
 
-    def transaction(self) -> AbstractAsyncContextManager[None]:
+    def transaction(self) -> AbstractAsyncContextManager[object]:
         """Unit-of-work scope for multi-statement fact commits.
 
-        Backends without native transactions may yield a no-op; call sites must
-        not rely on isolation beyond best-effort atomicity.
+        Fact, graph, cursor receipts and projection jobs MUST commit or roll back
+        together. Nested scopes join the transaction. Production adapters must
+        provide isolation across processes; a no-op context violates this contract.
         """
         ...
 
@@ -329,7 +349,14 @@ class MemoryStore(Protocol):
         self,
         guild_id: str,
         subject_id: str | None,
-    ) -> ProfileSummary | None: ...
+        *,
+        now: datetime | None = None,
+    ) -> ProfileSummary | None:
+        """Return only a digest whose exact sources still exist, are active and consented.
+
+        Legacy digests without source provenance are unavailable until regenerated.
+        """
+        ...
 
     async def put_summary(self, summary: ProfileSummary) -> None: ...
 
@@ -339,6 +366,26 @@ class MemoryStore(Protocol):
     async def set_opt_out(self, guild_id: str, user_id: str, opted_out: bool) -> None: ...
 
     async def get_opt_out(self, guild_id: str, user_id: str) -> bool: ...
+
+    async def consent_state(self, guild_id: str, user_id: str) -> ConsentState:
+        """Durable consent flag and erasure generation for one user."""
+        ...
+
+    async def governance_generations(
+        self,
+        guild_id: str,
+        user_ids: tuple[str, ...],
+    ) -> dict[str, int]:
+        """Batch read of current erasure generations (absent users map to 0 implicitly)."""
+        ...
+
+    async def bump_governance_generation(self, guild_id: str, user_id: str) -> int:
+        """Increment and persist the erasure generation; returns the new value.
+
+        Must complete BEFORE any deletion begins so concurrent writers stamp
+        their facts with a superseded generation and fence themselves out.
+        """
+        ...
 
     async def purge_user_data(self, guild_id: str, user_id: str, dry_run: bool) -> PurgeReport: ...
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from pydantic import Field
@@ -150,6 +150,7 @@ class FactRecord(FrozenModel):
 
     expires_at: datetime | None = None
     version: int = 1
+    governance: dict[str, int] = Field(default_factory=dict)
 
     @property
     def is_server_fact(self) -> bool:
@@ -158,6 +159,20 @@ class FactRecord(FrozenModel):
     @property
     def is_active(self) -> bool:
         return self.superseded_by_id is None and self.valid_until is None
+
+    def is_valid_at(self, moment: datetime) -> bool:
+        """Whether this record is within its validity and retention window."""
+
+        def utc(value: datetime) -> datetime:
+            # Legacy persisted rows may be naive; historically those mean UTC.
+            return value.replace(tzinfo=value.tzinfo or UTC).astimezone(UTC)
+
+        moment = utc(moment)
+        return (
+            (self.valid_from is None or utc(self.valid_from) <= moment)
+            and (self.valid_until is None or moment < utc(self.valid_until))
+            and (self.expires_at is None or moment < utc(self.expires_at))
+        )
 
     def with_updates(self, **fields: object) -> FactRecord:
         """Functional copy helper (records are frozen)."""
@@ -173,6 +188,13 @@ class FactHistoryEntry(FrozenModel):
     fact_version: int = 1
 
 
+class SummarySource(FrozenModel):
+    """Exact source revision used to generate a derived summary."""
+
+    fact_id: str
+    fingerprint: str = Field(min_length=64, max_length=64)
+
+
 class ProfileSummary(FrozenModel):
     """Consolidated per-subject or per-guild digest (derived representation).
 
@@ -185,3 +207,5 @@ class ProfileSummary(FrozenModel):
     text: str
     generated_at: datetime | None = None
     source_fact_count: int = 0
+    schema_version: int = 2
+    sources: tuple[SummarySource, ...] = Field(default=(), max_length=50)

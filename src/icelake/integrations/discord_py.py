@@ -20,9 +20,11 @@ from discord.ext import commands
 from icelake.api.client import DiscordMemory, MemoryOverrides
 from icelake.config import MemoryConfig
 from icelake.errors import SubjectNotAllowedError
+from icelake.integrations.discord_permissions import DiscordChannelAuthorizer
 from icelake.models.events import MessageEvent
-from icelake.models.facts import FactCategory
-from icelake.models.retrieval import PromptContext
+from icelake.models.facts import AttributionType, FactCategory
+from icelake.models.retrieval import PromptContext, RecallQuery
+from icelake.permissions import Audience
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,7 @@ async def prompt_from_message(
                 thread = (uid,)
     return await memory.prompt_context(
         guild_id=event.guild_id,
+        audience=Audience(channel_id=event.channel_id, requester_id=event.author_id),
         asker_id=event.author_id,
         text=event.content,
         mentioned_ids=event.mention_ids,
@@ -93,6 +96,8 @@ async def setup_discord_memory(
     Call from ``async def setup_hook()``. Returns the started-on-ready client;
     the cog is registered on the bot (``bot.cogs["MemoryCog"]``).
     """
+    if "channel_authorizer" not in client_overrides:
+        client_overrides["channel_authorizer"] = DiscordChannelAuthorizer(bot)
     memory = DiscordMemory(config, **client_overrides)
 
     @bot.listen("on_message")
@@ -179,7 +184,28 @@ class MemoryCog(commands.Cog):
             include_server=False,
             limit=25,
         )
-        lines = [f"- {fact.text}" for fact in page.items] or ["Nothing yet."]
+        visible = await self.memory.recall(
+            RecallQuery(
+                guild_id=str(interaction.guild_id),
+                subject_ids=(str(interaction.user.id),),
+                audience=Audience(
+                    channel_id=str(interaction.channel_id), requester_id=str(interaction.user.id)
+                ),
+                top_k=25,
+                max_per_subject=25,
+            )
+        )
+        # Explicit self-authored commands have no public source message. Only
+        # their author can inspect them through this ephemeral control surface.
+        own = {
+            fact.id: fact
+            for fact in page.items
+            if not fact.citations
+            and fact.attribution.type is AttributionType.MANUAL
+            and fact.attribution.actor_id == str(interaction.user.id)
+        }
+        own.update({scored.fact.id: scored.fact for scored in visible.facts})
+        lines = [f"- {fact.text}" for fact in tuple(own.values())[:25]] or ["Nothing yet."]
         await interaction.response.send_message(
             "**Your stored memories:**\n" + "\n".join(lines),
             ephemeral=True,
@@ -196,6 +222,7 @@ class MemoryCog(commands.Cog):
                 text=text,
                 category=FactCategory.GENERAL,
                 actor_id=str(interaction.user.id),
+                idempotency_key=f"discord-interaction:{interaction.id}",
             )
         except SubjectNotAllowedError:
             await interaction.response.send_message(

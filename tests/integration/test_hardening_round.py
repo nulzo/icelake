@@ -4,26 +4,17 @@ purge completeness, scope pushdown, identity grounding."""
 from __future__ import annotations
 
 import asyncio
-import socket
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from icelake import DiscordMemory
+from icelake.adapters.mongo import MongoStore
 from tests.conftest import (
     ScriptedLLM,
     extraction_response,
     make_config,
 )
-
-
-def _mongo_available() -> bool:
-    try:
-        with socket.create_connection(("127.0.0.1", 27017), timeout=0.3):
-            return True
-    except OSError:
-        return False
-
 
 GUILD = "500000000000000001"
 ALICE = "100000000000000001"
@@ -113,7 +104,7 @@ class TestAtomicLeases:
         # Same owner (a second worker in the same process) re-claims mid-flight:
         # zero rows, not the in-flight batch.
         second = await queue.claim_batch(key, now=now, lease_seconds=60, owner="w1", limit=10)
-        assert not second.locked_by_other
+        assert second.locked_by_other
         assert second.messages == ()
         # After completion + release_key, the key is free and nothing re-claims.
         await queue.complete_messages(tuple(m.message_id for m in first.messages), owner="w1")
@@ -160,17 +151,11 @@ def _msg(message_id: str, now: datetime):
     )
 
 
-@pytest.mark.skipif(not _mongo_available(), reason="no MongoDB")
 class TestMongoLeaseParity:
-    async def test_mongo_atomic_claim_contention(self) -> None:
+    async def test_mongo_atomic_claim_contention(self, mongo_store: MongoStore) -> None:
         from datetime import datetime as dt
 
-        from icelake.adapters.mongo import MongoStore
-
-        store = MongoStore("mongodb://127.0.0.1:27017/icelake_lease_test")
-        await store.setup()
-        await store.db["dm_messages"].delete_many({})
-        await store.db["dm_batch_leases"].delete_many({})
+        store = mongo_store
         for i in range(4):
             await store.queue.put_message(_msg(f"ml{i}", dt.now(UTC)))
         key = __import__("icelake.ports.queue", fromlist=["BatchKey"]).BatchKey(
@@ -188,7 +173,6 @@ class TestMongoLeaseParity:
         winners = [r for r in results if r.messages]
         assert len(winners) <= 1
         assert sum(len(r.messages) for r in results) <= 4
-        await store.close()
 
 
 class TestPurgeCompleteness:

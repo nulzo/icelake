@@ -7,17 +7,15 @@ Mirrors the architecture of a production memory-native bot:
   addressing            replies when pinged OR when someone replies to it
   requester-first       turn context = asker + mentions/reply-targets, capped
   two-verb seam         observe()/recall()/prompt_context(), nothing else touches storage
-  identity truth        Discord user IDs. Names resolve through the alias ladder
-                        (UNIQUE / AMBIGUOUS / UNKNOWN, and ambiguity never guesses)
+  identity truth        current Discord user IDs; ambiguous names require a mention
   name-in-prose lookup  "what do you know about klim?" (no @mention) resolves
-                        via the alias ladder into a strict subject-only fetch,
+                        via Discord membership into audience-authorized recall,
                         from /memory lookup (zero LLM) or one router call
-  coreference           multi-name members get an explicit "one person" line
   grounded citations    the model writes plain prose, then memory.cite weaves
                         jump links where the reply matches a registered source
   governance            opt-out, purge, budgets, health: all first-class
 
-Slash commands mirror a /memory group: show, lookup, related, shared, edit, alias.
+Slash commands: /memory show, lookup, edit. Graph inspection stays in trusted tooling.
 
 Run:
     DISCORD_TOKEN=... OPENROUTER_API_KEY=... python examples/omni_style_bot.py
@@ -25,27 +23,30 @@ Run:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
 from datetime import UTC
+from enum import StrEnum
 
 import discord
 from discord import app_commands
 from discord.ext import commands
+from pydantic import BaseModel, ValidationError
 
 from icelake import (
+    Audience,
     ChatRequest,
     DiscordMemory,
     LlmMessage,
     MemoryConfig,
     MessageEvent,
     MessageRole,
-    NodeType,
+    RecallQuery,
 )
 from icelake.adapters.llm_openai_compat import OpenAICompatLLM, build_chat_llm
 from icelake.config import LlmConfig
+from icelake.integrations.discord_permissions import DiscordChannelAuthorizer
 
 logging.basicConfig(level=logging.INFO)
 # logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -73,15 +74,18 @@ _ROUTER_PROMPT = (
     '"memory_show" with user set to their name exactly as written. For '
     'anything else, action="answer".'
 )
-_ROUTER_SCHEMA: dict[str, object] = {
-    "type": "object",
-    "properties": {
-        "action": {"type": "string", "enum": ["answer", "memory_show"]},
-        "user": {"type": "string", "description": "the member's name exactly as written"},
-    },
-    "required": ["action"],
-    "additionalProperties": False,
-}
+
+
+class RouteAction(StrEnum):
+    ANSWER = "answer"
+    MEMORY_SHOW = "memory_show"
+
+
+class RouteDecision(BaseModel):
+    action: RouteAction
+    user: str = ""
+
+
 _USER_REF_RE = re.compile(r"<@!?(?P<snowflake>\d+)>")
 
 
@@ -90,7 +94,7 @@ _USER_REF_RE = re.compile(r"<@!?(?P<snowflake>\d+)>")
 # =-------------------------------------------------------------------------= #
 
 
-def build_memory() -> DiscordMemory:
+def build_memory(client: discord.Client) -> DiscordMemory:
     return DiscordMemory(
         MemoryConfig(
             storage="sqlite:///omni-style.db",
@@ -100,19 +104,20 @@ def build_memory() -> DiscordMemory:
             extraction={"auto_consolidate_after_adds": 6},
             retrieval={"default_token_budget": TURN_TOKEN_BUDGET},
             budgets={"guild_daily_prompt_tokens": 150_000},
-        )
+        ),
+        channel_authorizer=DiscordChannelAuthorizer(client),
     )
 
 
 class OmniStyleBot(commands.Bot):
     """simple mem-native bot with passive learning for everyone, answers when addressed."""
 
-    def __init__(self, memory: DiscordMemory) -> None:
+    def __init__(self, memory: DiscordMemory | None = None) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
         super().__init__(command_prefix="!", intents=intents)
-        self.memory = memory
+        self.memory = memory if memory is not None else build_memory(self)
 
     async def setup_hook(self) -> None:
         # Start memory before the gateway connects so early messages are safe
@@ -172,9 +177,19 @@ class OmniStyleBot(commands.Bot):
         guild_id = str(message.guild.id) if message.guild else "0"
         mentioned, thread = self._collect_subjects(message)
 
+        # Resolve names through Discord membership, then use the same authorized
+        # context/citation path as explicit mentions.
+        lookup_id = await self._route_name_lookup(guild_id, question)
+        if lookup_id and lookup_id not in mentioned and len(mentioned) < MAX_CONTEXT_SUBJECTS:
+            mentioned.append(lookup_id)
+            thread = thread[: MAX_CONTEXT_SUBJECTS - len(mentioned)]
+
         ctx = await self.memory.prompt_context(
             guild_id=guild_id,
             asker_id=str(message.author.id),
+            audience=Audience(
+                channel_id=str(message.channel.id), requester_id=str(message.author.id)
+            ),
             text=question,
             mentioned_ids=tuple(mentioned),
             thread_participant_ids=tuple(thread),
@@ -183,19 +198,12 @@ class OmniStyleBot(commands.Bot):
         for warning in ctx.warnings:
             log.info("turn warning: %s", warning.value)
 
-        # Names typed as prose are invisible to prompt_context, so route those
-        # to a strict lookup (one extra small call per addressed turn).
-        profile = await self._route_name_lookup(guild_id, question)
-
         system_prompt = (
             "You are a memory-native community bot. Ground every claim about a "
             "member in the labeled MEMORY CONTEXT. Facts belong ONLY to the "
-            "person named in their header. Coreference lines tell you which "
-            f"names are the same person.\n\n{ctx.injection_block}"
+            f"person named in their header.\n\n{ctx.injection_block}"
         )
-        if profile:
-            system_prompt += f"\n\n{profile}"
-        history = await recent_history(message, limit=6)
+        history: list[tuple[str, str]] = []
         reply = await generate(system_prompt, history, question)
 
         # Reattach provenance post-generation: deterministic embedder scoring
@@ -229,9 +237,7 @@ class OmniStyleBot(commands.Bot):
     # Name-in-prose lookup: "what do you know about klim?" (no @mention). #
     # Every entry point (/memory lookup with zero LLM, the structured-    #
     # output router below, or a native tool call) converges on            #
-    # _resolve_lookup plus a STRICT subject-only fetch, so a claim        #
-    # stored on someone else cannot be attributed to the person asked     #
-    # about.                                                              #
+    # current Discord membership and audience-authorized recall.        #
     # ------------------------------------------------------------------ #
 
     async def _route_name_lookup(self, guild_id: str, question: str) -> str | None:
@@ -242,69 +248,45 @@ class OmniStyleBot(commands.Bot):
                     LlmMessage(role=MessageRole.SYSTEM, content=_ROUTER_PROMPT),
                     LlmMessage(role=MessageRole.USER, content=question),
                 ),
-                response_schema=_ROUTER_SCHEMA,
+                response_schema=RouteDecision.model_json_schema(),
                 max_tokens=60,
                 purpose="reply_router",
             )
         )
         try:
-            route = json.loads(response.text)
-        except ValueError:
+            route = RouteDecision.model_validate_json(response.text)
+        except ValidationError:
             return None  # non-JSON reply: fall through to a plain answer
-        if route.get("action") != "memory_show":
+        if route.action is not RouteAction.MEMORY_SHOW:
             return None
-        name = str(route.get("user") or "").strip()
+        name = route.user.strip()
         if not name:
             return None
-        return await self._profile_block(guild_id, name)
+        resolved = await self._resolve_lookup(guild_id, name)
+        return resolved[0] if isinstance(resolved, tuple) else None
 
     async def _resolve_lookup(self, guild_id: str, name: str) -> tuple[str, str] | str:
-        """Resolve a typed name to ``(user_id, display)``. An error string otherwise.
-
-        Shared by every lookup entry point (slash command, router, tool call)
-        so the ambiguity contract lives in exactly one place.
-        """
+        """Resolve current Discord members without exposing private memory aliases."""
+        guild = self.get_guild(int(guild_id))
+        if guild is None:
+            return "Guild unavailable"
         ref = name.strip()
         if match := _USER_REF_RE.fullmatch(ref):
             ref = match.group("snowflake")
-        resolution = await self.memory.identity.resolve(guild_id, ref)
-        if resolution.ambiguous:
-            choices = ", ".join(
-                f"{await self.memory.identity.display_name(guild_id, c.user_id) or c.user_id}"
-                f" (ID {c.user_id})"
-                for c in resolution.candidates
-            )
-            return f'"{name}" matches more than one member ({choices}), no guess made'
-        if resolution.resolved is None:
-            return f'no member named "{name}"'
-        user_id = resolution.resolved.user_id
-        display = await self.memory.identity.display_name(guild_id, user_id) or ref
-        return (user_id, display)
-
-    async def _profile_block(self, guild_id: str, name: str) -> str:
-        """Strict subject-only profile for a name typed in prose (LLM-facing)."""
-        result = await self._resolve_lookup(guild_id, name)
-        if isinstance(result, str):
-            return f"LOOKUP RESULT: {result}. Say so plainly rather than guessing."
-        user_id, display = result
-        page = await self.memory.facts.list_for_subject(
-            guild_id,
-            user_id,
-            include_server=False,  # strict: only facts where they are the subject
-            limit=8,
-        )
-        if not page.items:
-            return f"LOOKUP RESULT: {display} is a member, but nothing is stored about them yet."
-        lines = "\n".join(f"- {fact.text}" for fact in page.items)
-        return (
-            f"LOOKUP RESULT - STRICT PROFILE: {display}\n"
-            f"Facts about {display} ONLY. Do NOT attribute these to the asker, and do "
-            f"not attribute other members' claims to {display}.\n{lines}"
-        )
-
-    # ------------------------------------------------------------------ #
-    # /memory group: mirrors omni's five ops on this library's APIs.      #
-    # ------------------------------------------------------------------ #
+        if ref.isdecimal():
+            try:
+                member = await guild.fetch_member(int(ref))
+            except discord.HTTPException:
+                return "Member unavailable"
+            return str(member.id), member.display_name
+        candidates = [
+            member
+            for member in guild.members
+            if ref.casefold() in {member.name.casefold(), member.display_name.casefold()}
+        ]
+        if len(candidates) != 1:
+            return "Please @mention one current member to identify them unambiguously"
+        return str(candidates[0].id), candidates[0].display_name
 
     group_memory = app_commands.Group(name="memory", description="What the bot remembers")
 
@@ -314,20 +296,23 @@ class OmniStyleBot(commands.Bot):
     ) -> None:
         """Show what the bot remembers about someone."""
         member = user or interaction.user
-        page = await self.memory.facts.list_for_subject(
-            str(interaction.guild_id),
-            str(member.id),
-            include_server=True,
-            limit=15,
+        result = await self.memory.recall(
+            RecallQuery(
+                guild_id=str(interaction.guild_id),
+                subject_ids=(str(member.id),),
+                top_k=15,
+                max_per_subject=15,
+                audience=Audience(
+                    channel_id=str(interaction.channel_id),
+                    requester_id=str(interaction.user.id),
+                ),
+            )
         )
-        lines = [f"• {fact.text}" for fact in page.items] or ["Nothing yet."]
-        aliases = await self.memory.identity.aliases_of(str(interaction.guild_id), str(member.id))
-        alias_line = ""
-        names = sorted({record.alias_norm for record in aliases})
-        if len(names) > 1:
-            alias_line = f"\nAlso known as: {', '.join(names)}"
+        lines = [
+            f"• {item.fact.text}" for item in result.facts if item.fact.subject_id == str(member.id)
+        ] or ["Nothing available here."]
         await interaction.response.send_message(
-            f"**Memories for {member.display_name}**{alias_line}\n" + "\n".join(lines),
+            f"**Memories for {member.display_name}**\n" + "\n".join(lines),
             ephemeral=True,
         )
 
@@ -340,73 +325,28 @@ class OmniStyleBot(commands.Bot):
             await interaction.response.send_message(f"{result}.", ephemeral=True)
             return
         user_id, display = result
-        page = await self.memory.facts.list_for_subject(
-            guild_id,
-            user_id,
-            include_server=False,  # strict: only facts where they are the subject
-            limit=15,
+        result = await self.memory.recall(
+            RecallQuery(
+                guild_id=guild_id,
+                subject_ids=(user_id,),
+                top_k=15,
+                max_per_subject=15,
+                audience=Audience(
+                    channel_id=str(interaction.channel_id),
+                    requester_id=str(interaction.user.id),
+                ),
+            )
         )
-        lines = [f"• {fact.text}" for fact in page.items] or ["Nothing yet."]
+        lines = [
+            f"• {item.fact.text}" for item in result.facts if item.fact.subject_id == user_id
+        ] or ["Nothing available here."]
         await interaction.response.send_message(
             f"**Memories for {display}**\n" + "\n".join(lines),
             ephemeral=True,
         )
 
-    @group_memory.command(name="related")  # type: ignore[arg-type]
-    async def memory_related(self, interaction: discord.Interaction, user: discord.Member) -> None:
-        """Typed relationship edges touching a member."""
-        guild_id = str(interaction.guild_id)
-        edges = await self.memory.graph.relations_of(guild_id, str(user.id), limit=15)
-        if not edges:
-            await interaction.response.send_message("No relations yet.", ephemeral=True)
-            return
-
-        async def label(node_type: NodeType, node_id: str) -> str:
-            if node_type is not NodeType.USER:
-                return node_id  # entity slugs are already human-readable
-            member = interaction.guild.get_member(int(node_id)) if interaction.guild else None
-            if member is not None:
-                return member.display_name
-            # Off-server or left the guild: fall back to the alias ladder,
-            # never a raw snowflake.
-            return await self.memory.identity.display_name(guild_id, node_id) or "a former member"
-
-        lines = [
-            f"• {await label(edge.src_type, edge.src_id)} "
-            f"-{edge.verb}-> {await label(edge.dst_type, edge.dst_id)} "
-            f"({edge.polarity.value})"
-            for edge in edges
-        ]
-        await interaction.response.send_message("\n".join(lines), ephemeral=True)
-
-    @group_memory.command(name="shared")  # type: ignore[arg-type]
-    async def memory_shared(
-        self, interaction: discord.Interaction, a: discord.Member, b: discord.Member
-    ) -> None:
-        """What two members share, with each side's stance preserved."""
-        guild_id = str(interaction.guild_id)
-        left, right = await self.memory.graph.shared_attributions(
-            guild_id, str(a.id), str(b.id), limit=20
-        )
-        if not left:
-            await interaction.response.send_message(
-                f"{a.display_name} and {b.display_name} share: nothing notable yet",
-                ephemeral=True,
-            )
-            return
-        lines: list[str] = []
-        seen: set[str] = set()
-        for edge in left:
-            if edge.dst_id in seen:
-                continue
-            seen.add(edge.dst_id)
-            left_verbs = {e.verb for e in left if e.dst_id == edge.dst_id}
-            right_verbs = {e.verb for e in right if e.dst_id == edge.dst_id}
-            lines.append(
-                f"{a.display_name} *{'/'.join(sorted(left_verbs))}* → {edge.dst_id} "
-                f"← *{'/'.join(sorted(right_verbs))}* {b.display_name}"
-            )
-        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+    # Aggregate graph edges do not carry an audience boundary. Keep graph
+    # inspection in trusted tooling (see relationship_queries.py).
 
     @group_memory.command(name="edit")  # type: ignore[arg-type]
     async def memory_edit(self, interaction: discord.Interaction, correction: str) -> None:
@@ -416,22 +356,11 @@ class OmniStyleBot(commands.Bot):
             subject_id=str(interaction.user.id),
             text=correction,
             actor_id=str(interaction.user.id),
+            idempotency_key=str(interaction.id),
         )
         await interaction.response.send_message(
-            f'Noted: "{fact.text}"',
-            ephemeral=True,
-        )
-
-    @group_memory.command(name="alias")  # type: ignore[arg-type]
-    async def memory_alias(self, interaction: discord.Interaction, alias: str) -> None:
-        """Teach the bot another name for you."""
-        await self.memory.identity.register_alias(
-            str(interaction.guild_id),
-            str(interaction.user.id),
-            alias,
-        )
-        await interaction.response.send_message(
-            f'Got it, I\'ll also know you as "{alias}".',
+            f'Saved privately: "{fact.text}". This has no public message source, '
+            "so it will not be injected into channel replies.",
             ephemeral=True,
         )
 
@@ -490,18 +419,6 @@ def strip_bot_mention(content: str, bot_user_id: int) -> str:
     return re.sub(rf"<@!?{bot_user_id}>", "", content)
 
 
-async def recent_history(message: discord.Message, *, limit: int):
-    turns: list[tuple[str, str]] = []
-    try:
-        async for msg in message.channel.history(limit=limit, before=message):
-            if not msg.author.bot:
-                turns.append((msg.author.display_name, msg.content))
-    except (discord.HTTPException, discord.Forbidden):
-        pass
-    turns.reverse()
-    return turns
-
-
 _reply_llm: OpenAICompatLLM | None = None
 
 
@@ -535,7 +452,7 @@ def main() -> None:
     if not token:
         raise SystemExit("set DISCORD_TOKEN")
 
-    bot = OmniStyleBot(build_memory())
+    bot = OmniStyleBot()
     register_governance(bot)
 
     bot.run(token)

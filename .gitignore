@@ -22,3 +22,5 @@ wheels/
 bench_runs/
 
 docs/
+
+audit.md

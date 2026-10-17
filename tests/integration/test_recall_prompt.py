@@ -182,7 +182,7 @@ class TestPromptContext:
         if ctx.citations:
             citation = ctx.citations[0]
             assert citation.url.startswith("https://discord.com/channels/")
-            reply = "bob was called a hacker by alice"
+            reply = next(sf.fact.text for sf in ctx.facts if sf.fact.id == citation.fact_id)
             set_ = Citations.from_prompt_context(ctx)
             cited = await client.cite(reply, set_)
             assert citation.url in cited.text
@@ -252,6 +252,115 @@ class TestPromptContext:
         warnings = {w.value for w in ctx.warnings}
         assert "budget_trimmed" in warnings or len(ctx.facts) <= 3
         await client.close()
+
+
+class TestIdentityPrivacyRegressions:
+    async def test_alias_asker_retains_role_and_pairs_are_canonical(self, make_client, monkeypatch):
+        from icelake.models.facts import ProfileSummary
+        from icelake.models.identity import AliasSource
+
+        client, _ = make_client(llm=False)
+        await client.start()
+        await client.identity.register_alias(GUILD, ALICE, "alice", source=AliasSource.DISPLAY_NAME)
+        await client.identity.register_alias(GUILD, BOB, "bob", source=AliasSource.DISPLAY_NAME)
+        await client.facts.remember(guild_id=GUILD, subject_id=ALICE, text="enjoys green tea")
+        await client.facts.remember(guild_id=GUILD, subject_id=BOB, text="enjoys coffee")
+        summary = ProfileSummary(guild_id=GUILD, subject_id=ALICE, text="Alice profile")
+        from icelake.consolidation.validity import summary_source
+
+        summary = summary.model_copy(
+            update={
+                "sources": (summary_source(await client._store.get_fact(GUILD, "fct_test_0001")),)
+            }
+        )
+        assert await client._store.put_summary(summary) is None
+        queries = []
+        recall = client.recall
+
+        async def recording_recall(query):
+            queries.append(query)
+            return await recall(query)
+
+        monkeypatch.setattr(client, "recall", recording_recall)
+        ctx = await client.prompt_context(
+            guild_id=GUILD,
+            asker_id="alice",
+            mentioned_ids=(ALICE, "bob", BOB),
+            thread_participant_ids=("alice", BOB),
+        )
+        assert ctx.asker_summary == "Alice profile"
+        assert "CURRENT ASKER" in ctx.injection_block
+        assert "REFERENCED USER: alice" not in ctx.injection_block
+        assert queries[0].subject_ids == (ALICE, BOB)
+        assert queries[0].pair_ids == ((ALICE, BOB),)
+        await client.close(drain=False)
+
+    async def test_unknown_asker_never_promotes_a_mention(self, make_client):
+        from icelake.models.retrieval import RecallWarning
+
+        client, _ = make_client(llm=False)
+        await client.start()
+        await client.facts.remember(guild_id=GUILD, subject_id=BOB, text="enjoys coffee")
+        ctx = await client.prompt_context(guild_id=GUILD, asker_id="unknown", mentioned_ids=(BOB,))
+        assert "CURRENT ASKER" not in ctx.injection_block
+        assert f"REFERENCED USER: {BOB}" in ctx.injection_block
+        assert RecallWarning.SUBJECT_UNRESOLVED in ctx.warnings
+        empty = await client.prompt_context(guild_id=GUILD, asker_id="unknown")
+        assert not empty.facts
+        assert "enjoys coffee" not in empty.injection_block
+        await client.close(drain=False)
+
+    async def test_blocked_summary_is_not_even_fetched(self, make_client, monkeypatch):
+        from icelake.consolidation.validity import summary_source
+        from icelake.models.facts import ProfileSummary
+
+        client, _ = make_client(llm=False)
+        await client.start()
+        record = await client.facts.remember(
+            guild_id=GUILD, subject_id=ALICE, text="enjoys quiet mornings"
+        )
+        summary = ProfileSummary(
+            guild_id=GUILD,
+            subject_id=ALICE,
+            text="private profile",
+            sources=(summary_source(record),),
+        )
+        await client._store.put_summary(summary)
+        await client._store.set_opt_out(GUILD, ALICE, True)
+        get_summary = client._store.get_summary
+        reads = []
+
+        async def recording_summary(guild_id, subject_id, **kwargs):
+            reads.append(subject_id)
+            return await get_summary(guild_id, subject_id, **kwargs)
+
+        monkeypatch.setattr(client._store, "get_summary", recording_summary)
+        ctx = await client.prompt_context(guild_id=GUILD, asker_id=ALICE)
+        assert ALICE not in reads
+        assert ctx.asker_summary is None
+        assert "private profile" not in ctx.injection_block
+        await client.close(drain=False)
+
+    async def test_saturated_name_fact_fallback_is_unresolved(self, make_client):
+        from icelake.models.facts import FactRecord
+        from icelake.models.retrieval import RecallWarning
+
+        client, _ = make_client(llm=False)
+        await client.start()
+        for index in range(11):
+            await client._store.insert_fact(
+                FactRecord(
+                    id=f"name-{index}",
+                    guild_id=GUILD,
+                    subject_id=ALICE if index < 10 else BOB,
+                    text="my name is Alex",
+                )
+            )
+        ctx = await client.prompt_context(guild_id=GUILD, asker_id="Alex")
+        assert ctx.resolutions[0].resolved is None
+        assert not ctx.facts
+        assert RecallWarning.IDENTITY_AMBIGUOUS in ctx.warnings
+        await client.close(drain=False)
 
 
 class TestGraphQueries:

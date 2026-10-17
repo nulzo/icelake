@@ -1,13 +1,7 @@
 from __future__ import annotations
 
-import socket
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
-import pytest
-
-from icelake.adapters.in_memory.store import InMemoryStore
-from icelake.adapters.sqlite.store import SqliteStore
 from icelake.models.facts import (
     Attribution,
     AttributionType,
@@ -39,48 +33,6 @@ def make_fact(**overrides) -> FactRecord:
     }
     values.update(overrides)
     return FactRecord(**values)
-
-
-def _mongo_available() -> bool:
-    try:
-        with socket.create_connection(("127.0.0.1", 27017), timeout=0.3):
-            return True
-    except OSError:
-        return False
-
-
-MONGO_AVAILABLE = _mongo_available()
-
-
-@pytest.fixture(params=["in_memory", "sqlite", "mongo"])
-async def store(request) -> AsyncIterator[InMemoryStore | SqliteStore | object]:
-    if request.param == "in_memory":
-        backend = InMemoryStore()
-    elif request.param == "sqlite":
-        backend = SqliteStore("sqlite://:memory:")
-    else:
-        if not MONGO_AVAILABLE:
-            pytest.skip("no MongoDB at localhost:27017")
-        from icelake.adapters.mongo import MongoStore
-
-        backend = MongoStore("mongodb://127.0.0.1:27017/icelake_test")
-    await backend.setup()
-    if request.param == "mongo":
-        for collection in (
-            "dm_facts",
-            "dm_aliases",
-            "dm_links",
-            "dm_relations",
-            "dm_entities",
-            "dm_entity_aliases",
-            "dm_summaries",
-            "dm_optouts",
-            "dm_history",
-            "dm_budgets",
-        ):
-            await backend.db[collection].delete_many({})
-    yield backend
-    await backend.close()
 
 
 class TestAliases:
@@ -441,8 +393,17 @@ class TestLinksAndRelations:
 
 class TestSummariesConsentGovernance:
     async def test_summary_put_get_delete(self, store) -> None:
+        from icelake.consolidation.validity import summary_source
+        from icelake.models.facts import FactRecord
+
+        fact = FactRecord(id="fct_src1", guild_id="g1", subject_id="u1", text="likes movies")
+        await store.insert_fact(fact)
         summary = ProfileSummary(
-            guild_id="g1", subject_id="u1", text="a movie fan", source_fact_count=3
+            guild_id="g1",
+            subject_id="u1",
+            text="a movie fan",
+            source_fact_count=1,
+            sources=(summary_source(fact),),
         )
         await store.put_summary(summary)
         loaded = await store.get_summary("g1", "u1")

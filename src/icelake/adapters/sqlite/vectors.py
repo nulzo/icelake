@@ -38,6 +38,11 @@ class SqliteVectorIndex:
                  embedding BLOB NOT NULL
                )""",
         )
+        columns = await self._db.query("PRAGMA table_info(dm_vectors)")
+        if not any(row["name"] == "version" for row in columns):
+            await self._db.execute(
+                "ALTER TABLE dm_vectors ADD COLUMN version INTEGER NOT NULL DEFAULT 1"
+            )
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS ix_dm_vectors_guild ON dm_vectors (guild_id)",
         )
@@ -45,18 +50,20 @@ class SqliteVectorIndex:
     async def upsert(self, items: tuple[VectorItem, ...]) -> None:
         for item in items:
             await self._db.execute(
-                """INSERT INTO dm_vectors (fact_id, guild_id, subject_id, dim, embedding)
-                   VALUES (?, ?, ?, ?, ?)
+                """INSERT INTO dm_vectors (fact_id, guild_id, subject_id, dim, embedding, version)
+                   VALUES (?, ?, ?, ?, ?, ?)
                    ON CONFLICT(fact_id) DO UPDATE SET
                      subject_id=excluded.subject_id,
                      dim=excluded.dim,
-                     embedding=excluded.embedding""",
+                     embedding=excluded.embedding, version=excluded.version
+                   WHERE dm_vectors.version <= excluded.version""",
                 (
                     item.id,
                     item.guild_id,
                     item.subject_id,
                     len(item.embedding),
                     _pack(item.embedding),
+                    item.version,
                 ),
             )
 

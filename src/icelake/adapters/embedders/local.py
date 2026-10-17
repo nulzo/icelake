@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -17,11 +18,12 @@ class _Model(Protocol):
 
 
 class LocalEmbedder:
-    """Runs a local sentence-transformers model off-loop in a single-thread executor."""
+    """Runs a local sentence-transformers model off-loop in a serialized worker calls."""
 
     def __init__(self, config: EmbeddingsConfig) -> None:
         self._config = config
         self._model: _Model | None = None
+        self._model_lock = threading.Lock()
 
     @property
     def dimensions(self) -> int:
@@ -39,13 +41,16 @@ class LocalEmbedder:
     async def embed(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
         if not texts:
             return ()
-        model = await asyncio.to_thread(self._load)
-        vectors = await asyncio.to_thread(
-            model.encode,
-            list(texts),
-            False,
-        )
-        return tuple(tuple(float(x) for x in vector) for vector in vectors)
+
+        def encode() -> tuple[tuple[float, ...], ...]:
+            # The lock lives in the worker: cancelling an await must not allow
+            # another thread to load or use the same model concurrently.
+            with self._model_lock:
+                model = self._load()
+                vectors = model.encode(list(texts), False)
+                return tuple(tuple(float(x) for x in vector) for vector in vectors)
+
+        return await asyncio.to_thread(encode)
 
 
 __all__ = ["LocalEmbedder"]

@@ -6,15 +6,24 @@ import asyncio
 import contextlib
 import json
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
+from icelake.concurrency import TaskLock as _TaskLock
 from icelake.errors import StorageUnavailableError
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS dm_projection_jobs (
+    guild_id TEXT NOT NULL,
+    fact_id TEXT PRIMARY KEY,
+    version INTEGER NOT NULL,
+    embedding TEXT,
+    next_attempt_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS dm_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -31,6 +40,7 @@ CREATE TABLE IF NOT EXISTS dm_messages (
     author_display_name TEXT NOT NULL DEFAULT '',
     author_is_bot INTEGER NOT NULL DEFAULT 0,
     mention_ids TEXT NOT NULL DEFAULT '[]',
+    governance TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'pending',
     lease_owner TEXT,
     lease_until TEXT
@@ -157,6 +167,13 @@ CREATE TABLE IF NOT EXISTS dm_optouts (
     user_id TEXT NOT NULL,
     PRIMARY KEY (guild_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS dm_governance (
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    opted_out INTEGER NOT NULL DEFAULT 0,
+    generation INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (guild_id, user_id)
+);
 CREATE TABLE IF NOT EXISTS dm_cursors (
     guild_id TEXT NOT NULL,
     key TEXT NOT NULL,
@@ -197,38 +214,6 @@ def iso(moment: Any) -> str | None:
 Params = tuple[object, ...]
 
 
-class _TaskLock:
-    """Task-reentrant variant of ``asyncio.Lock``.
-
-    A transaction scope must hold exclusivity for its whole body while store
-    methods called *inside* it (same task) pass through. Other tasks block —
-    SQLite is single-writer, so serialization is the correct behavior.
-    """
-
-    def __init__(self) -> None:
-        self._lock = asyncio.Lock()
-        self._owner: asyncio.Task[object] | None = None
-        self._depth = 0
-
-    async def acquire(self) -> None:
-        task = asyncio.current_task()
-        if self._owner is not None and self._owner is task:
-            self._depth += 1
-            return
-        await self._lock.acquire()
-        self._owner = task
-        self._depth = 1
-
-    def release(self) -> None:
-        self._depth -= 1
-        if self._depth == 0:
-            self._owner = None
-            self._lock.release()
-
-    def held_by_current_task(self) -> bool:
-        return self._owner is not None and self._owner is asyncio.current_task()
-
-
 class SqliteConnection:
     """Async facade over a single-writer SQLite connection run off-loop."""
 
@@ -263,23 +248,82 @@ class SqliteConnection:
 
         self._conn = await asyncio.to_thread(_open)
         await self._execute("PRAGMA journal_mode=WAL")
-        await self._execute("PRAGMA synchronous=NORMAL")
+        await self._execute("PRAGMA synchronous=FULL")
         await self._execute("PRAGMA foreign_keys=ON")
         await self._execute("PRAGMA busy_timeout=5000")
 
     async def ensure_schema(self) -> None:
-        await self._executescript(_SCHEMA)
-        await self.execute(
-            "INSERT INTO dm_meta (key, value) VALUES ('schema_version', ?) "
-            "ON CONFLICT(key) DO NOTHING",
-            (str(SCHEMA_VERSION),),
+        meta = await self.query_one(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='dm_meta'"
         )
+        if meta is not None:
+            version = await self.query_one("SELECT value FROM dm_meta WHERE key='schema_version'")
+            if version is not None and int(version["value"]) > SCHEMA_VERSION:
+                raise StorageUnavailableError("database schema is newer than this library")
+        await self._executescript(_SCHEMA)
+        async with self.transaction_scope():
+            job_columns = await self.query("PRAGMA table_info(dm_projection_jobs)")
+            if not any(row["name"] == "next_attempt_at" for row in job_columns):
+                await self.execute("ALTER TABLE dm_projection_jobs ADD COLUMN next_attempt_at TEXT")
+            if not any(row["name"] == "embedding" for row in job_columns):
+                await self.execute("ALTER TABLE dm_projection_jobs ADD COLUMN embedding TEXT")
+            await self.execute(
+                "CREATE INDEX IF NOT EXISTS ix_dm_projection_due "
+                "ON dm_projection_jobs(next_attempt_at)"
+            )
+            summary_columns = await self.query("PRAGMA table_info(dm_summaries)")
+            if not any(row["name"] == "provenance" for row in summary_columns):
+                await self.execute(
+                    "ALTER TABLE dm_summaries ADD COLUMN provenance TEXT NOT NULL DEFAULT '{}'"
+                )
+            fact_columns = await self.query("PRAGMA table_info(dm_facts)")
+            if not any(row["name"] == "governance" for row in fact_columns):
+                await self.execute(
+                    "ALTER TABLE dm_facts ADD COLUMN governance TEXT NOT NULL DEFAULT '{}'"
+                )
+            message_columns = await self.query("PRAGMA table_info(dm_messages)")
+            if not any(row["name"] == "governance" for row in message_columns):
+                await self.execute(
+                    "ALTER TABLE dm_messages ADD COLUMN governance TEXT NOT NULL DEFAULT '{}'"
+                )
+            await self.execute(
+                "INSERT INTO dm_meta (key, value) VALUES ('schema_version', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(SCHEMA_VERSION),),
+            )
+
+    async def backup_to(self, destination: Path) -> None:
+        """Native online snapshot, serialized with writes and settled on cancellation."""
+        await self._lock.acquire()
+        try:
+            if self._txn_open:
+                raise RuntimeError("cannot back up inside a transaction")
+            source = self._require_conn()
+
+            def copy() -> None:
+                with destination.open("xb"):
+                    pass
+                destination.chmod(0o600)
+                with contextlib.closing(sqlite3.connect(destination)) as target:
+                    source.backup(target)
+                    if target.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+                        raise StorageUnavailableError("snapshot failed SQLite integrity check")
+
+            await self._run(copy)
+        finally:
+            self._lock.release()
 
     async def close(self) -> None:
-        if self._conn is not None:
-            connection = self._conn
-            self._conn = None
-            await asyncio.to_thread(connection.close)
+        await self._lock.acquire()
+        try:
+            if self._conn is not None:
+                connection = self._conn
+                try:
+                    await self._run(connection.close)
+                finally:
+                    self._conn = None
+        finally:
+            self._lock.release()
 
     async def execute(self, sql: str, params: Params = ()) -> None:
         await self._execute(sql, params)
@@ -291,14 +335,35 @@ class SqliteConnection:
             )
         return self._conn
 
+    async def _run[T](self, operation: Callable[[], T]) -> T:
+        """Settle off-thread work before releasing the connection on cancellation."""
+        task = asyncio.create_task(asyncio.to_thread(operation))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # Cancelling an await cannot stop SQLite's worker thread. Keep the
+            # lock until it finishes, including when shutdown cancels us twice.
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not task.cancelled():
+                task.exception()
+            raise
+
     async def query(self, sql: str, params: Params = ()) -> list[sqlite3.Row]:
         conn = self._require_conn()
+
+        def execute() -> list[sqlite3.Row]:
+            with contextlib.closing(conn.execute(sql, tuple(params))) as cursor:
+                return list(cursor.fetchall())
+
         await self._lock.acquire()
         try:
-            cursor = await asyncio.to_thread(conn.execute, sql, tuple(params))
-            rows = await asyncio.to_thread(cursor.fetchall)
-            cursor.close()
-            return list(rows)
+            return await self._run(execute)
         finally:
             self._lock.release()
 
@@ -307,36 +372,22 @@ class SqliteConnection:
         return rows[0] if rows else None
 
     async def execute_returning(self, sql: str, params: Params = ()) -> list[sqlite3.Row]:
-        """Write statement with RETURNING: rows fetched and committed under one lock."""
-        conn = self._require_conn()
-        await self._lock.acquire()
-        try:
-            cursor = await asyncio.to_thread(conn.execute, sql, tuple(params))
-            rows = await asyncio.to_thread(cursor.fetchall)
-            if not self._txn_open:
-                await asyncio.to_thread(conn.commit)
-            cursor.close()
-            return list(rows)
-        finally:
-            self._lock.release()
+        """Execute and fetch under one lock; SQLite autocommits outside a transaction."""
+        return await self.query(sql, params)
 
     async def _execute(self, sql: str, params: Params = ()) -> None:
-        conn = self._require_conn()
-        await self._lock.acquire()
-        try:
-            cursor = await asyncio.to_thread(conn.execute, sql, tuple(params))
-            if not self._txn_open:
-                await asyncio.to_thread(conn.commit)
-            cursor.close()
-        finally:
-            self._lock.release()
+        await self.query(sql, params)
 
     async def _executescript(self, script: str) -> None:
         conn = self._require_conn()
+
+        def execute() -> None:
+            with contextlib.closing(conn.executescript(script)):
+                pass
+
         await self._lock.acquire()
         try:
-            await asyncio.to_thread(conn.executescript, script)
-            await asyncio.to_thread(conn.commit)
+            await self._run(execute)
         finally:
             self._lock.release()
 
@@ -356,30 +407,19 @@ class SqliteConnection:
         await self._lock.acquire()
         self._txn_open = True
         try:
-            await asyncio.to_thread(conn.execute, "BEGIN IMMEDIATE", ())
-            try:
-                yield self
-                await asyncio.to_thread(conn.execute, "COMMIT", ())
-            except Exception:
-                await asyncio.to_thread(conn.execute, "ROLLBACK", ())
-                raise
+            await self._execute("BEGIN IMMEDIATE")
+            yield self
+            await self._execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                await self._execute("ROLLBACK")
+            raise
         finally:
             self._txn_open = False
             self._lock.release()
 
     async def transaction(self, statements: list[tuple[str, Params]]) -> None:
-        """Apply a group of writes atomically."""
-        conn = self._require_conn()
-        await self._lock.acquire()
-        self._txn_open = True
-        try:
-            await asyncio.to_thread(conn.execute, "BEGIN IMMEDIATE", ())
+        """Apply a group of writes atomically, joining an existing unit of work."""
+        async with self.transaction_scope():
             for sql, params in statements:
-                await asyncio.to_thread(conn.execute, sql, tuple(params))
-            await asyncio.to_thread(conn.execute, "COMMIT", ())
-        except Exception:
-            await asyncio.to_thread(conn.execute, "ROLLBACK", ())
-            raise
-        finally:
-            self._txn_open = False
-            self._lock.release()
+                await self.execute(sql, params)

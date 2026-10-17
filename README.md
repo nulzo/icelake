@@ -21,7 +21,7 @@ pip install "icelake[local-embeddings]"  # sentence-transformers
 import asyncio
 from datetime import UTC, datetime
 
-from icelake import DiscordMemory, MemoryConfig, MessageEvent
+from icelake import Audience, DiscordMemory, MemoryConfig, MessageEvent
 
 
 async def main() -> None:
@@ -46,6 +46,7 @@ async def main() -> None:
 
         ctx = await memory.prompt_context(
             guild_id="555",
+            audience=Audience(channel_id="777", requester_id="100000000000000001"),
             asker_id="100000000000000001",
             text="what am I learning these days?",
             mentioned_ids=("200000000000000002",),
@@ -53,13 +54,12 @@ async def main() -> None:
         )
         print(ctx.injection_block)
 
-        # Grounding happens after generation. The answer model writes plain
-        # prose (it never sees tags or URLs), then deterministic embedder
-        # scoring attaches citations from the closed set. No extra LLM call.
+        # Exact restatements can be cited without another provider call.
+        # Paraphrases remain uncited unless you supply a CitationVerifier.
         reply = "You're learning Rust!"
         cited = await memory.cite(reply, ctx)
         reply = cited.text
-        # reply is Discord-safe: "You're learning Rust [[1]](<https://discord.com/channels/...>)"
+
 
 
 asyncio.run(main())
@@ -72,53 +72,46 @@ participants turn on graph-hop recall and pair-intersect **every** combination
 of those people (not just asker-other), so shared entities surface in one
 call. Stick the block on your system prompt and generate a reply. The model
 sees plain facts, never citation syntax. Then `memory.cite(reply, ctx)`
-matches reply segments against the closed set with the embedder you already
-configured (one batched embed, no LLM call) and weaves Discord-safe
-`[[N]](<url>)` jump links at the matched spans. Banter with no supported
-claims is left untouched. The library never invents links, and a
-retrieved-but-unused source is never cited.
+links exact restatements to registered evidence. Uncertain claims stay uncited.
+Pass a verifier when you want citations for paraphrases.
 
-### Citations: a closed set with deterministic attribution
+### Citations: provenance with explicit support checks
 
-`icelake.citations.Citations` generalizes the closed-set discipline beyond
-memory facts. This is the same approach production grounded systems use
-(ChatGPT, Claude, Perplexity, Graphiti/Zep). Code registers every citable
-source (memory citations, web results, referenced messages). **Citations are
-data, never model-written text.** The answer model sees no tags and no URLs,
-so invented refs, mangled links, and source-list dumps have no way to exist.
-Attribution follows the ALCE `POSTCITE` pattern: reply sentences and source
-texts are embedded in one batched call, and a source is cited at a span when
-cosine similarity clears `retrieval.citation_min_score` (default 0.55). Dense
-embeddings absorb persona paraphrase the same way they do at retrieval time.
-A claim with no supporting source is omitted, never force-cited. Provider web
-annotations arrive as character offsets and splice deterministically. URLs
-only ever leave the library from registered sources.
+`Citations` registers the closed set of sources a reply may cite. Code owns
+URLs and source identities; the verifier can only select candidate IDs.
+`memory.cite(reply, ctx)` defaults to exact restatements, with no provider calls.
+Similarity alone cannot establish support: changing a person, negation, time,
+or quantity can leave an embedding almost unchanged.
 
-Rendering is deterministic splicing, not parsing: `apply()` inserts
-`[[N]](<url>)` at validated offsets, where `N` is the source's position among
-citable sources. **Presentation beyond the inline weave is yours.**
-`AttributedReply.claims` and `.sources` carry the matched spans and used-only
-sources for footers, logging, or analytics. Pass `weave=False` to render
-entirely yourself. Footer numbers must walk `Citations.citable` so they agree
-with the inline labels. See [`examples/citations.py`](examples/citations.py).
+For paraphrases, inject a `CitationVerifier`. The supplied `LlmCitationVerifier`
+uses your existing `ChatLLM` interface, a validated output schema, a 15-second
+deadline, and at most one schema-repair call. It checks at most 12 claims and
+three candidate sources per claim. `retrieval.citation_min_score` controls
+candidate selection, never proof of support. Supply a metered LLM to account
+for calls under the `citation` purpose.
 
 ```python
-from icelake import Citations
+from icelake import Citations, LlmCitationVerifier
 
-citations = Citations.from_prompt_context(ctx)  # memory set included
-citations.add_source("https://example.com/docs", title="Docs")
-citations.add_message(guild_id, channel_id, message_id)
-
-# One batched embed matches reply segments to the closed set (used-only).
-cited = await memory.cite(model_output, citations)
-
-reply_text = cited.text  # inline jump links at the matched spans
-used = cited.sources  # tuple[CitationSource] that supported a claim
+citations = Citations.from_prompt_context(ctx)
+citations.add_source(
+    "https://example.com/docs", title="Docs", excerpt="The source passage goes here."
+)
+# verifier_llm is your implementation of the ChatLLM port.
+verifier = LlmCitationVerifier(verifier_llm, guild_id=guild_id)
+cited = await memory.cite(model_output, citations, verifier=verifier)
 ```
 
-The default hashing embedder is lexical. For heavy persona paraphrase,
-configure a real embedding model (`embeddings="openai://..."` or the
-`local-embeddings` extra). Use the same model retrieval already uses.
+A citation establishes provenance, not independent truth. Model-based verification
+is fallible; missing, invalid, or failed verification leaves uncertain claims
+uncited. Third-party reports must retain their attribution. Provider-supplied
+character anchors can also be registered explicitly; they are trusted provenance
+annotations and do not pass through the claim verifier.
+
+Rendering validates registered sources and verbatim span offsets before inserting
+`[[N]](<url>)`. `AttributedReply.claims` and `.sources` contain used-only evidence.
+Pass `weave=False` for your own renderer. Footer numbers must use `Citations.citable`
+to agree with inline labels. See [`examples/citations.py`](examples/citations.py).
 
 Examples:
 
@@ -307,16 +300,18 @@ someone asks "what do you know about klim?" and `klim` is typed rather than
 @mentioned (and isn't in the thread), no klim section exists unless you
 resolve the name yourself.
 
-The library side is two calls: resolve, then a strict subject fetch.
+Resolve against current Discord membership, then retrieve through the audience
+boundary. The live example asks for a mention when a name is ambiguous. For a
+strict profile, retain only facts whose subject is the resolved member:
 
 ```python
-resolution = await memory.identity.resolve(guild_id, name)
-if resolution.ambiguous:
-    ...  # ask which member. do not guess
-if resolution.resolved is not None:
-    page = await memory.facts.list_for_subject(
-        guild_id, resolution.resolved.user_id, include_server=False
-    )
+result = await memory.recall(RecallQuery(
+    guild_id=guild_id,
+    subject_ids=(resolved_member_id,),
+    audience=Audience(channel_id=reply_channel_id, requester_id=requester_id),
+))
+profile = [item.fact for item in result.facts
+           if item.fact.subject_id == resolved_member_id]
 ```
 
 Getting `name` out of the conversation is your side, and no tool runtime is
@@ -343,11 +338,12 @@ Two details matter for accuracy:
   carol, but bob sits on its incidence links (as actor or @mention), so
   `recall(subject_ids=(bob,))` returns it under bob. That is right for
   passive context (the injection block labels who each fact is about), but
-  for a direct profile answer `list_for_subject` returns only facts where X
-  is the subject, so the model cannot attribute someone else's claim to X.
+  for a direct profile answer, filter the authorized results by `subject_id`.
+  `facts.list_for_subject` is available to trusted tooling, but does not enforce
+  channel permissions.
 
-Full handler with mention stripping, ambiguity wording, and an unknown-name
-fallback: [`examples/name_lookup_tool.py`](examples/name_lookup_tool.py).
+Trusted offline identity/profile inspection:
+[`examples/name_lookup_tool.py`](examples/name_lookup_tool.py).
 Wired into a live reply loop and a slash command:
 [`examples/omni_style_bot.py`](examples/omni_style_bot.py).
 
@@ -454,8 +450,8 @@ own LLM calls under your own names). Note `Scope` (retrieval) and `FactScope`
 ## How extraction works
 
 `observe` writes the message and enqueues it. A worker claims a batch per
-guild + author (leases, so two processes will not extract the same person
-twice). Short chatter is skipped with no LLM call. Otherwise the pipeline
+guild + author under an exclusive attempt lease. Expired work can be retried;
+processing is at least once. Short chatter is skipped with no LLM call. Otherwise the pipeline
 mints roster tokens (`p0`, `p1`, `server`), asks the model for JSON, runs
 quality gates, and stores what survives.
 
@@ -522,18 +518,18 @@ The rest are indexes over them.
 memory.observe(event)
 memory.observe_many(events)
 memory.flush(guild_id=...)
-memory.extract_now(event)            # observe + flush in one step
+memory.extract_now(event)  # observe + flush in one step
 memory.register_bot_id(bot_user_id)  # never stored as a subject
 
 memory.prompt_context(...)
 memory.recall(RecallQuery(...))
-memory.cite(reply_text, ctx)         # weave jump links into a finished reply
+memory.cite(reply_text, ctx)  # weave jump links into a finished reply
 
 memory.facts.remember / get / get_all / update / forget / reinforce / history / list_for_subject / search
 memory.identity.resolve / register_alias / handle_member_rename / aliases_of / display_name
 memory.graph.between / relations_of / entity_stances / users_for_entity / neighbors / similar_users / shared / shared_attributions / shared_n
-memory.admin.set_opt_out / get_opt_out / purge_user / export_guild / import_guild
-memory.ops.run_pending / backfill_aliases / retry_dead_letters / meter_snapshot / health
+memory.admin.set_opt_out / get_opt_out / purge_user / export_guild / import_guild / backup
+memory.ops.run_pending / recover / backfill_aliases / retry_dead_letters / meter_snapshot / health
 memory.events.subscribe(BatchCompleted, handler)
 memory.classify_command(text)
 memory.regenerate_summaries(guild_id)
@@ -605,8 +601,8 @@ Unknown config keys raise immediately.
 | Hosted | `"openai://$KEY@openrouter.ai/api/v1?model=openai/text-embedding-3-small"` | Use this for a real bot. |
 | Local | `"local"` | `pip install icelake[local-embeddings]` |
 
-Embeddings are used for semantic recall and for catching paraphrases so the
-same fact is not stored twice. The default hashing embedder is n-gram feature
+Embeddings select semantic recall and reconciliation candidates. They cannot
+prove that two claims mean the same thing; reconciliation makes that judgment. The default hashing embedder is n-gram feature
 hashing, not a neural model. "Loves coding in Go" and "Enjoys programming in
 Go" usually do not collide, so you get duplicate memories. Switch to hosted
 or local embeddings for anything you actually run.
@@ -676,3 +672,199 @@ See [docs/RELEASE.md](docs/RELEASE.md).
 ## License
 
 MIT
+
+
+### Production reliability and migration
+
+Authoritative fact, graph, input-receipt and projection-job writes commit together.
+SQLite uses native transactions and `synchronous=FULL`. MongoDB now requires a
+**replica set or a transaction-capable cluster and PyMongo 4.17+**; standalone
+MongoDB can no longer silently claim successful multi-document commits. Custom
+stores must implement real `transaction()` semantics and the projection-job
+methods in `MemoryStore`. In-memory storage remains an ephemeral reference adapter.
+Mongo uses the driver's [bound sessions and transaction support](https://www.mongodb.com/docs/languages/python/pymongo-driver/current/crud/transactions/).
+
+Input delivery is at least once. A durable receipt for each message and processing
+scope makes committed batches replay-safe, including re-batched input after an
+acknowledgment failure. Receipts contain identifiers/hashes, not conversation text;
+they persist indefinitely to prevent old backfills from being counted again.
+Plan revisions are checked before mutations, and stale plans retry from current
+memory. Event hooks are best-effort notifications after commit, not a durable
+external event bus.
+
+Vectors are a rebuildable projection. A transactional outbox survives crashes and
+independent index outages; old revisions cannot overwrite newer vectors. Built-in
+workers drain bounded recovery work, and external schedulers call
+`await memory.ops.recover()`. Failures defer individual jobs so one unavailable
+fact does not block the rest. `ops.health()` reports pending indexing as degraded.
+An outage can temporarily reduce semantic recall while committed facts remain
+available through other retrieval channels. Injected vector adapters must honor
+`VectorItem.version` with an atomic conditional upsert.
+
+```python
+config = MemoryConfig(
+    storage="sqlite:///memory.db",
+    recovery={
+        "max_attempts": 3,
+        "retry_initial_seconds": 5,
+        "retry_max_seconds": 300,
+        "projection_batch_size": 32,
+        "projection_timeout_seconds": 30,
+    },
+    access={"require_audience": True, "timeout_seconds": 3},
+)
+```
+
+Batch retry state and jittered backoff survive restarts. Community-window retries
+also stop after the configured attempt limit; the same operator retry API resets
+their budget. Community roll-ups still use the configured recent-message window
+and raw-message retention, so they are not an unlimited historical backfill. Exhausted batches remain
+in dead letters; repair the cause, then use `ops.retry_dead_letters(guild_id)`.
+Provider retries remain separately bounded by `llm.max_retries`; the worst-case
+provider attempt count is the product of both limits. Cancellation retains the
+input, and crashed leases are reclaimed by `ops.recover()`.
+
+For explicit commands, supply `facts.remember(..., idempotency_key=interaction_id)`.
+The same key returns the same fact without reinforcing it; conflicting reuse is
+rejected. A retry cannot recreate a fact erased after the original command.
+Without a key, repeated remember/reinforce calls intentionally count as new input.
+
+### Channel permissions
+
+`recall` and `prompt_context` now require an `Audience` by default. Missing context
+returns no facts and an `AUDIENCE_REQUIRED` warning. Build it from trusted transport
+metadata, never model output or unchecked request parameters. The reply audience
+means **everyone who can read the destination**, not only the person asking.
+
+The transport-neutral default restricts disclosure to the same source channel;
+the embedding application must authenticate the caller and authorize the audience.
+For Discord, `setup_discord_memory` installs `DiscordChannelAuthorizer`, which reads
+fresh roles, channel overwrites and membership through REST, checks private-thread
+membership, and abstains if history visibility cannot be proven for all readers.
+Any explicit history-denying overwrite causes conservative abstention. A custom
+`ChannelAuthorizer` can support broader, proven-safe cross-channel policies.
+Requests are timeout-bounded and API failures deny access. This uses discord.py's
+[channel permission calculation](https://discordpy.readthedocs.io/en/stable/api.html#discord.abc.GuildChannel.permissions_for).
+
+```python
+context = await memory.prompt_context(
+    guild_id=guild_id,
+    asker_id=user_id,
+    audience=Audience(channel_id=reply_channel_id, requester_id=user_id),
+    text=question,
+)
+```
+
+All evidence channels must be allowed. Unknown provenance and mixed private/public
+facts are excluded from protected retrieval. Filtering happens before external
+reranking and is checked again before returning results. `cite()` rechecks the
+context's fact revisions, consent and audience before emitting source links.
+Multi-hop relation traversal is disabled for protected retrieval because its
+aggregated edges are not audience-partitioned. Direct evidence-backed retrieval
+remains available. Guild-wide summaries and mined name aliases are omitted from protected prompts;
+channel-partitioned extraction and reconciliation prevent private context from
+being incorporated into a public-channel fact.
+
+`facts`, `graph`, `identity` and `admin` are trusted control-plane APIs, not
+end-user authorization boundaries. Do not expose their raw results in public bot
+replies. `/memory me` only includes channel-authorized facts plus self-authored
+manual commands in its ephemeral response. Unscoped manual memories remain
+available for that private inspection; to expose a manually created fact in a
+channel, attach genuine `source_refs` from authorized source messages.
+`access.require_audience=False` is an explicit trusted/offline compatibility mode,
+not a production authorization policy. Reauthorize immediately before sending if
+your application holds a generated reply for an extended period.
+
+The runnable bot examples install live authorization and pass audience metadata
+for both generated replies and profile commands. They omit raw channel-history
+injection and unscoped graph displays. Name lookups use current Discord membership;
+private memory aliases are not disclosed. Graph inspection remains demonstrated
+separately in the trusted `relationship_queries.py` example.
+
+### Operational backups and restore drills
+
+`admin.export_guild()` is a portable content export, **not a disaster-recovery
+backup**. SQLite operational snapshots include facts, aliases, incidence links,
+relations, history, summaries, governance generations, opt-outs, queue contents,
+leases, commit receipts, budgets, cursors, cached data, vectors and pending work.
+The adapter uses SQLite's [online backup API](https://docs.python.org/3/library/sqlite3.html#sqlite3.Connection.backup).
+
+```python
+from pathlib import Path
+from icelake.adapters.sqlite.backup import restore_backup
+
+await memory.admin.backup(Path("backups/snapshot-2026-10-17"))  # new directory
+# Restore BEFORE opening this new database with a client:
+await restore_backup(
+    Path("backups/snapshot-2026-10-17"),
+    Path("recovered.sqlite"),
+    max_bytes=10 * 1024**3,
+)
+```
+
+Restore verifies schema, size, SHA-256 and SQLite integrity, resets interrupted
+claims, and atomically publishes a **new** destination. Existing databases are
+never overwritten. Checksums detect corruption; they do not authenticate an
+untrusted archive. Independent queue/vector overrides require coordinated native
+snapshots or an explicit rebuild plan; `admin.backup()` rejects that configuration
+rather than silently producing an incomplete deployment backup.
+
+Mongo deployments can use managed service backups or `MongoReplicaBackup` from
+`icelake.adapters.mongo.backup`. It wraps official `mongodump --oplog` and
+`mongorestore --oplogReplay --stopOnError`, with deadlines, archive size limits,
+checksums and a private credentials file. **Its scope is the entire replica set,
+including all databases**, because a consistent oplog dump cannot be limited to
+one guild/database. Supply deployment URIs without a database path. Restore only
+to an empty, offline deployment; a failed restore must be discarded and retried
+into a fresh target. Native tools must be installed separately. Follow MongoDB's
+[backup requirements](https://www.mongodb.com/docs/database-tools/mongodump/) and
+[restore version requirements](https://www.mongodb.com/docs/database-tools/mongorestore/).
+
+Keep application configuration, embedding-model identity, encryption keys and
+secrets in your existing deployment backup system. Restore with the matching
+embedding configuration. Reconcile erasures/opt-outs newer than the snapshot
+before opening the restored system to users, and enforce retention/access control
+on backups themselves. A snapshot cannot reconstruct changes made after it.
+
+### Conversation evaluations
+
+`evals/conversations.py` replays annotated transcripts through the configured
+extractor, reconciliation, storage and retrieval. It accepts JSONL
+`ConversationCase` records with provenance (`consented_redacted` or `synthetic`),
+a permission reference, timestamped messages, and checkpointed probes. Gold labels
+include subject IDs, expected text fragments and supporting message IDs; probes
+also specify forbidden content, an audience and required abstention.
+
+```python
+from pathlib import Path
+from evals.conversations import evaluate_case, load_cases, save_results
+from icelake import StorageConfig, WorkersConfig
+
+cases = load_cases(Path("redacted-conversations.jsonl"))
+results = []
+for case in cases:
+    result = await evaluate_case(
+        case,
+        lambda clock: DiscordMemory(
+            config.model_copy(update={"storage": StorageConfig(url="sqlite://:memory:"),
+                                      "workers": WorkersConfig(enabled=False)}),
+            clock=clock,
+        ),
+    )
+    results.append(result)
+save_results(Path("evaluation-results.json"), tuple(results))
+```
+
+Use a fresh store per case and the supplied replay clock. The harness rejects
+empty datasets, invalid/future evidence labels, duplicate message IDs, live
+background workers and incomplete ingestion. Reports include matched gold facts,
+relevant/returned counts, source attribution, forbidden disclosures, abstention,
+retrieval latency and provider usage, without raw transcript text. Fragment
+matching and provenance checks are deterministic diagnostics, not semantic truth
+judgments or a substitute for human annotation review.
+
+The existing scripted golden suite is a regression suite; its model outputs do
+not establish extraction accuracy. No real-conversation corpus or proprietary
+assistant parity is claimed by the bundled synthetic harness tests. Supply
+consented, redacted conversations and run the chosen production model to measure
+actual quality and cost.

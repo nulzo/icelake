@@ -22,6 +22,8 @@ from icelake.ports.store import MemoryStore
 
 AMBIGUITY_RATIO = 0.85
 MIN_PREFIX_LENGTH = 3
+_ALIAS_CANDIDATE_LIMIT = 8
+_PRESENTATION_LIMIT = 5
 
 
 def looks_like_snowflake(identifier: str) -> bool:
@@ -37,6 +39,7 @@ class IdentityResolver:
         self._store = store
 
     async def resolve(self, guild_id: str, identifier: str) -> Resolution:
+        """Resolve a name conservatively, leaving ambiguous or truncated matches unresolved."""
         normalized = normalize_alias(identifier)
         if not normalized:
             return Resolution(identifier=identifier)
@@ -58,11 +61,15 @@ class IdentityResolver:
         if not is_valid_alias(normalized):
             return Resolution(identifier=identifier)
 
-        exact = await self._store.resolve_alias_candidates(guild_id, normalized)
+        exact = await self._store.resolve_alias_candidates(
+            guild_id, normalized, limit=_ALIAS_CANDIDATE_LIMIT
+        )
         if exact:
             return self._decide(identifier, normalized, exact, fuzzy=False)
         if len(normalized) >= MIN_PREFIX_LENGTH:
-            fuzzy = await self._store.prefix_alias_candidates(guild_id, normalized)
+            fuzzy = await self._store.prefix_alias_candidates(
+                guild_id, normalized, limit=_ALIAS_CANDIDATE_LIMIT
+            )
             if fuzzy:
                 return self._decide(identifier, normalized, fuzzy, fuzzy=True)
         return Resolution(identifier=identifier)
@@ -75,8 +82,16 @@ class IdentityResolver:
         *,
         fuzzy: bool,
     ) -> Resolution:
-        best = max(records, key=lambda r: (r.source.rank, r.weight))
+        ordered = sorted(records, key=lambda r: (r.source.rank, r.weight), reverse=True)
+        best = ordered[0]
         top_weight = max(r.weight for r in records)
+        ambiguous = len(records) >= _ALIAS_CANDIDATE_LIMIT or any(
+            record.user_id != best.user_id
+            and (fuzzy or record.source.rank == best.source.rank)
+            and record.weight >= AMBIGUITY_RATIO * best.weight
+            for record in records
+        )
+        per_user = {record.user_id: record for record in reversed(ordered)}
         candidates = tuple(
             ResolvedCandidate(
                 user_id=record.user_id,
@@ -85,25 +100,13 @@ class IdentityResolver:
                 weight=record.weight,
                 confidence=combined_confidence(record.source.rank, record.weight, top_weight),
             )
-            for record in records[:5]
+            for record in sorted(
+                per_user.values(), key=lambda r: (r.source.rank, r.weight), reverse=True
+            )[:_PRESENTATION_LIMIT]
         )
-        rivals = [c for c in candidates if c.user_id != best.user_id]
-        # Exact match: rank is the authority; only same-rank weight proximity is
-        # ambiguous (prototype min_weight_gap rule). Prefix match is fuzzy, so any
-        # rival within the ratio stays ambiguous — never guess on a partial name.
-        ambiguous = any(
-            (fuzzy or c.source.rank == best.source.rank)
-            and c.weight >= AMBIGUITY_RATIO * best.weight
-            for c in rivals
-        )
-        # ``best`` is the (source.rank, weight) winner; candidates are in store
-        # order (weight DESC), so candidates[0] is not necessarily best.
-        resolved = None
-        if not ambiguous:
-            resolved = next((c for c in candidates if c.user_id == best.user_id), None)
         return Resolution(
             identifier=identifier,
-            resolved=resolved,
+            resolved=None if ambiguous else candidates[0],
             candidates=candidates,
             ambiguous=ambiguous,
         )

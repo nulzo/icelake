@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 
 from icelake.config import ExtractionConfig
+from icelake.identity.guards import BotGuard, ConsentPolicy, SubjectGate
 from icelake.ingest.gates import normalize_text
 from icelake.models.admin import MeterPurpose
 from icelake.models.facts import FactRecord
@@ -21,9 +22,11 @@ from icelake.models.operations import (
     ReconcileKind,
     ReconcileOutput,
 )
+from icelake.permissions import source_channels
+from icelake.ports.clock import Clock, SystemClock
 from icelake.ports.llm import ChatLLM, Embedder, LlmMessage, MessageRole
 from icelake.ports.store import MemoryStore
-from icelake.ports.vectors import VectorIndex, cosine
+from icelake.ports.vectors import VectorIndex
 from icelake.prompts import extraction as prompts
 from icelake.structured import complete_structured
 
@@ -85,12 +88,16 @@ class Reconciler:
         llm: ChatLLM | None,
         embedder: Embedder | None,
         config: ExtractionConfig,
+        *,
+        clock: Clock | None = None,
     ) -> None:
         self._store = store
         self._vectors = vectors
         self._llm = llm
         self._embedder = embedder
+        self._clock = clock or SystemClock()
         self._config = config
+        self._gate = SubjectGate(BotGuard(), ConsentPolicy(store))
 
     async def build_plan(
         self,
@@ -99,33 +106,33 @@ class Reconciler:
         guild_id: str,
         batch_subject_id: str | None,
         embeddings_by_text: dict[str, tuple[float, ...]],
+        source_channel: str | None = None,
     ) -> ReconcilePlan:
         """Partition candidates into reinforces, direct adds, and LLM collisions.
 
-        Reinforces are deterministic: exact-normalized duplicates and neighbors at
-        or above ``near_duplicate_threshold`` need no LLM judgment (graphiti's fast
-        path). Only the ambiguous band below that pays for reconciliation.
+        Only exact normalized duplicates reinforce without judgment. Semantic
+        similarity proposes neighbors; it cannot prove equivalent meaning.
         """
         plan = ReconcilePlan()
-        kept: list[tuple[str | None, tuple[float, ...]]] = []
+        kept: set[tuple[str | None, str]] = set()
         for candidate, cand_subject, cand_speaker in candidates:
             normalized = normalize_text(candidate.text)
             vector = embeddings_by_text.get(normalized)
-            if vector is not None and any(
-                subject == cand_subject
-                and cosine(vector, other) >= self._config.near_duplicate_threshold
-                for subject, other in kept
-            ):
-                # Paraphrase of an earlier candidate from the same response.
+            identity = (cand_subject, normalized)
+            if identity in kept:
                 continue
-            if vector is not None:
-                kept.append((cand_subject, vector))
+            kept.add(identity)
             duplicate = await self._store.find_duplicate(
                 guild_id,
                 cand_subject,
                 normalized,
             )
-            if duplicate is not None:
+            if (
+                duplicate is not None
+                and (source_channel is None or source_channels(duplicate) == {source_channel})
+                and duplicate.is_valid_at(self._clock.now())
+                and await self._gate.allows_fact(duplicate)
+            ):
                 plan.reinforces.append((duplicate, candidate, cand_subject, cand_speaker))
                 continue
             embedding = vector
@@ -138,13 +145,10 @@ class Reconciler:
                 cand_subject=cand_subject,
                 batch_subject_id=batch_subject_id,
                 embedding=embedding,
+                source_channel=source_channel,
             )
             if not neighbors:
                 plan.direct_adds.append((candidate, cand_subject, cand_speaker))
-                continue
-            top_record, top_score = neighbors[0]
-            if top_score >= self._config.near_duplicate_threshold:
-                plan.reinforces.append((top_record, candidate, cand_subject, cand_speaker))
                 continue
             plan.collisions.append(
                 Collision(
@@ -164,6 +168,7 @@ class Reconciler:
         cand_subject: str | None,
         batch_subject_id: str | None,
         embedding: tuple[float, ...] | None,
+        source_channel: str | None = None,
     ) -> tuple[tuple[FactRecord, float], ...]:
         """Score-ordered active neighbors above the collision bars."""
         if self._vectors is None or embedding is None:
@@ -188,7 +193,15 @@ class Reconciler:
         if not hits:
             return ()
         records = await self._store.get_facts(guild_id, tuple(hit.id for hit in hits))
-        active_by_id = {record.id: record for record in records if record.is_active}
+        records = await self._gate.filter_records(guild_id, records)
+        active_by_id = {
+            record.id: record
+            for record in records
+            if record.is_active
+            and (source_channel is None or source_channels(record) == {source_channel})
+            and record.subject_id == cand_subject
+            and record.is_valid_at(self._clock.now())
+        }
         state_change = bool(STATE_CHANGE.search(candidate.text))
         return tuple(
             (active_by_id[hit.id], hit.score)
@@ -258,7 +271,7 @@ class Reconciler:
             known_ids = {record.id for record in collision.neighbors}
             target = id_map.get(decision.target_id or "") or None
             if decision.kind is ReconcileKind.NOOP and target not in known_ids:
-                target = None  # caller falls back to the sole/strongest neighbor
+                continue  # An unknown reference is not evidence of equivalence.
             terminal = {ReconcileKind.UPDATE, ReconcileKind.INVALIDATE}
             if decision.kind in terminal and target not in known_ids:
                 logger.warning(

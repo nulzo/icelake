@@ -44,6 +44,7 @@ from icelake.models.events import (
 )
 from icelake.models.facts import AttributionType
 from icelake.models.identity import AliasSource
+from icelake.models.recovery import RecoveryReport
 from icelake.models.retrieval import (
     CHANNELS_DISCOVERY,
     PromptContext,
@@ -55,11 +56,14 @@ from icelake.models.retrieval import (
     ScoredFact,
     discovery_pairs,
 )
+from icelake.permissions import Audience, AudienceGate, ChannelAuthorizer
+from icelake.ports.citations import CitationVerifier
 from icelake.ports.clock import Clock, IdGen, SystemClock, UlidIdGen
 from icelake.ports.llm import ChatLLM, Embedder, LlmCache, Meter, Reranker
 from icelake.ports.queue import IngestQueue, StoredMessage
 from icelake.ports.store import MemoryStore
 from icelake.ports.vectors import VectorIndex
+from icelake.recovery import recover_projections
 from icelake.retrieval.injection import InjectionBuilder, estimate_tokens
 from icelake.retrieval.service import RecallService
 
@@ -68,6 +72,7 @@ log = logger
 
 _SERVER_BLOCK_FACTS = 3
 _SNIPPET_CHARS = 160
+_NAME_FACT_HIT_LIMIT = 10
 
 
 def _snippet(text: str) -> str:
@@ -103,11 +108,26 @@ class _OpsApi:
 
     async def run_pending(self, *, limit_batches: int = 8) -> int:
         """Process due batches now (cron/external-scheduler mode)."""
+        await self.recover()
         processed = await self._client._pipeline.run_pending(limit_batches=limit_batches)
         for guild_id in list(self._client.active_guilds):
             if self._client.maintenance.due(guild_id):
                 await self._client.maintenance.run_guild(guild_id)
         return processed
+
+    async def recover(self) -> RecoveryReport:
+        """Reclaim crashed input leases and retry a bounded set of vector projections."""
+        client = self._client
+        await client.ensure_started()
+        await client._queue.release_expired_leases(client._clock.now())
+        return await recover_projections(
+            client._store,
+            client._vectors,
+            client._embedder,
+            limit=client.config.recovery.projection_batch_size,
+            timeout_seconds=client.config.recovery.projection_timeout_seconds,
+            retry_delay_seconds=client.config.recovery.retry_initial_seconds,
+        )
 
     async def backfill_aliases(
         self,
@@ -140,6 +160,12 @@ class _OpsApi:
 
     async def retry_dead_letters(self, guild_id: str | None = None) -> int:
         """Re-drive poison jobs after fixing an underlying failure."""
+        await self._client.ensure_started()
+        from uuid import uuid4
+
+        guilds = (guild_id,) if guild_id else await self._client._store.list_guild_ids()
+        for gid in guilds:
+            await self._client._store.set_cursor(gid, "retry_epoch", uuid4().hex)
         return await self._client._queue.requeue_dead_letters(guild_id)
 
     def meter_snapshot(self) -> MeterSnapshot:
@@ -160,6 +186,18 @@ class _OpsApi:
                 detail="" if client._llm is not None else "extraction disabled (no llm)",
             ),
         ]
+        from datetime import UTC, datetime
+
+        recovery_pending = await client._store.pending_projections(
+            1, now=datetime.max.replace(tzinfo=UTC)
+        )
+        components.append(
+            ComponentHealth(
+                component="indexing",
+                status=HealthStatus.DEGRADED if recovery_pending else HealthStatus.OK,
+                detail="pending projection recovery" if recovery_pending else "",
+            )
+        )
         pending = 0
         dead = 0
         for guild_id in list(client.active_guilds):
@@ -187,6 +225,7 @@ class MemoryOverrides(TypedDict, total=False):
     vectors: VectorIndex | None
     embedder: Embedder | None
     reranker: Reranker | None
+    channel_authorizer: ChannelAuthorizer
     meter: Meter
     llm: ChatLLM | None
     small_llm: ChatLLM | None
@@ -220,6 +259,9 @@ class DiscordMemory:
         )
         from icelake.adapters.rerankers import build_reranker
 
+        self._audience_gate = AudienceGate(
+            overrides.get("channel_authorizer"), timeout_seconds=config.access.timeout_seconds
+        )
         self._reranker: Reranker | None = (
             overrides["reranker"]
             if "reranker" in overrides
@@ -270,6 +312,7 @@ class DiscordMemory:
         )
         self._pipeline.attach_event_bus(self.events)
         self.maintenance = MaintenanceService(
+            queue=self._queue,
             store=self._store,
             config=config,
             clock=self._clock,
@@ -290,8 +333,12 @@ class DiscordMemory:
             event_bus=self.events,
         )
         self.identity = IdentityApi(self._store, startup_gate=_group_gate)
-        self.graph = GraphApi(store=self._store, startup_gate=_group_gate)
-        self.admin = AdminApi(self._store, startup_gate=_group_gate)
+        self.graph = GraphApi(
+            store=self._store, startup_gate=_group_gate, subject_gate=self._subject_gate
+        )
+        self.admin = AdminApi(
+            self._store, startup_gate=_group_gate, queue=self._queue, vectors=self._vectors
+        )
         self.ops = _OpsApi(self)
         self._classifier = CommandClassifier(self._small_llm)
         self._injection = InjectionBuilder()
@@ -329,6 +376,10 @@ class DiscordMemory:
             if self.started or self._shutdown_done:
                 return
             await self._store.setup()
+            if self._vectors is not None and self._vectors is not getattr(
+                self._store, "vectors", None
+            ):
+                await self._vectors.setup()
             self.started = True
             # Maintenance must survive restarts: guilds that went quiet still
             # have facts to expire. Derived from stored state, no hot-path cost.
@@ -432,6 +483,14 @@ class DiscordMemory:
             if self.config.privacy.store_raw_messages
             else hashlib.sha256(event.content.encode()).hexdigest()[:16]
         )
+        participants = (
+            event.author_id,
+            *(uid for uid in event.mention_ids if uid),
+        )
+        snapshot = await self._store.governance_generations(
+            event.guild_id,
+            tuple(dict.fromkeys(participants)),
+        )
         message = StoredMessage(
             message_id=event.message_id,
             guild_id=event.guild_id,
@@ -444,6 +503,7 @@ class DiscordMemory:
             author_display_name=event.author_display_name,
             author_is_bot=event.author_is_bot,
             mention_ids=event.mention_ids,
+            governance=snapshot,
         )
         max_depth = self.config.observe.max_queue_depth_per_guild
         try:
@@ -503,6 +563,9 @@ class DiscordMemory:
         async def _blocked(guild_id: str, user_id: str) -> bool:
             return await consent.is_blocked(guild_id, user_id)
 
+        if query.audience is None and self.config.access.require_audience:
+            return RecallResult(warnings=(RecallWarning.AUDIENCE_REQUIRED,))
+
         async def _reinforce_recalled(fact_ids: list[str]) -> None:
             # mem0-style decay loop (opt-in): recalled facts get their decay
             # clock reset, so frequently-served knowledge floats up over time.
@@ -522,6 +585,7 @@ class DiscordMemory:
             clock=self._clock,
             is_subject_blocked=_blocked,
             stability_days=self.config.lifecycle.decay_stability_days,
+            audience_gate=self._audience_gate,
             on_recalled=(
                 _reinforce_recalled if self.config.retrieval.reinforce_on_recall else None
             ),
@@ -538,6 +602,7 @@ class DiscordMemory:
         thread_participant_ids: tuple[str, ...] = (),
         token_budget_tokens: int | None = None,
         entity_hint: str | None = None,
+        audience: Audience | None = None,
     ) -> PromptContext:
         """One-call turn context: subjects resolved, facts injected, citations bound.
 
@@ -552,32 +617,50 @@ class DiscordMemory:
         about who cares about the thing arrive with the context.
         """
         await self.ensure_started()
+        if audience is None and self.config.access.require_audience:
+            return PromptContext(injection_block="", warnings=(RecallWarning.AUDIENCE_REQUIRED,))
         budget = token_budget_tokens or self.config.retrieval.default_token_budget
         subjects, resolutions, warnings_list = await self._resolve_subjects(
             guild_id=guild_id,
             candidates=[asker_id, *mentioned_ids, *thread_participant_ids],
         )
         warnings: list[RecallWarning] = list(warnings_list)
-        pairs = discovery_pairs(asker_id, mentioned_ids, thread_participant_ids)
+        canonical = {
+            resolution.identifier: resolution.resolved.user_id
+            for resolution in resolutions
+            if resolution.resolved is not None
+        }
+        asker_id = canonical.get(asker_id, "")
+        pairs = discovery_pairs(
+            asker_id,
+            tuple(canonical[uid] for uid in mentioned_ids if uid in canonical),
+            tuple(canonical[uid] for uid in thread_participant_ids if uid in canonical),
+        )
 
-        result = await self.recall(
-            RecallQuery(
-                guild_id=guild_id,
-                text=text,
-                subject_ids=tuple(subjects),
-                scope=Scope.SUBJECTS,
-                pair_ids=pairs,
-                entity_hint=entity_hint,
-                top_k=self.config.retrieval.top_k,
-                max_per_subject=self.config.retrieval.max_per_subject,
-                # Related users make this a relationship-shaped question: hop
-                # facts earn their cost here, so widen to the discovery set.
-                channels=CHANNELS_DISCOVERY if pairs else None,
+        result = (
+            await self.recall(
+                RecallQuery(
+                    guild_id=guild_id,
+                    audience=audience,
+                    text=text,
+                    subject_ids=tuple(subjects),
+                    scope=Scope.SUBJECTS,
+                    pair_ids=pairs,
+                    entity_hint=entity_hint,
+                    top_k=self.config.retrieval.top_k,
+                    max_per_subject=self.config.retrieval.max_per_subject,
+                    # Related users make this a relationship-shaped question: hop
+                    # facts earn their cost here, so widen to the discovery set.
+                    channels=CHANNELS_DISCOVERY if pairs else None,
+                )
             )
+            if subjects
+            else RecallResult(warnings=(RecallWarning.SUBJECT_UNRESOLVED,))
         )
         server_result = await self.recall(
             RecallQuery(
                 guild_id=guild_id,
+                audience=audience,
                 text=text,
                 scope=Scope.SERVER,
                 top_k=_SERVER_BLOCK_FACTS,
@@ -590,7 +673,11 @@ class DiscordMemory:
         alias_notes: dict[str, str] = {}
         display_names: dict[str, str] = {}
 
-        asker_summary_doc = await self._store.get_summary(guild_id, asker_id)
+        asker_summary_doc = (
+            await self._store.get_summary(guild_id, asker_id, now=self._clock.now())
+            if audience is None and asker_id and await self._subject_gate.allows(guild_id, asker_id)
+            else None
+        )
         summaries["asker"] = asker_summary_doc.text if asker_summary_doc else None
         sections["asker"] = tuple(sf for sf in result.facts if sf.fact.subject_id == asker_id)
 
@@ -600,11 +687,19 @@ class DiscordMemory:
             if subject and subject != asker_id:
                 other_map.setdefault(subject, []).append(scored)
         for subject, scored_list in other_map.items():
+            if not await self._subject_gate.allows(guild_id, subject):
+                continue
             key = f"user:{subject}"
             sections[key] = tuple(scored_list)
-            doc = await self._store.get_summary(guild_id, subject)
+            doc = (
+                await self._store.get_summary(guild_id, subject, now=self._clock.now())
+                if audience is None
+                else None
+            )
             summaries[key] = doc.text if doc else None
-            alias_records = await self._store.aliases_for_user(guild_id, subject)
+            alias_records = (
+                await self._store.aliases_for_user(guild_id, subject) if audience is None else ()
+            )
             names = sorted({record.alias_norm for record in alias_records})
             if len(names) > 1:
                 alias_notes[key] = (
@@ -616,8 +711,12 @@ class DiscordMemory:
             if best:
                 display_names[key] = best
 
-        sections["server"] = tuple(server_result.facts)
-        server_doc = await self._store.get_summary(guild_id, None)
+        sections["server"] = tuple(sf for sf in server_result.facts if sf.fact.subject_id is None)
+        server_doc = (
+            await self._store.get_summary(guild_id, None, now=self._clock.now())
+            if audience is None and await self._subject_gate.allows(guild_id, None)
+            else None
+        )
         summaries["server"] = server_doc.text if server_doc else None
 
         block, citations, trimmed = self._injection.build(
@@ -633,6 +732,8 @@ class DiscordMemory:
             warnings.append(RecallWarning.BUDGET_TRIMMED)
         usage_estimate = estimate_tokens(block)
         return PromptContext(
+            guild_id=guild_id,
+            audience=audience,
             injection_block=block,
             facts=result.facts + server_result.facts,
             citations=citations,
@@ -652,32 +753,50 @@ class DiscordMemory:
         source: PromptContext | Citations,
         *,
         weave: bool = True,
+        verifier: CitationVerifier | None = None,
     ) -> AttributedReply:
-        """Attach citations to a generated reply — deterministic, no LLM.
+        """Cite exact restatements or explicitly verified paraphrases.
 
-        Reply segments and the closed set's source texts are embedded in one
-        batched call; a source is cited at a span when cosine similarity
-        clears ``retrieval.citation_min_score``. The answer model never sees
-        tags or URLs, and only claims a registered source actually supports
-        get cited — irrelevant retrieved memories are never linked.
-
-        ``source`` is the :class:`PromptContext` the reply was generated from,
-        or a pre-built :class:`Citations` (consumers that add tool sources).
-        With ``weave=False`` the raw reply is returned alongside the
-        structured claims so the consumer renders its own way. Never raises:
-        no embedder or an embedder failure yields the reply uncited.
+        The default makes no provider calls and abstains on paraphrases. Pass a
+        CitationVerifier to check semantic candidates against registered evidence.
+        Citation links establish provenance; they do not guarantee source truth.
+        ``weave=False`` returns structured spans for your own renderer.
         """
         await self.ensure_started()
+        if isinstance(source, PromptContext) and source.guild_id is not None:
+            records = await self._store.get_facts(
+                source.guild_id, tuple(sf.fact.id for sf in source.facts)
+            )
+            records = await self._subject_gate.filter_records(source.guild_id, records)
+            if source.audience is not None:
+                records = await self._audience_gate.filter(
+                    source.guild_id, source.audience, records
+                )
+            elif self.config.access.require_audience:
+                records = ()
+            current = {record.id: record for record in records}
+            allowed = {
+                sf.fact.id
+                for sf in source.facts
+                if sf.fact.id in current and current[sf.fact.id].version == sf.fact.version
+            }
+            source = source.model_copy(
+                update={
+                    "facts": tuple(sf for sf in source.facts if sf.fact.id in allowed),
+                    "citations": tuple(c for c in source.citations if c.fact_id in allowed),
+                }
+            )
         citations = (
             source if isinstance(source, Citations) else Citations.from_prompt_context(source)
         )
-        if not text.strip() or self._embedder is None:
+        if not text.strip():
             return AttributedReply(text=text)
         attribution = await attribute(
             text,
             citations,
             self._embedder,
             threshold=self.config.retrieval.citation_min_score,
+            verifier=verifier,
         )
         return AttributedReply(
             text=citations.apply(text, attribution) if weave else text,
@@ -755,6 +874,8 @@ class DiscordMemory:
             if resolution.resolved is None:
                 if resolution.ambiguous:
                     warnings.append(RecallWarning.IDENTITY_AMBIGUOUS)
+                else:
+                    warnings.append(RecallWarning.SUBJECT_UNRESOLVED)
                 continue
             subject = resolution.resolved.user_id
             if subject not in subjects and not self._guard.is_bot(subject):
@@ -766,7 +887,7 @@ class DiscordMemory:
         guild_id: str,
         identifier: str,
     ) -> Resolution | None:
-        """Search stored name-facts for a unique self-name match."""
+        """Resolve from stored self-name facts, refusing to decide on a saturated window."""
         import re as _re
 
         from icelake.models.identity import (
@@ -778,11 +899,15 @@ class DiscordMemory:
         hits = await self._store.search_facts_text(
             guild_id,
             identifier,
-            limit=10,
+            limit=_NAME_FACT_HIT_LIMIT + 1,
         )
+        if not hits:
+            return None
+        if len(hits) > _NAME_FACT_HIT_LIMIT:
+            return Resolution(identifier=identifier, ambiguous=True)
         matched_users: dict[str, float] = {}
         pattern = _re.compile(
-            r"\b(my name(?:'s| is)|call me|goes by)\s+"
+            r"\b(my name(?:'s| is)|call me|I go by)\s+"
             + _re.escape(identifier.strip().lower())
             + r"\b",
             _re.IGNORECASE,
@@ -796,6 +921,8 @@ class DiscordMemory:
                     max(score, matched_users.get(record.subject_id, 0)),
                 )
         if len(matched_users) != 1:
+            if len(matched_users) > 1:
+                return Resolution(identifier=identifier, ambiguous=True)
             return None
         user_id = next(iter(matched_users))
         candidate = ResolvedCandidate(
