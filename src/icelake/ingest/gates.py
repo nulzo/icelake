@@ -9,7 +9,6 @@ the roster verification gate runs in the pipeline.
 from __future__ import annotations
 
 import re
-from difflib import SequenceMatcher
 
 SNOWFLAKE = re.compile(r"\b\d{15,25}\b")
 MENTION_TAG = re.compile(r"<@!?&?\d+>")
@@ -77,7 +76,6 @@ DURABLE_MARKERS = (
 
 MAX_FACT_CHARS = 400
 MIN_FACT_CHARS = 12
-PLAGIARISM_RATIO = 0.88
 
 
 def normalize_text(text: str) -> str:
@@ -159,17 +157,14 @@ def confidence_gate(confidence: float, min_confidence: float, text: str) -> Gate
     return _reject("below_min_confidence")
 
 
-def plagiarism_gate(fact_text: str, source_texts: tuple[str, ...]) -> GateDecision:
-    """Reject near-verbatim copies of chat lines — memories must be synthesized."""
-    normalized_fact = normalize_text(strip_urls(fact_text))
-    for source in source_texts:
-        normalized_source = normalize_text(source)
-        if normalized_fact == normalized_source:
-            return _reject("raw_copy")
-        if len(normalized_fact) > 20 and len(normalized_source) > 20:
-            ratio = SequenceMatcher(None, normalized_fact, normalized_source).ratio()
-            if ratio >= PLAGIARISM_RATIO:
-                return _reject("near_copy")
+def subject_frame_gate(fact_text: str) -> GateDecision:
+    """Require an explicit subject frame; lexical overlap is not a quality defect.
+
+    A faithful third-person fact can be almost identical to its source. Rejecting
+    it by edit distance silently loses short preferences and biographical facts.
+    """
+    if re.match(r"^(?:i|my|me|we|our)\b", fact_text.strip(), re.IGNORECASE):
+        return _reject("unbound_speaker")
     return ALLOW
 
 

@@ -164,6 +164,16 @@ class MemoryStore(Protocol):
         updated_at: datetime,
     ) -> FactRecord | None: ...
 
+    async def facts_for_source(
+        self,
+        guild_id: str,
+        message_id: str,
+        *,
+        limit: int = 100,
+    ) -> tuple[FactRecord, ...]:
+        """Active facts citing this message, for source invalidation in a transaction."""
+        ...
+
     async def list_facts(
         self,
         guild_id: str,

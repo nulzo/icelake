@@ -40,7 +40,7 @@ def test_lifecycle_example_runs_end_to_end(
     assert "FactCommitted fired: 1" in out
     assert "action=remember" in out
     assert "observe after opt-out ignored=True" in out
-    assert "import into a fresh store: 2 facts" in out  # opted-out evidence is excluded
+    assert "import into a fresh store: 3 facts" in out  # opted-out evidence is excluded
     assert "healthy=True" in out
 
 

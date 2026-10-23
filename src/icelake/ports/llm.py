@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
+from pydantic import Field
+
 from icelake.models.admin import BudgetStep, MeterPurpose, MeterSnapshot
 from icelake.models.common import FrozenModel
 
@@ -98,6 +100,13 @@ class Reranker(Protocol):
     async def score(self, query: str, documents: Sequence[str]) -> tuple[float, ...]: ...
 
 
+class BudgetReservation(FrozenModel):
+    guild_id: str
+    day_key: str
+    month_key: str
+    prompt_tokens: int = Field(ge=0)
+
+
 @runtime_checkable
 class Meter(Protocol):
     """Cost/usage metering with budget enforcement hooks."""
@@ -113,6 +122,14 @@ class Meter(Protocol):
     ) -> None: ...
 
     def increment(self, name: str, value: float = 1.0) -> None: ...
+
+    async def reserve(self, guild_id: str, *, prompt_tokens: int) -> BudgetReservation:
+        """Atomically reserve bounded prompt spend before provider dispatch."""
+        ...
+
+    async def settle(self, reservation: BudgetReservation, *, prompt_tokens: int) -> None:
+        """Replace a reservation with observed usage in its original UTC period."""
+        ...
 
     async def charge_guild(self, guild_id: str, *, prompt_tokens: int) -> None:
         """Attribute prompt spend to a guild for budget accounting."""

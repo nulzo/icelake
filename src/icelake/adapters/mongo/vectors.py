@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import heapq
 import math
 import struct
 from typing import Any
+
+import numpy as np
 
 from icelake.ports.vectors import VectorHit, VectorItem
 
@@ -87,23 +91,52 @@ class MongoVectorIndex:
                 {"subject_id": {"$in": list(subject_ids)}},
                 {"subject_id": None},
             ]
-        cursor = (
-            # Recency-biased slice (fact ids are time-ordered ULIDs): an
-            # arbitrary capped slice silently degrades recall once a guild
-            # exceeds the candidate cap.
-            self.col.find(query).sort("_id", -1).limit(candidate_cap)
-        )
-        scored: list[VectorHit] = []
-        async for doc in cursor:
-            score = _cosine(embedding, _unpack(doc["embedding"]))
-            if score > 0.0:
-                scored.append(VectorHit(id=doc["_id"], score=score))
-        scored.sort(key=lambda hit: -hit.score)
-        return tuple(scored[:limit])
+        # candidate_cap bounds a working batch, not which ages are searchable.
+        # Scan the scoped collection in constant memory; native scoring runs off
+        # the event loop. RecallService imposes a channel deadline.
+        batch_size = max(1, min(candidate_cap, 512))
+        cursor = self.col.find(query).batch_size(batch_size)
+        best: list[VectorHit] = []
+        batch: list[dict[str, Any]] = []
+        try:
+            async for doc in cursor:
+                batch.append(doc)
+                if len(batch) >= batch_size:
+                    scored = await asyncio.to_thread(_score_batch, embedding, batch, limit)
+                    best = heapq.nlargest(limit, (*best, *scored), key=lambda hit: hit.score)
+                    batch = []
+            if batch:
+                scored = await asyncio.to_thread(_score_batch, embedding, batch, limit)
+                best = heapq.nlargest(limit, (*best, *scored), key=lambda hit: hit.score)
+        finally:
+            await cursor.close()
+        return tuple(best)
 
     async def count(self, guild_id: str) -> int:
         count = await self.col.count_documents({"guild_id": guild_id})
         return int(count)
+
+
+def _score_batch(
+    embedding: tuple[float, ...],
+    docs: list[dict[str, Any]],
+    limit: int,
+) -> list[VectorHit]:
+    aligned = [doc for doc in docs if len(doc["embedding"]) == len(embedding) * 4]
+    if not aligned:
+        return []
+    query = np.asarray(embedding, dtype=np.float32)
+    matrix = np.stack([np.frombuffer(doc["embedding"], dtype=np.float32) for doc in aligned])
+    denominator = np.linalg.norm(matrix, axis=1) * np.linalg.norm(query)
+    scores = np.divide(
+        matrix @ query, denominator, out=np.zeros(len(aligned)), where=denominator > 0
+    )
+    indexes = heapq.nlargest(limit, range(len(aligned)), key=lambda i: float(scores[i]))
+    return [
+        VectorHit(id=aligned[i]["_id"], score=min(1.0, float(scores[i])))
+        for i in indexes
+        if math.isfinite(float(scores[i])) and scores[i] > 0
+    ]
 
 
 def _cosine(a: tuple[float, ...], b: tuple[float, ...]) -> float:

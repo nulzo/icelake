@@ -16,7 +16,12 @@ from icelake.permissions import Audience, AudienceGate
 
 def surface():
     role = SimpleNamespace(permissions=discord.Permissions(read_message_history=True))
-    guild = SimpleNamespace(default_role=role, fetch_channel=AsyncMock(), fetch_member=AsyncMock())
+    guild = SimpleNamespace(
+        default_role=role,
+        fetch_channel=AsyncMock(),
+        fetch_channels=AsyncMock(return_value=[]),
+        fetch_member=AsyncMock(),
+    )
     parent = MagicMock(spec=discord.TextChannel)
     parent.guild = guild
     parent.overwrites = {}

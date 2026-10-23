@@ -95,14 +95,14 @@ def demo_provider_anchors() -> None:
 async def demo_cite(memory: Memory) -> None:
     print("=== 3. memory.cite: used-only, unmatched stays bare ===")
     citations = Citations()
-    citations.add_source(RUST_URL, title="alice", excerpt=RUST_FACT, kind="memory")
+    citations.add_source(RUST_URL, title="alice", excerpt=RUST_FACT, kind="message")
     citations.add_source(
         BOOK_URL,
         title="The Rust Book",
         excerpt="Rust is a language empowering everyone to build reliable software",
         kind="web",
     )
-    citations.add_source(MINECRAFT_URL, title="bob", excerpt=MINECRAFT_FACT, kind="memory")
+    citations.add_source(MINECRAFT_URL, title="bob", excerpt=MINECRAFT_FACT, kind="message")
 
     reply = f"{RUST_FACT}. {MINECRAFT_FACT}. lol yeah."
     cited = await memory.cite(reply, citations)
@@ -129,7 +129,7 @@ async def demo_paraphrase_limit(memory: Memory) -> None:
         RUST_URL,
         title="alice",
         excerpt=RUST_FACT,
-        kind="memory",
+        kind="message",
     )
     near = await memory.cite(RUST_FACT, citations)
     voice = await memory.cite("bro has been grinding rust for like a year now", citations)

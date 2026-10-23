@@ -7,7 +7,7 @@ from icelake.ingest.gates import (
     confidence_gate,
     ephemeral_share_gate,
     normalize_text,
-    plagiarism_gate,
+    subject_frame_gate,
     text_hygiene_gate,
 )
 
@@ -79,20 +79,18 @@ class TestConfidenceGate:
         assert confidence_gate(0.8, 0.55, durable).allowed
 
 
-class TestPlagiarism:
+class TestSubjectFrame:
     def test_exact_copy_rejected(self) -> None:
         source = "i really love playing valorant every evening"
-        assert not plagiarism_gate(source, (source,)).allowed
+        assert not subject_frame_gate(source).allowed
 
     def test_near_copy_rejected(self) -> None:
-        source = "i have been learning the rust programming language for a year"
         candidate = "i've been learning the rust programming language for a year"
-        assert not plagiarism_gate(candidate, (source,)).allowed
+        assert not subject_frame_gate(candidate).allowed
 
     def test_synthesized_fact_passes(self) -> None:
-        source = "yeah i've been grinding rust for like a year now honestly"
         fact = "user has been programming in Rust for approximately one year"
-        assert plagiarism_gate(fact, (source,)).allowed
+        assert subject_frame_gate(fact).allowed
 
 
 class TestBatchGate:
@@ -109,3 +107,15 @@ class TestBatchGate:
 
 def test_normalize_text() -> None:
     assert normalize_text("  Hello   WORLD \n") == "hello world"
+
+
+@pytest.mark.parametrize(
+    "fact",
+    [
+        "bob lives in Austin and enjoys cycling.",
+        "alice prefers tea in the morning",
+        "Bob lives in Austin",
+    ],
+)
+def test_faithful_fact_wording_is_not_discarded(fact: str) -> None:
+    assert subject_frame_gate(fact).allowed

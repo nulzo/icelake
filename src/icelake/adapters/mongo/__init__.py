@@ -9,7 +9,6 @@ lives in pure modules above).
 from __future__ import annotations
 
 import asyncio
-import re
 import typing
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -178,7 +177,13 @@ class MongoStore:
 
         await self.db["dm_cursors"].create_index([("guild_id", ASC), ("key", ASC)], unique=True)
         facts = self.db["dm_facts"]
+        await facts.create_index([("guild_id", ASC), ("citations.message_id", ASC)])
         await facts.create_index([("guild_id", ASC), ("subject_id", ASC)])
+        await facts.create_index(
+            [("guild_id", ASC), ("text", "text")],
+            name="guild_fact_text",
+            default_language="english",
+        )
         await facts.create_index(
             [("guild_id", ASC), ("subject_id", ASC), ("text_normalized", ASC)],
         )
@@ -454,6 +459,21 @@ class MongoStore:
             return None
         return await self.get_fact(guild_id, fact_id)
 
+    async def facts_for_source(
+        self,
+        guild_id: str,
+        message_id: str,
+        *,
+        limit: int = 100,
+    ) -> tuple[FactRecord, ...]:
+        docs = (
+            await self.db["dm_facts"]
+            .find({"guild_id": guild_id, **self._ACTIVE, "citations.message_id": message_id})
+            .limit(limit)
+            .to_list(limit)
+        )
+        return tuple(fact_from_doc(doc) for doc in docs)
+
     async def list_facts(
         self,
         guild_id: str,
@@ -531,48 +551,35 @@ class MongoStore:
         limit: int = 20,
         as_of: datetime | None = None,
     ) -> tuple[tuple[FactRecord, float], ...]:
-        terms = [t for t in query.lower().split() if t]
-        if not terms:
+        if not query.strip():
             return ()
-        docs = await (
-            self.db["dm_facts"]
-            .find(
-                {
-                    "guild_id": guild_id,
-                    **self._ACTIVE,
-                    "text": {
-                        "$regex": "|".join(re.escape(t) for t in terms),
-                        "$options": "i",
-                    },
-                }
-            )
-            .limit(limit * 3)
-            .to_list(limit * 3)
+        predicate: dict[str, Any] = {"guild_id": guild_id, "$text": {"$search": query[:1000]}}
+        if as_of is None:
+            predicate.update(self._ACTIVE)
+        else:
+            predicate["$and"] = [
+                {"$or": [{"valid_from": None}, {"valid_from": {"$lte": as_of.isoformat()}}]},
+                {"$or": [{"valid_until": None}, {"valid_until": {"$gt": as_of.isoformat()}}]},
+            ]
+        if server_only:
+            predicate["subject_id"] = None
+        elif subject_ids is not None:
+            predicate["$or"] = [
+                {"subject_id": {"$in": list(subject_ids)}},
+                {"related_user_ids": {"$in": list(subject_ids)}},
+            ]
+        docs = (
+            await self.db["dm_facts"]
+            .find(predicate, {"lexical_score": {"$meta": "textScore"}})
+            .sort([("lexical_score", {"$meta": "textScore"})])
+            .limit(limit)
+            .to_list(limit)
         )
-        scored: list[tuple[FactRecord, float]] = []
-        allowed = set(subject_ids) if subject_ids is not None else None
-        for doc in docs:
-            record = fact_from_doc(doc)
-            haystack = f"{record.text} {' '.join(record.entity_slugs)}".lower()
-            hits = sum(1 for term in terms if term in haystack)
-            if not hits:
-                continue
-            if server_only and not record.is_server_fact:
-                continue
-            if allowed is not None and not server_only:
-                touched = record.subject_id in allowed or any(
-                    uid in record.related_user_ids for uid in allowed
-                )
-                if not touched:
-                    continue
-            scored.append((record, min(1.0, hits / max(1, len(terms)))))
-        scored.sort(key=lambda pair: -pair[1])
-        generations = await generation_map(
-            self, guild_id, tuple(record for record, _score in scored[:limit])
-        )
+        records = tuple(fact_from_doc(doc) for doc in docs)
+        generations = await generation_map(self, guild_id, records)
         return tuple(
-            (record, score)
-            for record, score in scored[:limit]
+            (record, float(doc["lexical_score"]) / (1 + float(doc["lexical_score"])))
+            for record, doc in zip(records, docs, strict=True)
             if not fact_fenced(record, generations)
         )
 
@@ -1378,7 +1385,8 @@ class MongoStore:
             assert doc is not None  # upsert + AFTER always returns the doc
             return int(doc["prompt_tokens"])
 
-        day_total, month_total = await asyncio.gather(bump(day_key), bump(month_key))
+        day_total = await bump(day_key)
+        month_total = await bump(month_key)
         return day_total, month_total
 
     async def guild_token_usage(

@@ -8,7 +8,7 @@ from enum import StrEnum
 from pydantic import Field
 
 from icelake.models.common import FrozenModel, TokenUsage
-from icelake.models.facts import FactRecord
+from icelake.models.facts import Attribution, FactRecord
 from icelake.models.identity import Resolution
 from icelake.permissions import Audience
 
@@ -115,6 +115,8 @@ class RecallQuery(FrozenModel):
     max_per_subject: int = 4
     min_score: float = 0.0
     channels: ChannelSet | None = None
+    require_relevance: bool = False
+    min_semantic_score: float = Field(default=0.55, ge=0.0, le=1.0)
     as_of: datetime | None = None  # time-travel: what was known at this instant?
 
 
@@ -136,6 +138,10 @@ class Citation(FrozenModel):
     #: Discord snowflakes for the primary source message (when known).
     message_id: str | None = None
     channel_id: str | None = None
+    author_id: str | None = None
+    author_name: str = ""
+    created_at: datetime | None = None
+    attribution: Attribution = Attribution()
     #: Final ranking score for this fact within the recall call.
     score: float | None = None
     #: L2 cross-encoder score when a reranker ran.

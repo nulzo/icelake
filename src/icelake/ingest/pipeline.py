@@ -22,6 +22,7 @@ from hashlib import sha256
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from icelake.api.sources import source_is_current
 from icelake.config import MemoryConfig
 from icelake.identity.aliases import (
     extract_self_name_aliases,
@@ -97,13 +98,15 @@ def _build_source_refs(messages: tuple[StoredMessage, ...]) -> tuple[SourceRef, 
     """Snapshot every claimed message into a frozen citation ref."""
     return tuple(
         SourceRef(
-            message_id=message.message_id,
+            message_id=message.source_message_id or message.message_id,
+            observation_id=message.message_id,
+            revision=message.source_revision,
             channel_id=message.channel_id,
             guild_id=message.guild_id,
             author_id=message.author_id,
             author_name=message.author_display_name or message.author_username,
-            content_snippet=message.content[:280],
-            created_at=message.created_at,
+            content_snippet=message.content[:4000],
+            created_at=message.source_created_at or message.created_at,
             role=SourceRole.SUPPORTING,
         )
         for message in messages
@@ -463,6 +466,12 @@ class IngestPipeline:
                 for message in messages
                 if await self._store.get_cursor(key.guild_id, _receipt_key(key, message.message_id))
                 is None
+                and await source_is_current(
+                    self._store,
+                    key.guild_id,
+                    message.source_message_id or message.message_id,
+                    message.source_revision,
+                )
             ]
         )
         if not messages:
@@ -786,12 +795,21 @@ class IngestPipeline:
             await self._store.set_cursor(guild_id, "commit_fence", uuid4().hex)
             if any(
                 [
-                    await self._store.get_cursor(guild_id, _receipt_key(key, ref.message_id))
+                    await self._store.get_cursor(
+                        guild_id, _receipt_key(key, ref.observation_id or ref.message_id)
+                    )
                     is not None
                     for ref in source_refs
                 ]
             ):
                 raise RuntimeError("input committed concurrently; retry with remaining messages")
+            if not all(
+                [
+                    await source_is_current(self._store, guild_id, ref.message_id, ref.revision)
+                    for ref in source_refs
+                ]
+            ):
+                raise RuntimeError("source changed during extraction; retry current messages")
             targets = [record for record, *_ in plan.reinforces]
             targets.extend(
                 record for collision in plan.collisions for record in collision.neighbors
@@ -867,19 +885,25 @@ class IngestPipeline:
                     if target is None:
                         continue
                     if decision.kind is ReconcileKind.UPDATE:
+                        proposal = ProposedFact.model_validate(
+                            {
+                                **collision.candidate.model_dump(),
+                                "text": decision.text or collision.candidate.text,
+                            }
+                        )
+                        citations = _pick_citations(proposal.source_message_indexes, source_refs)
+                        if proposal.text != collision.candidate.text:
+                            citations = tuple(dict.fromkeys((*target.citations, *citations)))
                         fresh, _old = await self._committer.commit_supersede(
                             old_record=target,
-                            proposal=collision.candidate,
+                            proposal=proposal,
                             subject_id=collision.subject_id,
                             speaker_id=collision.speaker_id,
                             reason=decision.reason,
                             guild_id=guild_id,
                             roster=roster,
                             mentioned_ids=mentioned_ids,
-                            source_refs=_pick_citations(
-                                collision.candidate.source_message_indexes,
-                                source_refs,
-                            ),
+                            source_refs=citations,
                             governance=stamped,
                         )
                         summary.supersessions += 1
@@ -939,7 +963,9 @@ class IngestPipeline:
                     )
             for ref in source_refs:
                 await self._store.set_cursor(
-                    guild_id, _receipt_key(key, ref.message_id), self._clock.now().isoformat()
+                    guild_id,
+                    _receipt_key(key, ref.observation_id or ref.message_id),
+                    self._clock.now().isoformat(),
                 )
 
         for notify in notifications:

@@ -1,4 +1,4 @@
-"""Conservative live Discord authorization for same-channel memory disclosure."""
+"""Conservative live Discord authorization for memory disclosure."""
 
 from __future__ import annotations
 
@@ -12,7 +12,8 @@ class DiscordChannelAuthorizer:
 
     A channel is safe only when every potential reader has history access. If
     any overwrite denies history, this adapter abstains rather than enumerating
-    an incomplete member cache. Cross-channel sharing requires a custom policy.
+    an incomplete member cache. Cross-channel reads require a source readable
+    with history by every guild member, with no denying overwrite.
     The core AudienceGate supplies the timeout and fails closed on API errors.
     """
 
@@ -22,7 +23,7 @@ class DiscordChannelAuthorizer:
     async def allowed_channels(
         self, guild_id: str, audience: Audience, source_channels: frozenset[str]
     ) -> frozenset[str]:
-        if audience.channel_id not in source_channels or self._client.user is None:
+        if not source_channels or self._client.user is None:
             return frozenset()
         # fetch_guild constructs roles from the REST response, so permissions do
         # not depend on gateway role/member caches being fully populated.
@@ -47,7 +48,32 @@ class DiscordChannelAuthorizer:
             if isinstance(channel, discord.Thread) and channel.is_private():
                 # permissions_for does not establish private-thread membership.
                 await channel.fetch_member(user_id)
-        return frozenset({audience.channel_id})
+        allowed = source_channels & {audience.channel_id}
+        if source_channels - allowed:
+            # One REST request for all channel overwrites, independent of fact count.
+            channels = await guild.fetch_channels()
+            allowed |= frozenset(
+                str(source.id)
+                for source in channels
+                if isinstance(source, discord.TextChannel)
+                and str(source.id) in source_channels
+                and public_history_visible_to_all(source)
+            )
+        return frozenset(allowed)
+
+
+def public_history_visible_to_all(channel: discord.TextChannel) -> bool:
+    """Sufficient proof that a source is public to every possible guild reader."""
+    everyone = channel.guild.default_role
+    overwrite = channel.overwrites_for(everyone)
+    view = everyone.permissions.view_channel
+    if overwrite.view_channel is not None:
+        view = overwrite.view_channel
+    return (
+        view
+        and history_visible_to_all(channel)
+        and not any(value.view_channel is False for value in channel.overwrites.values())
+    )
 
 
 def history_visible_to_all(channel: discord.TextChannel | discord.ForumChannel) -> bool:

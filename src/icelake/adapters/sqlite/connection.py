@@ -13,7 +13,7 @@ from typing import Any
 from icelake.concurrency import TaskLock as _TaskLock
 from icelake.errors import StorageUnavailableError
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS dm_projection_jobs (
@@ -286,6 +286,11 @@ class SqliteConnection:
                 await self.execute(
                     "ALTER TABLE dm_messages ADD COLUMN governance TEXT NOT NULL DEFAULT '{}'"
                 )
+            for column in ("source_message_id", "source_revision", "source_created_at"):
+                if not any(row["name"] == column for row in message_columns):
+                    await self.execute(
+                        f"ALTER TABLE dm_messages ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
+                    )
             await self.execute(
                 "INSERT INTO dm_meta (key, value) VALUES ('schema_version', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",

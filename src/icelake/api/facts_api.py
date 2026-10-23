@@ -14,6 +14,7 @@ from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from icelake.api.sources import source_is_current
 from icelake.config import MemoryConfig
 from icelake.errors import (
     FactNotFoundError,
@@ -163,6 +164,14 @@ class FactsApi:
         replayed = False
         async with self._store.transaction():
             await self._store.set_cursor(guild_id, "commit_fence", uuid4().hex)
+            if not all(
+                [
+                    await source_is_current(self._store, guild_id, ref.message_id, ref.revision)
+                    for ref in source_refs
+                    if ref.message_id
+                ]
+            ):
+                raise SchemaError("source was edited or deleted; retrieve the current revision")
             raw = await self._store.get_cursor(guild_id, receipt_key) if receipt_key else None
             if raw is not None:
                 receipt = _RememberReceipt.model_validate_json(raw)
@@ -225,6 +234,7 @@ class FactsApi:
         attribution: AttributionType = AttributionType.MANUAL,
         source_refs: tuple[SourceRef, ...] = (),
         governance: dict[str, int],
+        supersedes_id: str | None = None,
     ) -> FactRecord:
         current = await self._store.governance_generations(guild_id, tuple(governance))
         if any(current.get(uid, 0) > generation for uid, generation in governance.items()):
@@ -251,6 +261,7 @@ class FactsApi:
                 expires_at=duplicate.expires_at,
                 tier=duplicate.tier,
                 confidence=max(duplicate.confidence, confidence),
+                extra_citations=source_refs,
             )
             assert updated is not None
             await self._store.enqueue_projection(
@@ -283,6 +294,7 @@ class FactsApi:
             valid_from=now,
             governance=stamped,
             citations=source_refs,
+            supersedes_id=supersedes_id,
         )
         if subject_username and subject_id is not None:
             normalized = normalize_alias(subject_username)
@@ -345,31 +357,105 @@ class FactsApi:
         text: str,
         reason: str = "",
         actor_id: str | None = None,
+        source_refs: tuple[SourceRef, ...] = (),
+        idempotency_key: str | None = None,
     ) -> FactRecord:
-        """Refine a fact's text; history records the correction."""
-        _ = await self.get(guild_id, fact_id)
+        """Supersede a fact with a correction and preserve the original in history.
+
+        Correction evidence replaces old evidence; the old message cannot prove
+        the new statement. Idempotent retries return the same replacement.
+        """
+        old = await self.get(guild_id, fact_id)
+        hygiene = text_hygiene_gate(text)
+        if not hygiene.allowed or any(ref.guild_id != guild_id for ref in source_refs):
+            raise SchemaError(hygiene.reason or "source reference belongs to another guild")
+        key = "correction:" + sha256((idempotency_key or uuid4().hex).encode()).hexdigest()
+        request_hash = sha256(
+            json.dumps(
+                {
+                    "id": fact_id,
+                    "text": text,
+                    "actor": actor_id,
+                    "sources": [r.model_dump(mode="json") for r in source_refs],
+                },
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        participants = tuple(
+            dict.fromkeys(
+                uid
+                for uid in (old.subject_id, actor_id, *(r.author_id for r in source_refs))
+                if uid
+            )
+        )
+        if not (await self._gate.allowed_ids(guild_id, participants)).issuperset(participants):
+            raise SubjectNotAllowedError("a correction participant is barred")
+        governance = await self._store.governance_generations(guild_id, participants)
         now = self._clock.now()
         async with self._store.transaction():
-            updated_fields = await self._store.update_fact_fields(
-                guild_id,
-                fact_id,
+            await self._store.set_cursor(guild_id, "commit_fence", uuid4().hex)
+            if not all(
+                [
+                    await source_is_current(self._store, guild_id, ref.message_id, ref.revision)
+                    for ref in source_refs
+                    if ref.message_id
+                ]
+            ):
+                raise SchemaError("source was edited or deleted; retrieve the current revision")
+            if raw := await self._store.get_cursor(guild_id, key):
+                receipt = _RememberReceipt.model_validate_json(raw)
+                if receipt.request_hash != request_hash:
+                    raise SchemaError("idempotency key was already used with different inputs")
+                restored = await self._store.get_fact(guild_id, receipt.fact_id)
+                if restored is None:
+                    raise FactNotFoundError(receipt.fact_id)
+                return restored
+            current = await self._store.get_fact(guild_id, fact_id)
+            if current is None or not current.is_active or current.version != old.version:
+                raise SchemaError("memory changed; retrieve it again before correcting")
+            fresh = await self._remember(
+                guild_id=guild_id,
+                subject_id=old.subject_id,
                 text=text,
-                text_normalized=normalize_text(text),
-                updated_at=now,
+                category=old.category,
+                actor_id=actor_id,
+                speaker_id=actor_id,
+                source_refs=source_refs,
+                governance=governance,
+                supersedes_id=old.id,
             )
-            assert updated_fields is not None
-            detail = f"update: {reason or 'no reason given'} by {actor_id or 'unknown'}"
+            if fresh.id == old.id:
+                await self._store.set_cursor(
+                    guild_id,
+                    key,
+                    _RememberReceipt(request_hash=request_hash, fact_id=fresh.id).model_dump_json(),
+                )
+                return fresh
+            await self._store.transition_fact(
+                guild_id, old.id, superseded_by_id=fresh.id, valid_until=now, updated_at=now
+            )
+            await self._store.drop_evidence_from_edges(guild_id, old.id, until=now)
             await self._store.append_history(
                 guild_id,
-                fact_id,
-                FactHistoryEntry(at=now, kind=FactHistoryKind.SUPERSEDED, detail=detail),
+                old.id,
+                FactHistoryEntry(
+                    at=now,
+                    kind=FactHistoryKind.SUPERSEDED,
+                    fact_version=old.version,
+                    detail=f"{reason or 'correction'} by {actor_id or 'unknown'}",
+                ),
+            )
+            await self._store.set_cursor(
+                guild_id,
+                key,
+                _RememberReceipt(request_hash=request_hash, fact_id=fresh.id).model_dump_json(),
             )
             await self._store.enqueue_projection(
-                ProjectionJob(guild_id=guild_id, fact_id=fact_id, version=updated_fields.version)
+                ProjectionJob(guild_id=guild_id, fact_id=fresh.id, version=fresh.version)
             )
         await recover_projections(self._store, self._vectors, self._embedder, limit=32)
-        self._publish_superseded(guild_id, fact_id, fact_id, reason)
-        return updated_fields
+        self._publish_superseded(guild_id, old.id, fresh.id, reason)
+        return fresh
 
     async def forget(
         self, fact_id: str, *, guild_id: str, reason: str = "", actor_id: str | None = None

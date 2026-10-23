@@ -13,7 +13,7 @@ from icelake.config import RerankerConfig, RerankerProvider, RetrievalConfig
 from icelake.errors import ConfigError
 from icelake.models.facts import FactCategory, FactRecord, SourceRef, SourceRole
 from icelake.models.retrieval import Citation, RecallQuery, ScoredFact
-from icelake.retrieval.injection import InjectionBuilder, _primary_citation
+from icelake.retrieval.injection import InjectionBuilder, fact_citations
 from icelake.retrieval.service import RecallService
 
 GUILD = "500000000000000001"
@@ -392,7 +392,7 @@ class TestCitationEnrichment:
     def test_primary_citation_enriched_from_scored_fact(self) -> None:
         record = _fact("plays table tennis")
         scored = ScoredFact(fact=record, score=0.9, rerank_score=0.85)
-        citation = _primary_citation(scored, GUILD, 1)
+        citation = fact_citations(scored, GUILD, 1)[0]
         assert citation is not None
         assert citation.message_id == "m1"
         assert citation.channel_id == "c1"
@@ -404,14 +404,14 @@ class TestCitationEnrichment:
     def test_primary_citation_prefers_display_name(self) -> None:
         record = _fact("plays table tennis")
         scored = ScoredFact(fact=record, score=0.9)
-        citation = _primary_citation(scored, GUILD, 1, display_name="bob")
+        citation = fact_citations(scored, GUILD, 1, display_name="bob")[0]
         assert citation is not None
         assert citation.subject_name == "bob"
 
     def test_primary_citation_none_when_no_source(self) -> None:
         record = _fact("plays table tennis").model_copy(update={"citations": ()})
         scored = ScoredFact(fact=record, score=0.9)
-        assert _primary_citation(scored, GUILD, 1) is None
+        assert fact_citations(scored, GUILD, 1) == ()
 
     def test_injection_emits_rich_citation_objects(self) -> None:
         builder = InjectionBuilder()

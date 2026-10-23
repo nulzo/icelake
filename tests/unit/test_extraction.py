@@ -224,7 +224,7 @@ class TestExtractVetting:
         assert "media_share" in reasons
         assert "below_min_confidence" in reasons
 
-    async def test_plagiarism_of_source_message_rejected(self, roster: Roster) -> None:
+    async def test_unbound_first_person_message_rejected(self, roster: Roster) -> None:
         source_line = "i have been learning the rust programming language all year"
         payload = {
             "operations": [
@@ -243,7 +243,7 @@ class TestExtractVetting:
             existing_memories_block="",
         )
         assert not result.has_candidates
-        assert any(reason == "raw_copy" or "copy" in reason for _, reason in result.rejected)
+        assert any(reason == "unbound_speaker" for _, reason in result.rejected)
 
     async def test_max_candidates_cap_enforced(self, roster: Roster) -> None:
         ops = [
@@ -321,3 +321,30 @@ async def test_invalid_or_missing_multimessage_evidence_is_rejected(roster, inde
     )
     assert result.vetted == []
     assert result.rejected[0][1] == "invalid_source_indexes"
+
+
+async def test_faithful_third_person_restatement_is_retained(roster: Roster) -> None:
+    extractor, _ = _extractor(
+        {
+            "extraction": json.dumps(
+                {
+                    "operations": [
+                        {
+                            "subject_token": "p1",
+                            "text": "bob lives in Austin and enjoys cycling.",
+                            "confidence": 0.95,
+                            "source_message_indexes": [1],
+                        }
+                    ]
+                }
+            )
+        }
+    )
+    result = await extractor.extract(
+        roster=roster,
+        messages=(("bob", "I live in Austin and enjoy cycling."),),
+        existing_memories_block="",
+    )
+    assert len(result.vetted) == 1
+    assert result.vetted[0].subject_id == "u-bob"
+    assert not result.rejected

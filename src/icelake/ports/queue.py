@@ -26,6 +26,9 @@ class StoredMessage(FrozenModel):
     """Persisted raw message awaiting extraction."""
 
     message_id: str
+    source_message_id: str = ""
+    source_revision: str = ""
+    source_created_at: datetime | None = None
     guild_id: str
     channel_id: str = ""
     author_id: str

@@ -1,6 +1,6 @@
 [project]
 name = "icelake"
-version = "0.7.0"
+version = "0.7.2"
 description = "Accurate, scalable, cost-effective agentic memory layer for Discord bots."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mongo = ["pymongo>=4.17", "dnspython>=2.6"]
+mongo = ["pymongo>=4.17", "dnspython>=2.6", "numpy>=2.0"]
 local-embeddings = ["sentence-transformers>=3.0"]
 discord = ["discord.py>=2.4"]
 
@@ -44,6 +44,7 @@ dev = [
     "mypy>=1.13",
     "discord-py>=2.4",
     "pymongo>=4.17",
+    "numpy>=2.0",
     "pyyaml>=6.0",
     "towncrier>=24.8",
 ]

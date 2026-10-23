@@ -17,7 +17,13 @@ RULES:
   relation from_token/to_token (p0, p1, ... from PARTICIPANTS).
 - Use subject_token="server" for community-wide facts: culture, norms, and shared
   events or plans ("game night is Friday at 8pm") — even when one person announces them.
-- Set speaker_token when a participant states a fact about someone else.
+- Set speaker_token when a participant states a fact about someone else. Preserve
+  the distinction in text: 'Alice reports that Bob ...', never rewrite it as Bob's
+  self-report. Questions, hypothetical premises, teasing, insults, and quoted bot
+  claims are not assertions by the person they describe. Do not save them as facts.
+- Store durable preferences, goals and context stated by the subject naturally.
+  Preserve temporal qualifiers and changes of mind. Never infer personal traits
+  from a single joke, an image caption, or another participant's accusation.
 - In `text`, write the PARTICIPANTS display names. Never write p0/p1 tokens,
   Discord IDs, <@mentions>, raw quotes, or questions.
 - Rewrite as third-person durable facts. Example: "alice prefers mechanical keyboards".

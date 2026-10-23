@@ -10,11 +10,13 @@ work before spending.
 from __future__ import annotations
 
 import threading
+from uuid import uuid4
 
 from icelake.config import BudgetsConfig
+from icelake.errors import BudgetExceededError
 from icelake.models.admin import BudgetStep, MeterPurpose, MeterSnapshot
 from icelake.ports.clock import Clock
-from icelake.ports.llm import ChatLLM, ChatRequest, ChatResponse, Meter
+from icelake.ports.llm import BudgetReservation, ChatLLM, ChatRequest, ChatResponse, Meter
 from icelake.ports.store import MemoryStore
 
 _WARN_FRACTION = 0.8
@@ -46,6 +48,14 @@ class MeteredLLM:
         return self._inner.model_name
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
+        # UTF-8 bytes conservatively bound text tokens; schema/framing get headroom.
+        # Failed/cancelled calls retain the reservation because billing is unknown.
+        reserved = None
+        if request.guild_id:
+            reserved = await self._meter.reserve(
+                request.guild_id,
+                prompt_tokens=len(request.model_dump_json().encode()) + 512,
+            )
         response = await self._inner.complete(request)
         self._meter.record_llm(
             request.purpose,
@@ -54,8 +64,8 @@ class MeteredLLM:
             model=self._inner.model_name,
             cost_usd=response.cost_usd,
         )
-        if request.guild_id is not None:
-            await self._meter.charge_guild(request.guild_id, prompt_tokens=response.prompt_tokens)
+        if reserved is not None:
+            await self._meter.settle(reserved, prompt_tokens=response.prompt_tokens)
         return response
 
 
@@ -120,6 +130,42 @@ class UsageMeter:
                 )
         return None
 
+    async def reserve(self, guild_id: str, *, prompt_tokens: int) -> BudgetReservation:
+        now = self._clock.now()
+        reservation = BudgetReservation(
+            guild_id=guild_id,
+            day_key=now.strftime("%Y-%m-%d"),
+            month_key=now.strftime("%Y-%m"),
+            prompt_tokens=prompt_tokens,
+        )
+        async with self._store.transaction():
+            await self._store.set_cursor(guild_id, "budget_fence", uuid4().hex)
+            day, month = await self._store.guild_token_usage(
+                guild_id, day_key=reservation.day_key, month_key=reservation.month_key
+            )
+            for used, limit in (
+                (day, self._budgets.guild_daily_prompt_tokens),
+                (month, self._budgets.guild_monthly_prompt_tokens),
+            ):
+                if limit is not None and used + prompt_tokens > limit:
+                    raise BudgetExceededError("memory prompt budget exhausted")
+            await self._store.charge_guild_tokens(
+                guild_id,
+                day_key=reservation.day_key,
+                month_key=reservation.month_key,
+                prompt_tokens=prompt_tokens,
+            )
+        return reservation
+
+    async def settle(self, reservation: BudgetReservation, *, prompt_tokens: int) -> None:
+        async with self._store.transaction():
+            await self._store.charge_guild_tokens(
+                reservation.guild_id,
+                day_key=reservation.day_key,
+                month_key=reservation.month_key,
+                prompt_tokens=prompt_tokens - reservation.prompt_tokens,
+            )
+
     async def charge_guild(self, guild_id: str, *, prompt_tokens: int) -> None:
         """Attribute prompt spend to a guild for budget accounting."""
         now = self._clock.now()
@@ -157,6 +203,7 @@ class UsageMeter:
     def snapshot(self) -> MeterSnapshot:
         with self._lock:
             return MeterSnapshot(
+                counters=dict(self._counters),
                 calls=dict(self._calls),
                 prompt_tokens=dict(self._prompt_tokens),
                 completion_tokens=dict(self._completion_tokens),

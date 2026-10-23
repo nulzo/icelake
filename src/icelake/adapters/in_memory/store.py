@@ -366,6 +366,22 @@ class InMemoryStore:
         return record.valid_until is None and record.superseded_by_id is None
 
     @_serialized
+    async def facts_for_source(
+        self,
+        guild_id: str,
+        message_id: str,
+        *,
+        limit: int = 100,
+    ) -> tuple[FactRecord, ...]:
+        return tuple(
+            record
+            for record in self._facts.values()
+            if record.guild_id == guild_id
+            and record.is_active
+            and any(ref.message_id == message_id for ref in record.citations)
+        )[:limit]
+
+    @_serialized
     async def list_facts(
         self,
         guild_id: str,
@@ -1013,7 +1029,9 @@ class InMemoryStore:
                 and record.expires_at <= now
                 and record.is_active
             ):
-                self._facts[key] = record.model_copy(update={"valid_until": now})
+                self._facts[key] = record.model_copy(
+                    update={"valid_until": now, "updated_at": now, "version": record.version + 1}
+                )
                 changed += 1
         return changed
 
@@ -1032,7 +1050,9 @@ class InMemoryStore:
             max_server=max_server,
         )
         for victim in victims:
-            self._facts[(guild_id, victim.id)] = victim.model_copy(update={"valid_until": now})
+            self._facts[(guild_id, victim.id)] = victim.model_copy(
+                update={"valid_until": now, "updated_at": now, "version": victim.version + 1}
+            )
         return len(victims)
 
     @_serialized
@@ -1053,7 +1073,9 @@ class InMemoryStore:
         )
         for victim in victims:
             key = (victim.guild_id, victim.id)
-            self._facts[key] = victim.model_copy(update={"valid_until": now})
+            self._facts[key] = victim.model_copy(
+                update={"valid_until": now, "updated_at": now, "version": victim.version + 1}
+            )
         return len(victims)
 
     @_serialized

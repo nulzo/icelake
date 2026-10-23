@@ -109,6 +109,8 @@ class SourceRef(FrozenModel):
     created_at: datetime | None = None
     message_url: str = ""
     role: SourceRole = SourceRole.SUPPORTING
+    revision: str = ""
+    observation_id: str = ""
 
 
 class FactRecord(FrozenModel):

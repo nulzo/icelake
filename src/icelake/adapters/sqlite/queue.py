@@ -16,6 +16,11 @@ SERVER_SUBJECT_KEY = "__server__"
 def _message_from_row(row: sqlite3.Row) -> StoredMessage:
     return StoredMessage(
         message_id=row["message_id"],
+        source_message_id=row["source_message_id"],
+        source_revision=row["source_revision"],
+        source_created_at=datetime.fromisoformat(row["source_created_at"])
+        if row["source_created_at"]
+        else None,
         guild_id=row["guild_id"],
         channel_id=row["channel_id"] or "",
         author_id=row["author_id"],
@@ -54,8 +59,9 @@ class SqliteIngestQueue:
                     """INSERT INTO dm_messages
                        (message_id, guild_id, channel_id, author_id, subject_key, content,
                         created_at, author_username, author_display_name, author_is_bot,
-                        mention_ids, status, governance)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                        mention_ids, status, governance, source_message_id, source_revision,
+                        source_created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
                     (
                         message.message_id,
                         message.guild_id,
@@ -69,6 +75,9 @@ class SqliteIngestQueue:
                         int(message.author_is_bot),
                         json.dumps(list(message.mention_ids)),
                         json.dumps(dict(message.governance)),
+                        message.source_message_id,
+                        message.source_revision,
+                        iso(message.source_created_at) if message.source_created_at else "",
                     ),
                 )
                 return True

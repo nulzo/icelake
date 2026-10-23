@@ -173,6 +173,12 @@ class RecallService:
             weight_entity=self._config.weight_entity,
             weight_strength=self._config.weight_strength,
         )
+        if query.require_relevance:
+            scored = [
+                row
+                for row in scored
+                if (row[2][0] >= query.min_semantic_score or row[2][1] > 0 or row[2][2] > 0)
+            ]
         scored, rerank_scores = await self._apply_reranker(query, scored, pool_records)
         hop_paths: dict[str, tuple[str, ...]] = {}
         for out in outputs:
@@ -349,7 +355,13 @@ class RecallService:
             tasks[key]  # type: ignore[misc]
             for key in keys
         ]
-        results = await asyncio.gather(*coros, return_exceptions=True)
+        results = await asyncio.gather(
+            *(
+                asyncio.wait_for(coro, timeout=self._config.channel_timeout_seconds)
+                for coro in coros
+            ),
+            return_exceptions=True,
+        )
         outputs: list[ch.ChannelOutput] = []
         degraded: list[ChannelName] = []
         for key, result in zip(keys, results, strict=True):

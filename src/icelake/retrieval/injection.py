@@ -7,7 +7,7 @@ context) and reattached post-generation by the attribution stage.
 
 from __future__ import annotations
 
-from icelake.models.facts import SourceRole
+from icelake.models.facts import AttributionType
 from icelake.models.retrieval import Citation, ScoredFact
 
 CHARS_PER_TOKEN = 4
@@ -94,7 +94,7 @@ class InjectionBuilder:
         }
 
         for section_key, facts in facts_by_section.items():
-            if not facts and not (summaries.get(section_key)):
+            if not facts:
                 continue
             subject_id = facts[0].fact.subject_id if facts else None
             if section_key == "asker":
@@ -107,13 +107,12 @@ class InjectionBuilder:
                 display = (display_names or {}).get(section_key) or subject_id or section_key
                 header = f"REFERENCED USER: {display}"
                 label = f"Facts about {display} ONLY. Do NOT attribute these to the asker."
-            summary_text = summaries.get(section_key)
+            # Summaries are navigation aids, never independent evidence. Only
+            # the selected facts are injected, each with its own provenance.
             section_lines = [header]
             alias_note = (alias_notes or {}).get(section_key)
             if alias_note:
                 section_lines.append(alias_note)
-            if summary_text:
-                section_lines.append(f"Summary: {snippet(summary_text, 480)}")
             section_lines.append(label)
             if not fits([*lines, *section_lines, ""]):
                 trimmed = True
@@ -123,19 +122,20 @@ class InjectionBuilder:
             emitted = 0
             for scored in facts:
                 ref_number = len(citations) + 1
-                fact_line = f"- {snippet(scored.fact.text)}"
+                speaker = scored.fact.attribution.speaker_name or scored.fact.attribution.speaker_id
+                qualifier = (
+                    f" [reported by {speaker}]"
+                    if scored.fact.attribution.type is AttributionType.THIRD_PARTY
+                    else ""
+                )
+                fact_line = f"- {snippet(scored.fact.text)}{qualifier}"
                 if not fits([*lines, *section_lines, fact_line, ""]):
                     trimmed = True
                     break
-                primary = _primary_citation(scored, guild_id, ref_number, display_name=display)
-                if primary is not None:
-                    citations.append(primary)
-                    section_lines.append(fact_line)
-                    emitted += 1
-                else:
-                    section_lines.append(f"- {snippet(scored.fact.text)}")
-                    emitted += 1
-            if emitted == 0 and not summary_text:
+                citations.extend(fact_citations(scored, guild_id, ref_number, display_name=display))
+                section_lines.append(fact_line)
+                emitted += 1
+            if emitted == 0:
                 continue
             lines.extend(section_lines)
             lines.append("")
@@ -146,47 +146,35 @@ class InjectionBuilder:
         return block, tuple(citations), trimmed
 
 
-def _primary_citation(
+def fact_citations(
     scored: ScoredFact,
     guild_id: str,
-    ref_number: int,
+    ref_number: int = 1,
     *,
     display_name: str = "",
-) -> Citation | None:
+) -> tuple[Citation, ...]:
+    """Bind every supporting message, preserving the original speaker and quote."""
     record = scored.fact
-    source_ref = next(
-        (c for c in record.citations if c.role is SourceRole.PRIMARY),
-        record.citations[0] if record.citations else None,
-    )
-    url = ""
-    snippet_text = ""
-    message_id: str | None = None
-    channel_id: str | None = None
-    if source_ref is not None:
-        url = source_ref.message_url or message_url(
-            guild_id,
-            source_ref.channel_id,
-            source_ref.message_id,
+    return tuple(
+        Citation(
+            ref=f"mem:{ref_number + index}",
+            fact_id=record.id,
+            url=source.message_url or message_url(guild_id, source.channel_id, source.message_id),
+            snippet=source.content_snippet,
+            subject_id=record.subject_id,
+            subject_name=display_name or record.subject_id or "",
+            message_id=source.message_id,
+            channel_id=source.channel_id,
+            author_id=source.author_id,
+            author_name=source.author_name,
+            created_at=source.created_at,
+            attribution=record.attribution,
+            score=scored.score,
+            rerank_score=scored.rerank_score,
         )
-        snippet_text = source_ref.content_snippet
-        message_id = source_ref.message_id
-        channel_id = source_ref.channel_id
-    elif record.subject_id:
-        return None
-    if not url:
-        return None
-    return Citation(
-        ref=f"mem:{ref_number}",
-        fact_id=record.id,
-        url=url,
-        snippet=snippet_text,
-        subject_id=record.subject_id,
-        subject_name=display_name or record.subject_id or "",
-        message_id=message_id,
-        channel_id=channel_id,
-        score=scored.score,
-        rerank_score=scored.rerank_score,
+        for index, source in enumerate(record.citations)
+        if source.message_id and source.guild_id == guild_id
     )
 
 
-__all__ = ["InjectionBuilder", "estimate_tokens", "message_url", "snippet"]
+__all__ = ["InjectionBuilder", "estimate_tokens", "fact_citations", "message_url", "snippet"]

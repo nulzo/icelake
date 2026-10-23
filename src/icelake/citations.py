@@ -20,6 +20,7 @@ consumer's rendering concern, fed by :attr:`ReplyAttribution.used`.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import datetime
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
@@ -27,7 +28,7 @@ from pydantic import field_validator
 
 from icelake.models.common import FrozenModel
 from icelake.models.facts import FactRecord
-from icelake.retrieval.injection import message_url, snippet
+from icelake.retrieval.injection import message_url
 
 if TYPE_CHECKING:
     from icelake.attribution import ReplyAttribution
@@ -47,6 +48,19 @@ class CitationSource(FrozenModel):
     #: Origin namespace (``memory``, ``web``, ``message``) for consumers that
     #: want to group or label sources by kind.
     kind: str = "web"
+    #: Speaker metadata is evidence, not an inferred fact about the subject.
+    author_id: str | None = None
+    author_name: str = ""
+    created_at: datetime | None = None
+
+    @property
+    def evidence(self) -> str:
+        """Original passage with explicit speaker identity for support verification."""
+        speaker = self.author_name or self.author_id
+        return (
+            f"Speaker: {speaker or 'unknown'} (ID {self.author_id or 'unknown'})\n"
+            f"Time: {self.created_at}\nMessage: {self.excerpt}"
+        )
 
     @field_validator("url")
     @classmethod
@@ -78,24 +92,52 @@ class Citations:
         citations: Iterable[Citation] = (),
         facts: Iterable[ScoredFact] = (),
     ) -> None:
+        # `facts` remains accepted for 0.6 callers; original evidence is authoritative.
+        del facts
         self._sources: list[CitationSource] = []
         self._by_ref: dict[str, CitationSource] = {}
         self._by_url: dict[str, CitationSource] = {}
         #: ``(offset, ref)`` provider-anchored splice points — one source may
         #: anchor several spans (providers repeat a URL across a reply).
         self._anchors: list[tuple[int, str]] = []
-        fact_text = {scored.fact.id: scored.fact.text for scored in facts}
+        self._contexts: list[PromptContext] = []
+        self._memory_refs: dict[str, tuple[int, str]] = {}
         for citation in citations:
-            self._register_memory(citation, fact_text.get(citation.fact_id, ""))
+            self._register_memory(citation)
 
     @classmethod
     def from_prompt_context(cls, ctx: PromptContext) -> Citations:
         """Seed the closed set from a memory turn's citation bindings.
 
-        Fact text joins each binding so the attribution stage sees the same
-        statement the answer model saw, not a raw message snippet.
+        Keep the context so the client can revalidate versions and audience
+        even after tools and web annotations join the registry.
         """
-        return cls(ctx.citations, facts=ctx.facts)
+        result = cls()
+        result.add_context(ctx)
+        return result
+
+    def add_context(self, ctx: PromptContext) -> None:
+        """Register another retrieval result without losing its access scope."""
+        index = len(self._contexts)
+        self._contexts.append(ctx)
+        for citation in ctx.citations:
+            source = self._register_memory(citation)
+            self._memory_refs[source.ref] = (index, citation.fact_id)
+
+    @property
+    def contexts(self) -> tuple[PromptContext, ...]:
+        """Retrieval snapshots requiring revalidation before publication."""
+        return tuple(self._contexts)
+
+    def retain_memory(self, allowed: set[tuple[int, str]]) -> None:
+        """Drop invalid or unbound memory sources; preserve web sources and anchors."""
+        self._sources = [
+            s
+            for s in self._sources
+            if s.kind != "memory" or self._memory_refs.get(s.ref) in allowed
+        ]
+        self._by_ref = {s.ref: s for s in self._sources}
+        self._by_url = {s.url: s for s in self._sources if s.url}
 
     def add_source(
         self,
@@ -214,20 +256,28 @@ class Citations:
 
     # -- internals ---------------------------------------------------------
 
-    def _register_memory(self, citation: Citation, fact_text: str = "") -> None:
+    def _register_memory(self, citation: Citation) -> CitationSource:
         """Seed a memory binding, keeping its ``mem:N`` ref."""
         ref = citation.ref if citation.ref.startswith("mem:") else f"mem:{citation.ref}"
+        number = len(self._sources) + 1
+        while ref in self._by_ref:
+            ref = f"mem:{number}"
+            number += 1
         source = CitationSource(
             ref=ref,
             url=citation.url,
             title=citation.subject_name,
-            excerpt=snippet(fact_text) if fact_text else citation.snippet,
+            excerpt=citation.snippet,
             kind="memory",
+            author_id=citation.author_id,
+            author_name=citation.author_name,
+            created_at=citation.created_at,
         )
         self._sources.append(source)
         self._by_ref[ref] = source
         if citation.url:
             self._by_url[citation.url] = source
+        return source
 
 
 def fact_source_urls(record: FactRecord) -> tuple[str, ...]:

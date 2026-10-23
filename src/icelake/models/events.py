@@ -32,12 +32,18 @@ class MessageEvent(FrozenModel):
     reply_to_message_id: str | None = None
     thread_parent_id: str | None = None
     edited: bool = False
+    edited_at: datetime | None = None
     metadata: Mapping[str, str] = Field(default_factory=dict)
 
     @field_validator("created_at")
     @classmethod
     def _aware_utc(cls, value: datetime) -> datetime:
         return ensure_aware(value)
+
+    @field_validator("edited_at")
+    @classmethod
+    def _edited_aware(cls, value: datetime | None) -> datetime | None:
+        return ensure_aware(value) if value else None
 
     @field_validator("metadata")
     @classmethod

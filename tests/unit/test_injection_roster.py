@@ -66,7 +66,7 @@ class TestInjectionBuilder:
         )
         assert "CURRENT ASKER" in block.upper()
         assert "REFERENCED USER" in block
-        assert "a rival gamer" in block
+        assert "a rival gamer" not in block
         assert "- likes building keyboards" in block
         assert len(citations) == 0  # no real source refs → plain bullets, no citations
 

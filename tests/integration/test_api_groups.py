@@ -81,14 +81,16 @@ class TestFactsApi:
             guild_id="g1", subject_id="u1", text="keeps a sourdough starter"
         )
         await client.facts.reinforce(fact.id, guild_id="g1")
-        await client.facts.update(fact.id, guild_id="g1", text="keeps two starters", reason="probe")
+        corrected = await client.facts.update(
+            fact.id, guild_id="g1", text="keeps two starters", reason="probe"
+        )
         await client.facts.forget(fact.id, guild_id="g1", reason="done")
         await asyncio.sleep(0)  # handlers dispatch via loop.call_soon
         committed = [e for e in fired if isinstance(e, FactCommitted)]
         superseded = [e for e in fired if isinstance(e, FactSupersededEvent)]
         assert [e.was_reinforcement for e in committed] == [False, True]
         assert [(e.old_fact_id, e.new_fact_id) for e in superseded] == [
-            (fact.id, fact.id),
+            (fact.id, corrected.id),
             (fact.id, None),
         ]
         await client.close()

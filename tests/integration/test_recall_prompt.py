@@ -185,7 +185,7 @@ class TestPromptContext:
             reply = next(sf.fact.text for sf in ctx.facts if sf.fact.id == citation.fact_id)
             set_ = Citations.from_prompt_context(ctx)
             cited = await client.cite(reply, set_)
-            assert citation.url in cited.text
+            assert not cited.sources  # A synthesized fact is not its own evidence.
         usage = ctx.usage
         assert usage.prompt_tokens > 0
         await client.close()

@@ -149,7 +149,7 @@ async def _verify_candidates(
                 continue
             candidate_id = len(candidates)
             candidates.append(
-                CitationCandidate(id=candidate_id, claim=claim, evidence=source.excerpt[:4000])
+                CitationCandidate(id=candidate_id, claim=claim, evidence=source.evidence[:4000])
             )
             bindings[candidate_id] = (index, source)
     if not candidates:

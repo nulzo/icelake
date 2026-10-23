@@ -18,6 +18,11 @@ DEAD = "dead"
 def message_to_doc(message: StoredMessage) -> dict[str, Any]:
     return {
         "_id": message.message_id,
+        "source_message_id": message.source_message_id,
+        "source_revision": message.source_revision,
+        "source_created_at": message.source_created_at.isoformat()
+        if message.source_created_at
+        else None,
         "guild_id": message.guild_id,
         "channel_id": message.channel_id,
         "author_id": message.author_id,
@@ -38,6 +43,11 @@ def message_to_doc(message: StoredMessage) -> dict[str, Any]:
 def doc_to_message(doc: dict[str, Any]) -> StoredMessage:
     return StoredMessage(
         message_id=doc["_id"],
+        source_message_id=doc.get("source_message_id", ""),
+        source_revision=doc.get("source_revision", ""),
+        source_created_at=datetime.fromisoformat(doc["source_created_at"])
+        if doc.get("source_created_at")
+        else None,
         guild_id=doc["guild_id"],
         channel_id=doc.get("channel_id", ""),
         author_id=doc["author_id"],

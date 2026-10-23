@@ -96,7 +96,7 @@ class ReconcileDecision(FrozenModel):
     kind: ReconcileKind
     candidate_index: int = Field(default=0, ge=0)
     target_id: str | None = None
-    text: str | None = None
+    text: str | None = Field(default=None, min_length=1, max_length=400)
     confidence: float = Field(default=0.8, ge=0.0, le=1.0)
     reason: str = ""
 

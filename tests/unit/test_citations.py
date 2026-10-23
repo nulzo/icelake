@@ -34,7 +34,7 @@ def _fact(fact_id: str, text: str) -> ScoredFact:
 
 
 def _memory() -> Citations:
-    return Citations([_citation("mem:1")], facts=[_fact("fct_1", "klim likes mayo")])
+    return Citations([_citation("mem:1").model_copy(update={"snippet": "klim likes mayo"})])
 
 
 def _attribution(*claims: AttributedClaim) -> ReplyAttribution:
@@ -44,7 +44,7 @@ def _attribution(*claims: AttributedClaim) -> ReplyAttribution:
 # --- closed set -------------------------------------------------------------
 
 
-def test_from_prompt_context_seeds_memory_set_with_fact_text() -> None:
+def test_from_prompt_context_preserves_original_evidence() -> None:
     ctx = PromptContext(
         injection_block="...",
         facts=(_fact("fct_1", "klim likes mayo"),),
@@ -52,8 +52,8 @@ def test_from_prompt_context_seeds_memory_set_with_fact_text() -> None:
     )
     reg = Citations.from_prompt_context(ctx)
     assert [source.ref for source in reg.sources] == ["mem:1"]
-    # The attributor must see the fact statement the answer model saw.
-    assert reg.sources[0].excerpt == "klim likes mayo"
+    # A synthesized fact must never replace the original evidence.
+    assert reg.sources[0].excerpt == "source message"
     assert reg.sources[0].kind == "memory"
 
 

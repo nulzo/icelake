@@ -207,7 +207,7 @@ class TestInjectionCitations:
         )
         assert len(citations) == 1
 
-    def test_summary_only_section_renders(self) -> None:
+    def test_unbound_summary_is_not_injected(self) -> None:
         builder = InjectionBuilder()
         block, _citations, _trimmed = builder.build(
             asker_id=BOB,
@@ -216,7 +216,8 @@ class TestInjectionCitations:
             token_budget=5_000,
             guild_id=GUILD,
         )
-        assert "Summary:" in block
+        assert "Summary:" not in block
+        assert "a long digest" not in block
 
     def test_snippet_truncates_long_text(self) -> None:
         long_text = "x" * 500

@@ -523,5 +523,5 @@ class TestServerFactDedupAndCitations:
         reply = fact.text
         set_ = Citations.from_prompt_context(ctx)
         cited = await client.cite(reply, set_)
-        assert "discord.com/channels/" in cited.text
+        assert not cited.sources  # Synthesized prose is not a verbatim original statement.
         await client.close()

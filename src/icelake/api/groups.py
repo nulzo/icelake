@@ -27,6 +27,7 @@ from icelake.models.graph import (
 )
 from icelake.models.identity import AliasRecord, AliasSource, Resolution
 from icelake.models.recovery import ProjectionJob
+from icelake.permissions import Audience, AudienceGate
 from icelake.ports.backup import BackupProvider
 from icelake.ports.queue import IngestQueue
 from icelake.ports.store import MemoryStore, NodeRef
@@ -122,7 +123,19 @@ class IdentityApi:
         """Strongest known alias for operator-facing labels (None if unknown)."""
         from icelake.identity.aliases import strongest_alias
 
-        return strongest_alias(await self._store.aliases_for_user(guild_id, user_id))
+        records = await self._store.aliases_for_user(guild_id, user_id)
+        return strongest_alias(
+            tuple(
+                r
+                for r in records
+                if r.source
+                in {
+                    AliasSource.DISCORD_USERNAME,
+                    AliasSource.DISPLAY_NAME,
+                    AliasSource.BACKFILL,
+                }
+            )
+        )
 
 
 class GraphApi:
@@ -134,10 +147,29 @@ class GraphApi:
         store: MemoryStore,
         startup_gate: Callable[[], Coroutine[Any, Any, None]] | None = None,
         subject_gate: SubjectGate | None = None,
+        audience_gate: AudienceGate | None = None,
+        audience: Audience | None = None,
     ) -> None:
+        self._audience_gate = audience_gate or AudienceGate()
+        self._audience = audience
         self._store = store
         self._gate = startup_gate or _noop_gate
         self._subject_gate = subject_gate or SubjectGate(BotGuard(), ConsentPolicy(store))
+
+    def for_audience(self, audience: Audience) -> GraphApi:
+        """Create a request-scoped graph view for public output.
+
+        Every traversed edge must have fully visible evidence. Aggregated edges
+        mixing private and public sources are withheld, including their weights.
+        No mutable request scope is shared between concurrent turns.
+        """
+        return GraphApi(
+            store=self._store,
+            startup_gate=self._gate,
+            subject_gate=self._subject_gate,
+            audience_gate=self._audience_gate,
+            audience=audience,
+        )
 
     async def _collapse(
         self, guild_id: str, edges: tuple[RelationEdge, ...]
@@ -147,6 +179,8 @@ class GraphApi:
         edges = collapse_edges(edges, await self._store.entities_linked_to_users(guild_id))
         evidence_ids = tuple(dict.fromkeys(fid for edge in edges for fid in edge.evidence_fact_ids))
         records = await self._store.get_facts(guild_id, evidence_ids) if evidence_ids else ()
+        if self._audience is not None:
+            records = await self._audience_gate.filter(guild_id, self._audience, records)
         participants = {uid for record in records for uid in fact_participants(record)}
         participants.update(
             uid
@@ -165,7 +199,12 @@ class GraphApi:
             for edge in edges
             if (edge.src_type is not NodeType.USER or edge.src_id in allowed)
             and (edge.dst_type is not NodeType.USER or edge.dst_id in allowed)
-            and (not edge.evidence_fact_ids or eligible.intersection(edge.evidence_fact_ids))
+            and (
+                bool(edge.evidence_fact_ids) and set(edge.evidence_fact_ids).issubset(eligible)
+                if self._audience is not None
+                else not edge.evidence_fact_ids
+                or bool(eligible.intersection(edge.evidence_fact_ids))
+            )
         )
 
     async def _incident(
@@ -366,6 +405,8 @@ class GraphApi:
         records = await self._subject_gate.filter_records(
             guild_id, tuple(record for _row, record in linked_rows if record.is_active)
         )
+        if self._audience is not None:
+            records = await self._audience_gate.filter(guild_id, self._audience, records)
         mentioned = tuple(
             dict.fromkeys(
                 user_id

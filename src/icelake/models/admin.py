@@ -139,6 +139,7 @@ class MeterSnapshot(FrozenModel):
     library's own keys always match a :class:`MeterPurpose` value.
     """
 
+    counters: Mapping[str, float] = {}
     calls: Mapping[str, int] = {}
     prompt_tokens: Mapping[str, int] = {}
     completion_tokens: Mapping[str, int] = {}

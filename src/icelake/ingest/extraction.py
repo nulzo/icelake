@@ -11,7 +11,7 @@ from icelake.ingest.gates import (
     GateDecision,
     confidence_gate,
     ephemeral_share_gate,
-    plagiarism_gate,
+    subject_frame_gate,
     text_hygiene_gate,
 )
 from icelake.ingest.roster import Roster
@@ -124,9 +124,9 @@ class FactExtractor:
             for index, content in enumerate((content for _, content in messages), 1)
             if index in set(operation.source_message_indexes)
         )
-        plagiarism = plagiarism_gate(operation.text, source_texts)
-        if not plagiarism.allowed:
-            return plagiarism
+        frame = subject_frame_gate(operation.text)
+        if not frame.allowed:
+            return frame
         conf = confidence_gate(operation.confidence, self._config.min_confidence, operation.text)
         if not conf.allowed:
             return conf

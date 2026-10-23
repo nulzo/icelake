@@ -11,6 +11,8 @@ import asyncio
 import logging
 import re
 from collections.abc import Iterable
+from datetime import datetime
+from hashlib import sha256
 from typing import TypedDict, Unpack
 
 from icelake.adapters.embedders import build_embedder
@@ -18,11 +20,11 @@ from icelake.api.classify import CommandClassifier, UserMemoryCommand
 from icelake.api.events import EventBus
 from icelake.api.facts_api import FactsApi
 from icelake.api.groups import AdminApi, GraphApi, IdentityApi
-from icelake.attribution import AttributedReply, attribute
+from icelake.attribution import AttributedReply, ReplyAttribution, attribute
 from icelake.citations import Citations
 from icelake.config import MemoryConfig, StorageBackend
 from icelake.consolidation.service import ConsolidationService
-from icelake.errors import ConfigError, StorageUnavailableError
+from icelake.errors import ConfigError
 from icelake.identity.aliases import strongest_alias
 from icelake.identity.guards import BotGuard, ConsentPolicy, SubjectGate
 from icelake.ingest.pipeline import SERVER_SUBJECT_KEY, IngestPipeline
@@ -42,7 +44,7 @@ from icelake.models.events import (
     ObserveStatus,
     RejectReason,
 )
-from icelake.models.facts import AttributionType
+from icelake.models.facts import AttributionType, FactRecord, SourceRef
 from icelake.models.identity import AliasSource
 from icelake.models.recovery import RecoveryReport
 from icelake.models.retrieval import (
@@ -334,7 +336,10 @@ class DiscordMemory:
         )
         self.identity = IdentityApi(self._store, startup_gate=_group_gate)
         self.graph = GraphApi(
-            store=self._store, startup_gate=_group_gate, subject_gate=self._subject_gate
+            store=self._store,
+            startup_gate=_group_gate,
+            subject_gate=self._subject_gate,
+            audience_gate=self._audience_gate,
         )
         self.admin = AdminApi(
             self._store, startup_gate=_group_gate, queue=self._queue, vectors=self._vectors
@@ -452,9 +457,8 @@ class DiscordMemory:
             return _dropped_observe(event, ObserveStatus.REJECTED, RejectReason.STORAGE_UNAVAILABLE)
         try:
             return await self._observe_inner(event)
-        except StorageUnavailableError:
-            # Expected after close(); a listener must never see this raise.
-            log.info("observe on closed/unavailable storage -> rejected receipt")
+        except Exception:
+            log.warning("observation persistence failed; retry the input", exc_info=True)
             return _dropped_observe(event, ObserveStatus.REJECTED, RejectReason.STORAGE_UNAVAILABLE)
 
     async def _observe_inner(self, event: MessageEvent) -> ObserveReceipt:
@@ -468,6 +472,18 @@ class DiscordMemory:
         # 2. Consent (policy decision).
         if await self._subject_gate.allows(event.guild_id, event.author_id) is False:
             return _dropped_observe(event, ObserveStatus.IGNORED, IgnoreReason.OPTED_OUT)
+
+        revision = ""
+        if event.edited_at is not None:
+            from icelake.api.sources import SourceRevision, invalidate_source
+
+            revision = sha256((event.edited_at.isoformat() + event.content).encode()).hexdigest()
+            await invalidate_source(
+                self._store,
+                event.guild_id,
+                event.message_id,
+                SourceRevision(revision=revision, changed_at=event.edited_at),
+            )
 
         # 3. Content quality gates.
         if not event.content.strip() or len(event.content.strip()) < observe_cfg.min_message_chars:
@@ -492,13 +508,16 @@ class DiscordMemory:
             tuple(dict.fromkeys(participants)),
         )
         message = StoredMessage(
-            message_id=event.message_id,
+            message_id=f"{event.message_id}@{revision}" if revision else event.message_id,
+            source_message_id=event.message_id,
+            source_revision=revision,
+            source_created_at=event.created_at,
             guild_id=event.guild_id,
             channel_id=event.channel_id,
             author_id=event.author_id,
             subject_key=event.author_id,
             content=stored_content,
-            created_at=event.created_at,
+            created_at=event.edited_at or event.created_at,
             author_username=event.author_username,
             author_display_name=event.author_display_name,
             author_is_bot=event.author_is_bot,
@@ -552,6 +571,24 @@ class DiscordMemory:
             if report.summary is not None:
                 processed += 1
         return processed
+
+    async def delete_source(
+        self,
+        guild_id: str,
+        message_id: str,
+        *,
+        deleted_at: datetime | None = None,
+    ) -> int:
+        """Retire memories citing a deleted message and fence queued observations."""
+        from icelake.api.sources import SourceRevision, invalidate_source
+
+        await self.ensure_started()
+        return await invalidate_source(
+            self._store,
+            guild_id,
+            message_id,
+            SourceRevision(revision="", changed_at=deleted_at or self._clock.now(), deleted=True),
+        )
 
     # -- retrieval ---------------------------------------------------------------
 
@@ -763,32 +800,10 @@ class DiscordMemory:
         ``weave=False`` returns structured spans for your own renderer.
         """
         await self.ensure_started()
-        if isinstance(source, PromptContext) and source.guild_id is not None:
-            records = await self._store.get_facts(
-                source.guild_id, tuple(sf.fact.id for sf in source.facts)
-            )
-            records = await self._subject_gate.filter_records(source.guild_id, records)
-            if source.audience is not None:
-                records = await self._audience_gate.filter(
-                    source.guild_id, source.audience, records
-                )
-            elif self.config.access.require_audience:
-                records = ()
-            current = {record.id: record for record in records}
-            allowed = {
-                sf.fact.id
-                for sf in source.facts
-                if sf.fact.id in current and current[sf.fact.id].version == sf.fact.version
-            }
-            source = source.model_copy(
-                update={
-                    "facts": tuple(sf for sf in source.facts if sf.fact.id in allowed),
-                    "citations": tuple(c for c in source.citations if c.fact_id in allowed),
-                }
-            )
         citations = (
             source if isinstance(source, Citations) else Citations.from_prompt_context(source)
         )
+        await self._revalidate_citations(citations)
         if not text.strip():
             return AttributedReply(text=text)
         attribution = await attribute(
@@ -798,11 +813,107 @@ class DiscordMemory:
             threshold=self.config.retrieval.citation_min_score,
             verifier=verifier,
         )
+        # Verification can await a provider. Recheck after it returns as well.
+        await self._revalidate_citations(citations)
+        valid = set(citations.sources)
+        attribution = ReplyAttribution(
+            claims=tuple(
+                claim.model_copy(update={"sources": tuple(s for s in claim.sources if s in valid)})
+                for claim in attribution.claims
+                if any(s in valid for s in claim.sources)
+            )
+        )
         return AttributedReply(
             text=citations.apply(text, attribution) if weave else text,
             claims=attribution.claims,
             sources=attribution.used,
         )
+
+    async def _revalidate_citations(self, citations: Citations) -> None:
+        allowed: set[tuple[int, str]] = set()
+        for index, context in enumerate(citations.contexts):
+            if context.guild_id is None:
+                continue
+            current = await self.visible_facts(
+                context.guild_id,
+                tuple(sf.fact.id for sf in context.facts),
+                audience=context.audience,
+            )
+            versions = {fact.id: fact.version for fact in current}
+            allowed.update(
+                (index, sf.fact.id)
+                for sf in context.facts
+                if versions.get(sf.fact.id) == sf.fact.version
+            )
+        citations.retain_memory(allowed)
+
+    async def visible_facts(
+        self,
+        guild_id: str,
+        fact_ids: tuple[str, ...],
+        *,
+        audience: Audience | None,
+        active_only: bool = True,
+    ) -> tuple[FactRecord, ...]:
+        """Read current evidence under consent, retention and destination permissions.
+
+        Use this for tool results and graph evidence; raw administration APIs are
+        not suitable for public replies. Missing audience fails closed by default.
+        """
+        await self.ensure_started()
+        if audience is None and self.config.access.require_audience:
+            return ()
+        records = await self._store.get_facts(guild_id, fact_ids)
+        records = await self._subject_gate.filter_records(guild_id, records)
+        if active_only:
+            records = tuple(r for r in records if r.is_active and r.is_valid_at(self._clock.now()))
+        if audience is not None:
+            records = await self._audience_gate.filter(guild_id, audience, records)
+        return records
+
+    async def visible_sources(
+        self,
+        guild_id: str,
+        sources: tuple[SourceRef, ...],
+        *,
+        audience: Audience,
+    ) -> tuple[SourceRef, ...]:
+        """Authorize trusted transport message snapshots under consent and current ACLs.
+
+        The caller must read snapshots from its authoritative archive and recheck
+        message revisions before publication. Never accept these from model output.
+        """
+        await self.ensure_started()
+        from icelake.api.sources import source_is_current
+
+        sources = tuple(
+            [
+                ref
+                for ref in sources
+                if ref.message_id
+                and await source_is_current(self._store, guild_id, ref.message_id, ref.revision)
+            ]
+        )
+        records = tuple(
+            FactRecord(
+                id=str(index),
+                guild_id=guild_id,
+                subject_id=ref.author_id,
+                text=ref.content_snippet,
+                citations=(ref,),
+            )
+            for index, ref in enumerate(sources)
+            if ref.guild_id == guild_id
+        )
+        records = await self._subject_gate.filter_records(guild_id, records)
+        records = await self._audience_gate.filter(guild_id, audience, records)
+        return tuple(record.citations[0] for record in records)
+
+    def citation_verifier(self, *, guild_id: str) -> CitationVerifier | None:
+        """Build bounded support verification using the configured, metered LLM."""
+        from icelake.adapters.citation_verifier import LlmCitationVerifier
+
+        return LlmCitationVerifier(self._small_llm, guild_id=guild_id) if self._small_llm else None
 
     # -- misc surface -------------------------------------------------------------
 

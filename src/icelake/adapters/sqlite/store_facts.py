@@ -314,6 +314,21 @@ class FactsMixin:
         )
         return await self.get_fact(guild_id, fact_id)
 
+    async def facts_for_source(
+        self,
+        guild_id: str,
+        message_id: str,
+        *,
+        limit: int = 100,
+    ) -> tuple[FactRecord, ...]:
+        rows = await self._db.query(
+            "SELECT * FROM dm_facts WHERE guild_id=? AND valid_until IS NULL "
+            "AND superseded_by_id IS NULL AND EXISTS (SELECT 1 FROM json_each(citations) "
+            "WHERE json_extract(value, '$.message_id')=?) LIMIT ?",
+            (guild_id, message_id, limit),
+        )
+        return tuple(record_from_row(row) for row in rows)
+
     async def list_facts(
         self,
         guild_id: str,

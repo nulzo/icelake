@@ -1,12 +1,15 @@
 """SQLite VectorIndex: brute-force cosine over guild-scoped candidates.
 
-O(candidates) per query with candidates capped by ``candidate_cap`` — appropriate for
-single-node deployments; swap the Postgres/pgvector adapter for ANN at scale. The port
-keeps this swap invisible.
+Scoped exact search in bounded working batches, without an age cutoff. Scoring
+runs off the event loop; the recall service applies a deadline. Deployments exceeding
+that measured budget can replace the VectorIndex port with an ANN adapter.
 """
 
 from __future__ import annotations
 
+import asyncio
+import heapq
+import sqlite3
 import struct
 
 from icelake.adapters.sqlite.connection import SqliteConnection
@@ -101,20 +104,21 @@ class SqliteVectorIndex:
             placeholders = ",".join("?" for _ in subject_ids)
             where.append(f"(subject_id IN ({placeholders}) OR subject_id IS NULL)")
             params.extend(subject_ids)
-        # Recency-biased slice: an arbitrary unordered LIMIT slice silently
-        # degraded recall quality once a guild exceeded the candidate cap.
-        rows = await self._db.query(
-            "SELECT fact_id, embedding FROM dm_vectors "
-            f"WHERE {' AND '.join(where)} ORDER BY fact_id DESC LIMIT ?",
-            (*params, candidate_cap),
-        )
-        scored = [
-            VectorHit(id=row["fact_id"], score=cosine(embedding, _unpack(row["embedding"])))
-            for row in rows
-        ]
-        scored = [hit for hit in scored if hit.score > 0.0]
-        scored.sort(key=lambda hit: -hit.score)
-        return tuple(scored[:limit])
+        batch_size = max(1, min(candidate_cap, 512))
+        after = ""
+        best: list[VectorHit] = []
+        while True:
+            rows = await self._db.query(
+                "SELECT fact_id, embedding FROM dm_vectors "
+                f"WHERE {' AND '.join(where)} AND fact_id > ? ORDER BY fact_id LIMIT ?",
+                (*params, after, batch_size),
+            )
+            if not rows:
+                break
+            scored = await asyncio.to_thread(_score_batch, embedding, rows, limit)
+            best = heapq.nlargest(limit, (*best, *scored), key=lambda hit: hit.score)
+            after = rows[-1]["fact_id"]
+        return tuple(best)
 
     async def count(self, guild_id: str) -> int:
         row = await self._db.query_one(
@@ -122,6 +126,22 @@ class SqliteVectorIndex:
             (guild_id,),
         )
         return int(row["n"]) if row is not None else 0
+
+
+def _score_batch(
+    embedding: tuple[float, ...],
+    rows: list[sqlite3.Row],
+    limit: int,
+) -> list[VectorHit]:
+    return heapq.nlargest(
+        limit,
+        (
+            VectorHit(id=row["fact_id"], score=score)
+            for row in rows
+            if (score := cosine(embedding, _unpack(row["embedding"]))) > 0
+        ),
+        key=lambda hit: hit.score,
+    )
 
 
 __all__ = ["SqliteVectorIndex", "cosine"]
