@@ -1,7 +1,6 @@
 # Migrating to icelake 0.7
 
-The working release candidate is 0.7.2. This document does not imply a PyPI
-publication or Git tag.
+This guide covers the API, storage and worker changes in icelake 0.7.2.
 
 ## Storage and runtime
 
