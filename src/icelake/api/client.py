@@ -48,7 +48,9 @@ from icelake.models.facts import AttributionType, FactRecord, SourceRef
 from icelake.models.identity import AliasSource
 from icelake.models.recovery import RecoveryReport
 from icelake.models.retrieval import (
+    CHANNELS_DEFAULT,
     CHANNELS_DISCOVERY,
+    ChannelName,
     PromptContext,
     RecallQuery,
     RecallResult,
@@ -748,6 +750,15 @@ class DiscordMemory:
                 scope=Scope.SERVER,
                 top_k=_SERVER_BLOCK_FACTS,
                 max_per_subject=_SERVER_BLOCK_FACTS,
+                # The same query already failed in this turn. Keep local server
+                # recall, but do not repeat that provider failure. Later turns
+                # try normally; this has no process-wide failure cache.
+                channels=(
+                    CHANNELS_DEFAULT - {ChannelName.VECTOR}
+                    if ChannelName.VECTOR in result.degraded_channels
+                    else None
+                ),
+                use_reranker=RecallWarning.RERANKER_UNAVAILABLE not in result.warnings,
             )
         )
         warnings.extend((*result.warnings, *server_result.warnings))

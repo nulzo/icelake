@@ -113,6 +113,8 @@ class RecallQuery(FrozenModel):
     exclude_ids: tuple[str, ...] = ()
     top_k: int = 8
     max_per_subject: int = 4
+    #: Disable optional reranking after a failure earlier in the same turn.
+    use_reranker: bool = True
     min_score: float = 0.0
     channels: ChannelSet | None = None
     require_relevance: bool = False
@@ -155,6 +157,7 @@ class RecallWarning(StrEnum):
     IDENTITY_AMBIGUOUS = "identity_ambiguous"
     BUDGET_TRIMMED = "budget_trimmed"
     DEGRADED_CHANNEL = "degraded_channel"
+    RERANKER_UNAVAILABLE = "reranker_unavailable"
     SUBJECT_UNRESOLVED = "subject_unresolved"
 
 

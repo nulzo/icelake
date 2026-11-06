@@ -213,13 +213,14 @@ class TestRerankerDegrade:
             reranker=reranker,
             config=RetrievalConfig(),
         )
-        scored, scores = await service._apply_reranker(
+        scored, scores, failed = await service._apply_reranker(
             RecallQuery(guild_id=GUILD, text="table tennis"),
             [ghost, real],
             (_fact("plays table tennis", fact_id="fct_real"),),
         )
         assert reranker.calls[0][1] == ["plays table tennis"]
         assert scores == {"fct_real": 0.7}
+        assert not failed
         assert [item[0] for item in scored] == ["fct_real"]
 
     async def test_recall_uses_reranker_scores(self, make_client) -> None:

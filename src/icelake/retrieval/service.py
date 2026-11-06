@@ -182,11 +182,13 @@ class RecallService:
                 for row in scored
                 if (row[2][0] >= query.min_semantic_score or row[2][1] > 0 or row[2][2] > 0)
             ]
-        scored, rerank_scores = await self._apply_reranker(query, scored, pool_records)
+        scored, rerank_scores, rerank_failed = await self._apply_reranker(
+            query, scored, pool_records
+        )
         hop_paths: dict[str, tuple[str, ...]] = {}
         for out in outputs:
             hop_paths.update(out.hop_paths)
-        return await self._materialize(
+        result = await self._materialize(
             query,
             scored,
             degraded,
@@ -195,6 +197,11 @@ class RecallService:
             hop_paths=hop_paths,
             eligibility={} if self._reranker is not None and query.text else eligibility,
         )
+        if rerank_failed:
+            result = result.model_copy(
+                update={"warnings": (*result.warnings, RecallWarning.RERANKER_UNAVAILABLE)}
+            )
+        return result
 
     async def _eligible(
         self, query: RecallQuery, record: FactRecord, eligibility: dict[str, bool]
@@ -224,10 +231,10 @@ class RecallService:
         query: RecallQuery,
         scored: list[RerankResult],
         records: tuple[FactRecord, ...],
-    ) -> tuple[list[RerankResult], dict[str, float]]:
+    ) -> tuple[list[RerankResult], dict[str, float], bool]:
         """Optional L2 cross-encoder over the fused pool. Degrades to hybrid order."""
-        if self._reranker is None or not query.text or not scored:
-            return scored, {}
+        if not query.use_reranker or self._reranker is None or not query.text or not scored:
+            return scored, {}, False
         pool_size = min(self._config.reranker_pool_size, len(scored))
         pool = scored[:pool_size]
         record_by_id = {record.id: record for record in records}
@@ -236,14 +243,15 @@ class RecallService:
         aligned = [item for item in pool if item[0] in record_by_id]
         documents = [record_by_id[item[0]].text for item in aligned]
         if not documents:
-            return scored, {}
+            return scored, {}, False
         try:
-            scores = await self._reranker.score(query.text, documents)
+            async with asyncio.timeout(self._config.reranker.timeout_seconds):
+                scores = await self._reranker.score(query.text, documents)
             if len(scores) != len(aligned):
                 logger.warning(
                     "reranker returned %d scores for %d documents", len(scores), len(aligned)
                 )
-                return scored, {}
+                return scored, {}, True
             threshold = self._config.reranker_threshold
             reranked: list[tuple[float, RerankResult]] = []
             rerank_scores: dict[str, float] = {}
@@ -253,10 +261,14 @@ class RecallService:
                 reranked.append((rerank_score, item))
                 rerank_scores[item[0]] = rerank_score
             reranked.sort(key=lambda pair: pair[0], reverse=True)
-            return [item for _score, item in reranked] + scored[pool_size:], rerank_scores
-        except Exception:
-            logger.warning("reranker failed; degrading to hybrid order", exc_info=True)
-            return scored, {}
+            return [item for _score, item in reranked] + scored[pool_size:], rerank_scores, False
+        except Exception as exc:
+            logger.warning(
+                "reranker failed; degrading to hybrid order error=%s deadline_seconds=%s",
+                type(exc).__name__,
+                self._config.reranker.timeout_seconds,
+            )
+            return scored, {}, True
 
     def _strength_map(self, records: tuple[FactRecord, ...]) -> dict[str, float]:
         """Recency-aware strength: Ebbinghaus retention times log-scaled strength."""
@@ -369,7 +381,12 @@ class RecallService:
         degraded: list[ChannelName] = []
         for key, result in zip(keys, results, strict=True):
             if isinstance(result, BaseException):
-                logger.warning("channel %s raised", key, exc_info=result)
+                logger.warning(
+                    "channel %s raised error=%s deadline_seconds=%s",
+                    key,
+                    type(result).__name__,
+                    self._config.channel_timeout_seconds,
+                )
                 degraded.append(key)
                 continue
             outputs.append(result)
@@ -468,7 +485,7 @@ class RecallService:
 
         per_subject: dict[str, int] = {}
         facts: list[ScoredFact] = []
-        warnings: list[RecallWarning] = []
+        warnings = [RecallWarning.DEGRADED_CHANNEL] if degraded else []
         trimmed = False
         eligibility = eligibility if eligibility is not None else {}
         for fact_id in fact_ids:

@@ -56,7 +56,10 @@ class OpenAICompatReranker:
             raise ConfigError("openai reranker requires base_url and model")
         self._config = config
         self._base_url = config.base_url.rstrip("/")
-        self._client = httpx.AsyncClient(timeout=config.timeout_seconds)
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(config.timeout_seconds, connect=min(3.0, config.timeout_seconds)),
+            transport=httpx.AsyncHTTPTransport(retries=1),
+        )
 
     async def score(self, query: str, documents: Sequence[str]) -> tuple[float, ...]:
         if not documents:

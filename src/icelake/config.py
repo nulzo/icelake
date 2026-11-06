@@ -175,7 +175,7 @@ class RerankerConfig(FrozenModel):
     model: str | None = None
     base_url: str | None = None
     api_key: str | None = None
-    timeout_seconds: float = Field(default=1.5, gt=0)
+    timeout_seconds: float = Field(default=5.0, gt=0)
 
     @model_validator(mode="after")
     def _validate_openai_requirements(self) -> RerankerConfig:
@@ -334,7 +334,7 @@ class RetrievalConfig(FrozenModel):
     reranker_pool_size: int = Field(default=32, ge=1, le=200)
     #: Candidate-selection threshold when cite() receives a verifier.
     #: Similarity alone never attaches a citation. Exact restatements need no model.
-    channel_timeout_seconds: float = Field(default=3.0, gt=0, le=30)
+    channel_timeout_seconds: float = Field(default=8.0, gt=0, le=30)
     citation_min_score: float = Field(default=0.55, ge=0.0, le=1.0)
 
     @field_validator("reranker", mode="before")

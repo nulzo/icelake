@@ -11,6 +11,20 @@ of `security`, `removed`, `deprecated`, `added`, `changed`, `fixed`.
 
 <!-- towncrier release notes start -->
 
+## [0.7.11](https://github.com/nulzo/icelake/tree/v0.7.11) - 2026-11-06
+
+### Fixed
+
+- Allow eight seconds per retrieval channel and five seconds for optional reranking. Reranking now has an end-to-end deadline, including connection setup and retries.
+- Use HTTPX's single connection-setup retry for hosted embeddings and reranking; requests are not replayed after read/write failures.
+- Preserve local memories and expose typed degradation warnings when a search or ranking stage fails. Logs include the exception type and deadline.
+- During prompt construction, skip vector/reranker stages that already failed in the member lookup when retrieving server context. Later turns retry normally; no shared failure cache or additional storage is introduced.
+
+### Added
+
+- `RecallQuery.use_reranker` allows callers to skip optional reranking for a particular lookup. `RecallWarning.RERANKER_UNAVAILABLE` distinguishes ranking failures from search-channel degradation.
+- Regressions cover independent and simultaneous provider failures/timeouts, local memory and name preservation, and recovery on the next turn.
+
 ## [0.7.10](https://github.com/nulzo/icelake/tree/v0.7.10) - 2026-11-06
 
 ### Fixed

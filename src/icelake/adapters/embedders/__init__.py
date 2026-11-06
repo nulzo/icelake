@@ -77,7 +77,10 @@ class OpenAICompatEmbedder:
         if not config.base_url or not config.model:
             raise ConfigError("openai embeddings require base_url and model")
         self._config = config
-        self._client = httpx.AsyncClient(timeout=30.0)
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, connect=5.0),
+            transport=httpx.AsyncHTTPTransport(retries=1),
+        )
 
     @property
     def dimensions(self) -> int:
