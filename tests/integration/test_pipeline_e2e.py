@@ -122,7 +122,8 @@ class TestExtractionEndToEnd:
         # The verified account name now survives the display-name observation.
         identity = await client.identity.resolve("500000000000000001", "alice_u")
         assert identity.resolved.user_id == "100000000000000001"
-        assert result.facts[0].fact.attribution.speaker_name == "alice"
+        assert result.facts[0].fact.attribution.speaker_name == "alice_u"
+        assert result.facts[0].fact.citations[0].author_name == "alice"
         await client.close()
 
     async def test_bot_mentions_are_not_linked_to_facts(
