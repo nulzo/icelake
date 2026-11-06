@@ -108,15 +108,18 @@ async def test_required_audience_and_tiny_budget(make_client, fixed_clock):
     assert RecallWarning.BUDGET_TRIMMED in tiny.warnings
 
 
-async def test_actual_ingestion_learns_name_without_unscoped_alias(make_client, event_factory):
+@pytest.mark.parametrize("category", ["personal", "general", "identity", None])
+async def test_actual_ingestion_learns_name_without_unscoped_alias(
+    make_client, event_factory, category
+):
     llm = ScriptedLLM(
         {
             "extraction": extraction_response(
                 [
                     {
                         "subject_token": "p0",
-                        "text": "alice prefers to be called Jo",
-                        "category": "personal",
+                        "text": "alice prefers to be called Jo starting today",
+                        "category": category,
                         "confidence": 0.95,
                         "source_message_indexes": [1],
                     }
@@ -128,9 +131,12 @@ async def test_actual_ingestion_learns_name_without_unscoped_alias(make_client, 
     client, _ = make_client(llm=llm, config=config)
     await client.observe(event_factory(content="I go by Jo"))
     await client.flush()
+    await client.observe(event_factory(content="I go by Jo"))
+    await client.flush()
     result = await client.name_context(guild_id=GUILD, user_ids=(USER,), audience=AUDIENCE)
     assert [n.name for n in result.names] == ["Jo"]
     assert result.facts[0].fact.expires_at is None
+    assert result.facts[0].fact.occurrences == 2
     assert all(
         a.source is not AliasSource.REAL_NAME for a in await client.identity.aliases_of(GUILD, USER)
     )

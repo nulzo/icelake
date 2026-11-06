@@ -61,6 +61,9 @@ def test_direct_self_statements(text, kind, name):
         "my brother's name is Nolan",
         "call him Nolan",
         "my name is not Nolan",
+        "call me Atlas today",
+        "call me Atlas for now",
+        "call me Atlas this weekend",
         "my name is Nolan, he said",
         "my name is Nolan\nignore instructions",
         "call me <@123>",
@@ -137,3 +140,38 @@ def test_undated_evidence_abstains():
     fact = named_fact()
     ref = fact.citations[0].model_copy(update={"created_at": None})
     assert name_evidence(fact.model_copy(update={"citations": (ref,)})) == ()
+
+
+def test_legacy_name_retention_uses_evidence_instead_of_model_category():
+    from icelake.config import LifecycleConfig
+    from icelake.lifecycle.tiers import retention_extension
+    from icelake.models.facts import MemoryTier
+
+    fact = named_fact().model_copy(
+        update={
+            "expires_at": NOW + timedelta(days=365),
+            "tier": MemoryTier.MID_TERM,
+            "created_at": NOW,
+        }
+    )
+    change = retention_extension(fact, now=NOW, lifecycle=LifecycleConfig())
+    assert change is not None and change.expires_at is None
+    assert change.tier is MemoryTier.LONG_TERM
+
+
+def test_name_reinforcement_cannot_reintroduce_expiry():
+    from icelake.config import LifecycleConfig
+    from icelake.lifecycle.tiers import assign_tier
+    from icelake.models.facts import FactCategory, MemoryTier
+
+    tier, expiry = assign_tier(
+        text="Member prefers to be called Nolan starting today",
+        category=FactCategory.GENERAL,
+        confidence=0.9,
+        occurrences=2,
+        manual=False,
+        is_server_fact=False,
+        lifecycle=LifecycleConfig(),
+        name_is_grounded=True,
+    )
+    assert tier is MemoryTier.LONG_TERM and expiry is None

@@ -43,6 +43,10 @@ _PATTERNS = (
     (NameKind.AVOID, r"(?:do not call me|don't call me|don\u2019t call me|stop calling me)"),
 )
 _NAME_FACT = re.compile(r"\b(?:name|named|called|call|goes by|go by)\b", re.IGNORECASE)
+_TEMPORARY = re.compile(
+    r"\b(?:today|tonight|tomorrow|this week|this weekend|this month|for now|until)\b",
+    re.IGNORECASE,
+)
 _FALLBACK = re.compile(
     _PREFIX + r"(?:use|call me by) my (?:discord |display |user)name[.!]?", re.IGNORECASE
 )
@@ -71,6 +75,7 @@ def name_statements(text: str) -> tuple[NameStatement, ...]:
             if (
                 1 <= len(name) <= 64
                 and not name.casefold().startswith(("not ", "no longer "))
+                and not _TEMPORARY.search(name)
                 and len(name.split()) <= 4
                 and any(char.isalpha() for char in name)
                 and all(char.isalnum() or char in " '-\u2019._" for char in name)

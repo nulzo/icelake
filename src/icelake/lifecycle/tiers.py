@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timedelta
 
 from icelake.config import LifecycleConfig
+from icelake.identity.names import name_evidence
 from icelake.models.common import FrozenModel, ensure_aware
 from icelake.models.facts import AttributionType, FactCategory, FactRecord, MemoryTier
 
@@ -42,6 +43,7 @@ def assign_tier(
     manual: bool,
     is_server_fact: bool,
     lifecycle: LifecycleConfig,
+    name_is_grounded: bool = False,
 ) -> tuple[MemoryTier, timedelta | None]:
     """Pure tier assignment. Returns ``(tier, expires_after)``; ``None`` = never expires.
 
@@ -56,13 +58,18 @@ def assign_tier(
     if manual:
         return MemoryTier.CORE, None
 
+    # A direct, sourced identity preference must not expire because extraction
+    # omitted/misclassified its category or described its start as "today".
+    if name_is_grounded:
+        category = FactCategory.PERSONAL
+
     lowered_confidence = confidence
     if is_server_fact and category in {FactCategory.RULES, FactCategory.CULTURE}:
         if lowered_confidence >= 0.85:
             return MemoryTier.CORE, None
         return MemoryTier.LONG_TERM, _long_term_expiry(lifecycle)
 
-    horizon = _mentions_horizon(text, lifecycle.short_term_days)
+    horizon = None if name_is_grounded else _mentions_horizon(text, lifecycle.short_term_days)
     if horizon is not None:
         return MemoryTier.SHORT_TERM, timedelta(days=horizon)
 
@@ -117,6 +124,7 @@ def retention_extension(
         manual=False,
         is_server_fact=record.is_server_fact,
         lifecycle=lifecycle,
+        name_is_grounded=bool(name_evidence(record)),
     )
     if tier is MemoryTier.SHORT_TERM:
         return None

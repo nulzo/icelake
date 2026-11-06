@@ -11,6 +11,17 @@ of `security`, `removed`, `deprecated`, `added`, `changed`, `fixed`.
 
 <!-- towncrier release notes start -->
 
+## [0.7.6](https://github.com/nulzo/icelake/tree/v0.7.6) - 2026-11-06
+
+### Fixed
+
+- Determine name-preference retention from grounded self-statements even when
+  extraction omits or misclassifies the fact category. Names use durable retention
+  on insertion and reinforcement; active legacy name records can be extended by
+  the existing retention migration. Explicitly temporary nicknames abstain from
+  this durable projection. This fixes a failure found with Omni's real model on
+  the Raspberry Pi after 0.7.5's deterministic tests passed.
+
 ## [0.7.5](https://github.com/nulzo/icelake/tree/v0.7.5) - 2026-11-06
 
 ### Added

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from icelake.config import MemoryConfig
+from icelake.identity.names import name_evidence
 from icelake.ingest.gates import normalize_text
 from icelake.lifecycle.strength import reinforced_strength
 from icelake.lifecycle.tiers import assign_tier
@@ -88,15 +89,6 @@ class FactCommitter:
         stamped = dict(governance) if governance is not None else {}
         if subject_id is not None and subject_id not in stamped:
             stamped[subject_id] = (await self._store.consent_state(guild_id, subject_id)).generation
-        tier, expires_after = assign_tier(
-            text=text,
-            category=proposal.category,
-            confidence=proposal.confidence,
-            occurrences=1,
-            manual=False,
-            is_server_fact=subject_id is None,
-            lifecycle=self._config.lifecycle,
-        )
         record = FactRecord(
             id=self._id_gen.new_id("fct"),
             guild_id=guild_id,
@@ -105,7 +97,6 @@ class FactCommitter:
             text_normalized=normalize_text(text),
             category=proposal.category,
             confidence=proposal.confidence,
-            tier=tier,
             scope=FactScope.SERVER if subject_id is None else FactScope.USER,
             attribution=Attribution(
                 type=AttributionType.THIRD_PARTY if third_party else AttributionType.SELF,
@@ -118,13 +109,24 @@ class FactCommitter:
             updated_at=now,
             observed_at=now,
             valid_from=now,
-            expires_at=(now + expires_after) if expires_after is not None else None,
             supersedes_id=supersedes_id,
             citations=source_refs,
             governance=stamped,
         )
+        tier, expires_after = assign_tier(
+            text=text,
+            category=proposal.category,
+            confidence=proposal.confidence,
+            occurrences=1,
+            manual=False,
+            is_server_fact=subject_id is None,
+            lifecycle=self._config.lifecycle,
+            name_is_grounded=bool(name_evidence(record)),
+        )
         record = record.model_copy(
             update={
+                "tier": tier,
+                "expires_at": (now + expires_after) if expires_after is not None else None,
                 "related_user_ids": tuple(
                     dict.fromkeys(
                         uid
@@ -187,6 +189,7 @@ class FactCommitter:
             manual=existing.attribution.type is AttributionType.MANUAL,
             is_server_fact=existing.is_server_fact,
             lifecycle=self._config.lifecycle,
+            name_is_grounded=bool(name_evidence(existing)),
         )
         updated = await self._store.reinforce_fact(
             existing.guild_id,
