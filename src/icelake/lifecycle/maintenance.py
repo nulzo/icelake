@@ -98,11 +98,15 @@ class MaintenanceService:
 
     async def _sweep(self, guild_id: str, now: datetime) -> MaintenanceReport:
         expired = await self._store.sweep_expired(guild_id, now)
-        forgotten = await self._store.apply_forgetting(
-            guild_id,
-            now=now,
-            retention_floor=self._config.lifecycle.forget_retention_floor,
-            stability_days=self._config.lifecycle.decay_stability_days,
+        forgotten = (
+            await self._store.apply_forgetting(
+                guild_id,
+                now=now,
+                retention_floor=self._config.lifecycle.forget_retention_floor,
+                stability_days=self._config.lifecycle.decay_stability_days,
+            )
+            if self._config.lifecycle.forget_retention_floor > 0
+            else 0
         )
         pruned = await self._store.prune_to_caps(
             guild_id,

@@ -110,3 +110,60 @@ async def test_citation_rechecks_purge_and_permission():
         await m.admin.purge_user("g", "u", dry_run=False)
         reply = await m.cite("likes coffee", context)
         assert not reply.sources
+
+
+@pytest.mark.parametrize("mode", ["denied", "error", "timeout"])
+async def test_access_failure_has_diagnostics_and_never_looks_like_empty_storage(mode):
+    import asyncio
+
+    from icelake.models.retrieval import RecallWarning
+    from icelake.permissions import AccessStatus, MemoryAccessError
+
+    class Policy:
+        async def allowed_channels(self, guild_id, audience, source_channels):
+            if mode == "error":
+                raise OSError("offline")
+            if mode == "timeout":
+                await asyncio.sleep(1)
+            return frozenset()
+
+    config = make_config(access={"require_audience": True, "timeout_seconds": 0.01})
+    audience = Audience(channel_id="public", requester_id="u")
+    async with DiscordMemory(config, channel_authorizer=Policy()) as memory:
+        record = fact("f", "public").model_copy(update={"subject_id": "123456789012345678"})
+        await memory.identity.register_alias("g", "123456789012345678", "Alice")
+        await memory._store.insert_fact(record)
+        expected = AccessStatus.RESTRICTED if mode == "denied" else AccessStatus.UNAVAILABLE
+        with pytest.raises(MemoryAccessError) as error:
+            await memory.visible_facts("g", ("f",), audience=audience, strict=True)
+        assert error.value.status is expected
+        assert not await memory.visible_facts("g", ("f",), audience=audience)
+        with pytest.raises(MemoryAccessError):
+            await memory.visible_sources("g", record.citations, audience=audience, strict=True)
+        result = await memory.recall(
+            RecallQuery(guild_id="g", scope=Scope.GUILD, audience=audience)
+        )
+        warning = (
+            RecallWarning.ACCESS_RESTRICTED
+            if mode == "denied"
+            else RecallWarning.ACCESS_UNAVAILABLE
+        )
+        assert result.warnings == (warning,)
+        context = await memory.prompt_context(
+            guild_id="g", asker_id="123456789012345678", audience=audience
+        )
+        assert warning in context.warnings
+        assert not context.facts
+        assert not result.facts
+        assert not await memory.visible_facts("g", ("absent",), audience=audience, strict=True)
+
+
+async def test_strict_missing_audience_and_unscoped_evidence_are_restricted():
+    from icelake.permissions import AccessStatus, MemoryAccessError
+
+    async with DiscordMemory(make_config(access={"require_audience": True})) as memory:
+        await memory._store.insert_fact(fact("f"))
+        for audience in (None, Audience(channel_id="public", requester_id="u")):
+            with pytest.raises(MemoryAccessError) as error:
+                await memory.visible_facts("g", ("f",), audience=audience, strict=True)
+            assert error.value.status is AccessStatus.RESTRICTED

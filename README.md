@@ -729,6 +729,25 @@ The same key returns the same fact without reinforcing it; conflicting reuse is
 rejected. A retry cannot recreate a fact erased after the original command.
 Without a key, repeated remember/reinforce calls intentionally count as new input.
 
+### Retention and learning
+
+Durable personal facts, preferences, interests, relationships and experiences
+have no automatic expiry by default. General observations last 365 days;
+explicit near-term plans retain short deadlines. Recency changes retrieval rank
+without deleting a quiet member's profile. Corrections, source deletion, consent
+and per-subject capacity limits still apply. Age-based retirement is opt-in via
+`lifecycle.forget_retention_floor`; `long_term_days=None` means no expiry.
+
+Existing stored deadlines are not silently rewritten. After a backup,
+`icelake.lifecycle.tiers.retention_extension` can plan extensions for active,
+unexpired automatic facts; apply with a version check. Deleted, expired and
+superseded memories are never revived by that helper.
+
+This follows the separation of evolving facts and retrieval in
+[Graphiti](https://help.getzep.com/graphiti/getting-started/welcome) and optional
+expiry in [Mem0](https://docs.mem0.ai/core-concepts/memory-operations/add).
+It is not an implementation-equivalence claim about proprietary assistants.
+
 ### Channel permissions
 
 `recall` and `prompt_context` now require an `Audience` by default. Missing context
@@ -741,9 +760,15 @@ the embedding application must authenticate the caller and authorize the audienc
 For Discord, `setup_discord_memory` installs `DiscordChannelAuthorizer`, which reads
 fresh roles, channel overwrites and membership through REST, checks private-thread
 membership, and abstains if history visibility cannot be proven for all readers.
-Any explicit history-denying overwrite causes conservative abstention. A custom
-`ChannelAuthorizer` can support broader, proven-safe cross-channel policies.
-Requests are timeout-bounded and API failures deny access. This uses discord.py's
+Role grants work even when `@everyone` has no history permission. Straightforward
+role policies need no member scan; otherwise the adapter checks a complete REST
+snapshot (at most 10,000 members, requiring the Members intent). Cross-channel
+reads require source access for every destination reader. Private thread audiences
+are conservatively bounded by their parent channel's readers.
+Requests are timeout-bounded and API failures deny access. Retrieval reports
+`ACCESS_RESTRICTED` or `ACCESS_UNAVAILABLE`; strict `visible_facts` and
+`visible_sources` calls raise `MemoryAccessError` instead of implying no memory
+exists. This uses discord.py's
 [channel permission calculation](https://discordpy.readthedocs.io/en/stable/api.html#discord.abc.GuildChannel.permissions_for).
 
 ```python

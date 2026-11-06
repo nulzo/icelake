@@ -58,7 +58,13 @@ from icelake.models.retrieval import (
     ScoredFact,
     discovery_pairs,
 )
-from icelake.permissions import Audience, AudienceGate, ChannelAuthorizer
+from icelake.permissions import (
+    AccessStatus,
+    Audience,
+    AudienceGate,
+    ChannelAuthorizer,
+    MemoryAccessError,
+)
 from icelake.ports.citations import CitationVerifier
 from icelake.ports.clock import Clock, IdGen, SystemClock, UlidIdGen
 from icelake.ports.llm import ChatLLM, Embedder, LlmCache, Meter, Reranker
@@ -704,6 +710,7 @@ class DiscordMemory:
                 max_per_subject=_SERVER_BLOCK_FACTS,
             )
         )
+        warnings.extend((*result.warnings, *server_result.warnings))
 
         sections: dict[str, tuple[ScoredFact, ...]] = {}
         summaries: dict[str, str | None] = {}
@@ -854,21 +861,29 @@ class DiscordMemory:
         *,
         audience: Audience | None,
         active_only: bool = True,
+        strict: bool = False,
     ) -> tuple[FactRecord, ...]:
         """Read current evidence under consent, retention and destination permissions.
 
         Use this for tool results and graph evidence; raw administration APIs are
         not suitable for public replies. Missing audience fails closed by default.
+        With ``strict=True``, access failures raise ``MemoryAccessError`` instead
+        of looking like an empty store. No denied evidence is exposed.
         """
         await self.ensure_started()
         if audience is None and self.config.access.require_audience:
+            if strict:
+                raise MemoryAccessError(AccessStatus.RESTRICTED)
             return ()
         records = await self._store.get_facts(guild_id, fact_ids)
         records = await self._subject_gate.filter_records(guild_id, records)
         if active_only:
             records = tuple(r for r in records if r.is_active and r.is_valid_at(self._clock.now()))
         if audience is not None:
-            records = await self._audience_gate.filter(guild_id, audience, records)
+            result = await self._audience_gate.check(guild_id, audience, records)
+            if strict and result.status is not AccessStatus.READY:
+                raise MemoryAccessError(result.status)
+            records = result.facts
         return records
 
     async def visible_sources(
@@ -877,11 +892,13 @@ class DiscordMemory:
         sources: tuple[SourceRef, ...],
         *,
         audience: Audience,
+        strict: bool = False,
     ) -> tuple[SourceRef, ...]:
         """Authorize trusted transport message snapshots under consent and current ACLs.
 
         The caller must read snapshots from its authoritative archive and recheck
         message revisions before publication. Never accept these from model output.
+        ``strict=True`` reports access failures as ``MemoryAccessError``.
         """
         await self.ensure_started()
         from icelake.api.sources import source_is_current
@@ -906,8 +923,10 @@ class DiscordMemory:
             if ref.guild_id == guild_id
         )
         records = await self._subject_gate.filter_records(guild_id, records)
-        records = await self._audience_gate.filter(guild_id, audience, records)
-        return tuple(record.citations[0] for record in records)
+        result = await self._audience_gate.check(guild_id, audience, records)
+        if strict and result.status is not AccessStatus.READY:
+            raise MemoryAccessError(result.status)
+        return tuple(record.citations[0] for record in result.facts)
 
     def citation_verifier(self, *, guild_id: str) -> CitationVerifier | None:
         """Build bounded support verification using the configured, metered LLM."""

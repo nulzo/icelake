@@ -13,7 +13,9 @@ from icelake.models.facts import FactRecord
 
 
 def service(store, clock):
-    return MaintenanceService(store=store, config=MemoryConfig(), clock=clock)
+    return MaintenanceService(
+        store=store, config=MemoryConfig(lifecycle={"forget_retention_floor": 0.05}), clock=clock
+    )
 
 
 async def seed(store, clock):

@@ -95,8 +95,8 @@ class TestTierAssignment:
 
     def test_default_mid_term(self) -> None:
         tier, expiry = assign_tier(
-            text="enjoys hiking",
-            category=FactCategory.INTERESTS,
+            text="mentioned a local event",
+            category=FactCategory.GENERAL,
             confidence=0.7,
             occurrences=1,
             manual=False,
@@ -104,7 +104,7 @@ class TestTierAssignment:
             lifecycle=LifecycleConfig(),
         )
         assert tier.value == "mid_term"
-        assert expiry is not None and expiry.days == 45
+        assert expiry is not None and expiry.days == 365
 
     def test_high_confidence_repeated_personal_graduates_core(self) -> None:
         tier, expiry = assign_tier(

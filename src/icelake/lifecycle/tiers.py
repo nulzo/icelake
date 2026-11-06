@@ -3,26 +3,19 @@
 from __future__ import annotations
 
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from icelake.config import LifecycleConfig
-from icelake.models.facts import FactCategory, MemoryTier
+from icelake.models.common import FrozenModel, ensure_aware
+from icelake.models.facts import AttributionType, FactCategory, FactRecord, MemoryTier
 
-_PLAN_TIME_MARKERS = (
-    "today",
-    "tonight",
-    "tomorrow",
-    "this weekend",
-    "this week",
-    "next week",
-    "soon",
-    "currently",
-    "temporarily",
-)
 _DURABLE_CATEGORIES = {
     FactCategory.PERSONAL,
     FactCategory.RELATIONSHIPS,
     FactCategory.PROFESSIONAL,
+    FactCategory.PREFERENCES,
+    FactCategory.INTERESTS,
+    FactCategory.PERSONALITY,
 }
 _CORE_CONFIDENCE = 0.95
 _CORE_OCCURRENCES = 3
@@ -67,7 +60,7 @@ def assign_tier(
     if is_server_fact and category in {FactCategory.RULES, FactCategory.CULTURE}:
         if lowered_confidence >= 0.85:
             return MemoryTier.CORE, None
-        return MemoryTier.LONG_TERM, timedelta(days=lifecycle.long_term_days)
+        return MemoryTier.LONG_TERM, _long_term_expiry(lifecycle)
 
     horizon = _mentions_horizon(text, lifecycle.short_term_days)
     if horizon is not None:
@@ -81,6 +74,58 @@ def assign_tier(
         return MemoryTier.CORE, None
 
     if category in _DURABLE_CATEGORIES or category is FactCategory.EXPERIENCES:
-        return MemoryTier.LONG_TERM, timedelta(days=lifecycle.long_term_days)
+        return MemoryTier.LONG_TERM, _long_term_expiry(lifecycle)
 
     return MemoryTier.MID_TERM, timedelta(days=lifecycle.mid_term_days)
+
+
+def _long_term_expiry(lifecycle: LifecycleConfig) -> timedelta | None:
+    return (
+        timedelta(days=lifecycle.long_term_days) if lifecycle.long_term_days is not None else None
+    )
+
+
+class RetentionExtension(FrozenModel):
+    """A monotonic policy update; content, evidence and validity are unchanged."""
+
+    tier: MemoryTier
+    expires_at: datetime | None
+
+
+def retention_extension(
+    record: FactRecord, *, now: datetime, lifecycle: LifecycleConfig
+) -> RetentionExtension | None:
+    """Extend an automatic memory without reviving retired evidence.
+
+    Never shortens a deadline, makes an expired memory current, or changes a
+    manual memory or short-term plan. Persist with a version check so a
+    concurrent correction or deletion wins.
+    """
+    if (
+        not record.is_active
+        or not record.is_valid_at(now)
+        or record.expires_at is None
+        or record.tier is MemoryTier.SHORT_TERM
+        or record.attribution.type is AttributionType.MANUAL
+    ):
+        return None
+    tier, duration = assign_tier(
+        text=record.text,
+        category=record.category,
+        confidence=record.confidence,
+        occurrences=record.occurrences,
+        manual=False,
+        is_server_fact=record.is_server_fact,
+        lifecycle=lifecycle,
+    )
+    if tier is MemoryTier.SHORT_TERM:
+        return None
+    anchor = record.last_reinforced_at or record.created_at or record.observed_at
+    if duration is not None and anchor is None:
+        return None
+    expiry = (
+        ensure_aware(anchor) + duration if anchor is not None and duration is not None else None
+    )
+    if expiry is not None and expiry <= ensure_aware(record.expires_at):
+        return None
+    return RetentionExtension(tier=tier, expires_at=expiry)

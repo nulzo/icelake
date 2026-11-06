@@ -11,6 +11,32 @@ of `security`, `removed`, `deprecated`, `added`, `changed`, `fixed`.
 
 <!-- towncrier release notes start -->
 
+## [0.7.3](https://github.com/nulzo/icelake/tree/v0.7.3) - 2026-11-05
+
+### Fixed
+
+- Authorize role-restricted Discord channels using effective permissions. Prove
+  straightforward role policies without scanning members; otherwise check a
+  complete fresh REST membership snapshot, bounded to 10,000 members and the
+  configured access timeout. Cross-channel disclosure requires source history
+  access for every destination reader. Private-thread membership remains required.
+- Report access restriction and failure separately from an empty recall result.
+  Preserve those warnings in prompt context; strict fact/source reads raise
+  `MemoryAccessError` without disclosing denied evidence.
+
+### Changed
+
+- Durable identity, preferences, interests, relationships and experiences no
+  longer expire by default. General observations default to 365 days; explicit
+  near-term plans keep their short deadlines. Age-based retirement is opt-in
+  (`forget_retention_floor=0` by default); recency still affects relevance ranking
+  with a 90-day timescale. Corrections, deletion, consent and capacity limits remain.
+- `long_term_days` accepts `None` for no expiry. Existing explicit configuration
+  remains supported. `retention_extension` plans monotonic updates for active,
+  unexpired automatic memories without reviving historical records. Existing
+  stored deadlines require an explicit deployment migration.
+
+
 ## [0.7.2](https://github.com/nulzo/icelake/tree/v0.7.2) - 2026-10-23
 
 ### Fixed

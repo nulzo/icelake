@@ -150,6 +150,8 @@ class Citation(FrozenModel):
 
 class RecallWarning(StrEnum):
     AUDIENCE_REQUIRED = "audience_required"
+    ACCESS_RESTRICTED = "access_restricted"
+    ACCESS_UNAVAILABLE = "access_unavailable"
     IDENTITY_AMBIGUOUS = "identity_ambiguous"
     BUDGET_TRIMMED = "budget_trimmed"
     DEGRADED_CHANNEL = "degraded_channel"

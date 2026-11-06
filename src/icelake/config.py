@@ -292,15 +292,18 @@ class ExtractionConfig(FrozenModel):
 
 
 class LifecycleConfig(FrozenModel):
+    """Expire temporary observations; durable knowledge lasts until corrected.
+
+    Decay affects ranking. Destructive age-based forgetting is opt-in and is
+    independent of expiry, consent, source deletion, corrections and storage caps.
+    """
+
     short_term_days: int = Field(default=7, ge=1)
-    mid_term_days: int = Field(default=45, ge=1)
-    long_term_days: int = Field(default=180, ge=1)
-    forget_retention_floor: float = Field(default=0.05, ge=0.0, le=1.0)
-    #: Days of retention per strength point: retention = exp(-days /
-    #: (strength x stability)). A one-off fact (strength 1) is forgotten after
-    #: ~stability x ln(1/floor) days — 7.0 ≈ 3 weeks, which keeps the sweep
-    #: softer than the short-term TTL instead of undercutting it.
-    decay_stability_days: float = Field(default=7.0, gt=0)
+    mid_term_days: int = Field(default=365, ge=1)
+    long_term_days: int | None = Field(default=None, ge=1)
+    forget_retention_floor: float = Field(default=0.0, ge=0.0, le=1.0)
+    #: Ranking recency timescale, not a deletion deadline.
+    decay_stability_days: float = Field(default=90.0, gt=0)
     max_facts_per_user: int = Field(default=300, ge=10)
     max_server_facts: int = Field(default=500, ge=10)
 

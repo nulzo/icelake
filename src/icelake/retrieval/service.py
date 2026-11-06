@@ -24,7 +24,7 @@ from icelake.models.retrieval import (
     ScoreComponents,
     ScoredFact,
 )
-from icelake.permissions import AudienceGate
+from icelake.permissions import AccessStatus, AudienceGate
 from icelake.ports.clock import Clock
 from icelake.ports.llm import Embedder, Reranker
 from icelake.ports.store import MemoryStore, NodeRef
@@ -143,9 +143,12 @@ class RecallService:
         # reused by _materialize instead of a second get_facts round-trip.
         pool_records = await self._store.get_facts(query.guild_id, tuple(c.fact_id for c in fused))
         if query.audience is not None:
-            pool_records = await self._audience_gate.filter(
+            visibility = await self._audience_gate.check(
                 query.guild_id, query.audience, pool_records
             )
+            if visibility.status is not AccessStatus.READY:
+                return _access_failure(visibility.status)
+            pool_records = visibility.facts
         eligibility: dict[str, bool] = {}
         pool_records = tuple(
             [record for record in pool_records if await self._eligible(query, record, eligibility)]
@@ -453,7 +456,10 @@ class RecallService:
     ) -> RecallResult:
         fact_ids = [fact_id for fact_id, score, _, _ in scored]
         if query.audience is not None:
-            records = await self._audience_gate.filter(query.guild_id, query.audience, records)
+            visibility = await self._audience_gate.check(query.guild_id, query.audience, records)
+            if visibility.status is not AccessStatus.READY:
+                return _access_failure(visibility.status)
+            records = visibility.facts
         by_id = {record.id: record for record in records}
         scores = {fact_id: score for fact_id, score, _, _ in scored}
         components_map = {fact_id: comps for fact_id, _, comps, _ in scored}
@@ -511,3 +517,12 @@ class RecallService:
 
 
 __all__ = ["RecallService"]
+
+
+def _access_failure(status: AccessStatus) -> RecallResult:
+    warning = (
+        RecallWarning.ACCESS_UNAVAILABLE
+        if status is AccessStatus.UNAVAILABLE
+        else RecallWarning.ACCESS_RESTRICTED
+    )
+    return RecallResult(warnings=(warning,))

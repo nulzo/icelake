@@ -125,7 +125,13 @@ from icelake.models.events import (
 )
 from icelake.models.operations import ProposedEntity, ProposedFact, ProposedRelation
 from icelake.models.recovery import RecoveryReport
-from icelake.permissions import Audience, ChannelAuthorizer
+from icelake.permissions import (
+    AccessStatus,
+    Audience,
+    ChannelAuthorizer,
+    MemoryAccessError,
+    VisibilityResult,
+)
 from icelake.ports.citations import CitationCandidate, CitationVerification, CitationVerifier
 from icelake.ports.llm import (
     ChatLLM,
@@ -149,6 +155,7 @@ __all__ = [
     "CHANNELS_DEFAULT",
     "CHANNELS_DISCOVERY",
     "AccessConfig",
+    "AccessStatus",
     "AliasRecord",
     "AliasSource",
     "AttributedClaim",
@@ -205,6 +212,7 @@ __all__ = [
     "LlmConfig",
     "LlmMessage",
     "Memory",
+    "MemoryAccessError",
     "MemoryConfig",
     "MemoryExport",
     "MemoryOverrides",
@@ -256,6 +264,7 @@ __all__ = [
     "StructuredOutputError",
     "SubjectNotAllowedError",
     "UserMemoryCommand",
+    "VisibilityResult",
     "WorkerNotRunningError",
     "WorkersConfig",
     "attribute",

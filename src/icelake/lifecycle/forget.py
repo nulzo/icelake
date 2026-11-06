@@ -22,6 +22,8 @@ def select_forgotten_facts(
     stability_days: float = 1.0,
 ) -> tuple[FactRecord, ...]:
     """Active, non-exempt facts whose live retention is below the floor."""
+    if retention_floor <= 0:
+        return ()
     victims: list[FactRecord] = []
     for record in records:
         if not record.is_active:
