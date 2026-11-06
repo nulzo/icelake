@@ -635,6 +635,33 @@ class DiscordMemory:
         )
         return await service.recall(query)
 
+    async def name_context(
+        self,
+        *,
+        guild_id: str,
+        user_ids: tuple[str, ...],
+        audience: Audience | None = None,
+        token_budget_tokens: int = 400,
+    ) -> PromptContext:
+        """Sourced conversational names with fresh permissions and no provider calls.
+
+        Explicit addressing preferences outrank self-stated names. Missing or
+        ambiguous evidence yields no name; the caller uses the current Discord label.
+        This does not modify aliases or replace canonical Discord IDs.
+        """
+        from icelake.api.names import build_name_context
+
+        await self.ensure_started()
+        if audience is None and self.config.access.require_audience:
+            return PromptContext(injection_block="", warnings=(RecallWarning.AUDIENCE_REQUIRED,))
+        return await build_name_context(
+            self,
+            guild_id=guild_id,
+            user_ids=user_ids,
+            audience=audience,
+            token_budget_tokens=token_budget_tokens,
+        )
+
     async def prompt_context(
         self,
         *,
@@ -674,6 +701,13 @@ class DiscordMemory:
             if resolution.resolved is not None
         }
         asker_id = canonical.get(asker_id, "")
+        name_context = await self.name_context(
+            guild_id=guild_id,
+            user_ids=tuple(subjects),
+            audience=audience,
+            token_budget_tokens=min(400, budget),
+        )
+        warnings.extend(name_context.warnings)
         pairs = discovery_pairs(
             asker_id,
             tuple(canonical[uid] for uid in mentioned_ids if uid in canonical),
@@ -772,24 +806,31 @@ class DiscordMemory:
                         await self.identity.display_name(guild_id, subject) or subject
                     )
 
+        for name in name_context.names:
+            if name.name is not None:
+                key = "asker" if name.user_id == asker_id else f"user:{name.user_id}"
+                display_names[key] = name.name
+
         block, citations, trimmed = self._injection.build(
             asker_id=asker_id,
             facts_by_section=sections,
             summaries=summaries,
-            token_budget=budget,
+            token_budget=budget - name_context.usage.prompt_tokens,
             guild_id=guild_id,
             alias_notes=alias_notes,
             display_names=display_names,
         )
         if trimmed:
             warnings.append(RecallWarning.BUDGET_TRIMMED)
+        block = name_context.injection_block + block
         usage_estimate = estimate_tokens(block)
         return PromptContext(
             guild_id=guild_id,
             audience=audience,
             injection_block=block,
-            facts=result.facts + server_result.facts,
-            citations=citations,
+            facts=name_context.facts + result.facts + server_result.facts,
+            citations=name_context.citations + citations,
+            names=name_context.names,
             resolutions=tuple(resolutions),
             asker_summary=summaries["asker"],
             usage=TokenUsage(prompt_tokens=usage_estimate),

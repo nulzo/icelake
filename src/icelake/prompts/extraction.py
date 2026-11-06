@@ -24,6 +24,12 @@ RULES:
 - Store durable preferences, goals and context stated by the subject naturally.
   Preserve temporal qualifiers and changes of mind. Never infer personal traits
   from a single joke, an image caption, or another participant's accusation.
+- Remember direct self-introductions and addressing preferences as separate personal
+  facts: "alice prefers to be called Ally", "alice's name is Alice". Preserve the
+  exact spelling. A preferred name outranks a real/full name for conversational
+  addressing. Remember withdrawals ("stop calling me X", "use my Discord name")
+  and reconcile them with the prior preference. Never learn a preferred name from
+  someone else's nickname, a quote, a joke, or a hypothetical.
 - In `text`, write the PARTICIPANTS display names. Never write p0/p1 tokens,
   Discord IDs, <@mentions>, raw quotes, or questions.
 - Rewrite as third-person durable facts. Example: "alice prefers mechanical keyboards".
@@ -69,6 +75,10 @@ RULES:
 - INVALIDATE requires target_id when the candidate proves an old memory false.
 - NOOP when the candidate repeats an existing memory with no new content.
 - ADD when no existing memory covers the candidate.
+- A self-stated/full name and a preferred form of address are separate aspects.
+  A full-name statement alone must not replace an explicit addressing preference.
+  A changed preference or withdrawal supersedes the prior addressing preference;
+  preserve the new preference or withdrawal as the current fact.
 - Only reference [ids] listed under that candidate's EXISTING MEMORIES.
 
 OUTPUT JSON FORMAT:

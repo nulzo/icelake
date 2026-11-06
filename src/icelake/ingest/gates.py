@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import re
 
+from icelake.identity.names import name_statements
+
 SNOWFLAKE = re.compile(r"\b\d{15,25}\b")
 MENTION_TAG = re.compile(r"<@!?&?\d+>")
 URL = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
@@ -174,7 +176,7 @@ def batch_worth_extracting(messages: tuple[str, ...], *, min_chars: int = 28) ->
     if len(joined) < 8:
         return False
     has_durable = any(marker in joined for marker in DURABLE_MARKERS)
-    if has_durable:
+    if has_durable or any(name_statements(message) for message in messages):
         return True
     word_count = len(joined.split())
     longest = max((len(normalize_text(m)) for m in messages), default=0)

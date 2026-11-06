@@ -289,7 +289,22 @@ from `icelake`) if you need the same pairs without a recall.
 
 Identity is always `memory.identity.resolve(guild, name_or_mention_or_id)`.
 Ambiguous matches never auto-pick. `identity.display_name` is the reverse
-map so replies can attribute by the name the guild actually uses.
+map for official account labels. Conversational addressing is separate:
+`prompt_context` includes `ctx.names`, bound to stable Discord IDs, even when
+the current topic is unrelated. Explicit "call me …" preferences outrank
+self-introductions; corrections, withdrawals, source deletion and opt-out apply.
+A null name explicitly requests the current Discord display name. Keep your
+normal voice and preserve original speaker names in quoted evidence.
+
+Use `memory.name_context(guild_id=gid, user_ids=(uid,), audience=audience)` when
+you only need addressing preferences, such as a source-verification turn.
+It adds no model calls or persistence schema, and uses fresh audience permissions.
+Only active facts with direct, matching self-statements supply names; inferred
+aliases and third-party nicknames cannot set a person's preferred name. Existing
+direct English introductions with Unicode names work without migration. Indirect
+or ambiguous phrasing abstains. The scan is bounded to eight subjects and 501
+facts each; profiles exceeding 500 facts abstain with `BUDGET_TRIMMED` instead
+of selecting a stale preference. The default per-member capacity is 300.
 
 ## "What do you know about X?" - names in prose
 

@@ -73,3 +73,10 @@ class AliasRecord(FrozenModel):
     source: AliasSource
     weight: float = 0.5
     updated_at: datetime | None = None
+
+
+class ConversationalName(FrozenModel):
+    """Sourced addressing preference; null explicitly requests the current Discord label."""
+
+    user_id: str = Field(min_length=1)
+    name: str | None = Field(default=None, min_length=1, max_length=64)

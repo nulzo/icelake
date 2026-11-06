@@ -9,7 +9,7 @@ from pydantic import Field
 
 from icelake.models.common import FrozenModel, TokenUsage
 from icelake.models.facts import Attribution, FactRecord
-from icelake.models.identity import Resolution
+from icelake.models.identity import ConversationalName, Resolution
 from icelake.permissions import Audience
 
 
@@ -178,6 +178,7 @@ class PromptContext(FrozenModel):
     facts: tuple[ScoredFact, ...] = ()
     citations: tuple[Citation, ...] = ()
     resolutions: tuple[Resolution, ...] = ()
+    names: tuple[ConversationalName, ...] = ()
     asker_summary: str | None = None
     usage: TokenUsage = TokenUsage()
     warnings: tuple[RecallWarning, ...] = ()

@@ -11,6 +11,23 @@ of `security`, `removed`, `deprecated`, `added`, `changed`, `fixed`.
 
 <!-- towncrier release notes start -->
 
+## [0.7.5](https://github.com/nulzo/icelake/tree/v0.7.5) - 2026-11-06
+
+### Added
+
+- Sourced conversational names in `prompt_context`, independent of topic recall,
+  and a bounded `name_context` API for names-only turns. Explicit preferences
+  outrank self-introductions; changes, withdrawals and Discord-name resets are
+  respected without promoting guessed aliases or changing canonical IDs.
+- Names inherit fact retention, correction, deletion, consent and fresh audience
+  permissions. No new persistence schema or model calls. Existing direct English
+  self-introductions can supply names; ambiguous or indirect evidence abstains.
+
+### Fixed
+
+- Short "I go by …" introductions and addressing withdrawals pass the ingest
+  noise gate. Extraction explicitly preserves name preferences as personal facts.
+
 ## [0.7.4](https://github.com/nulzo/icelake/tree/v0.7.4) - 2026-11-05
 
 ### Fixed
