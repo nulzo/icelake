@@ -760,6 +760,7 @@ class IngestPipeline:
             batch_subject_id=batch_subject,
             embeddings_by_text=embeddings_by_text,
             source_channel=source_refs[0].channel_id if source_refs else None,
+            source_refs=source_refs,
         )
         # Budget degradation never invents a reconciliation judgment.
         decisions_map: dict[int, tuple[ReconcileDecision, ...]] = {}

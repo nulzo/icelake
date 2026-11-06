@@ -13,9 +13,10 @@ from dataclasses import dataclass, field
 
 from icelake.config import ExtractionConfig
 from icelake.identity.guards import BotGuard, ConsentPolicy, SubjectGate
+from icelake.identity.names import name_evidence, name_statements
 from icelake.ingest.gates import normalize_text
 from icelake.models.admin import MeterPurpose
-from icelake.models.facts import FactRecord
+from icelake.models.facts import FactRecord, SourceRef
 from icelake.models.operations import (
     ProposedFact,
     ReconcileDecision,
@@ -79,7 +80,11 @@ class ReconcilePlan:
 
 
 class Reconciler:
-    """Detects collisions and resolves them against existing memories."""
+    """Detects collisions and resolves them against existing memories.
+
+    Kept together to audit candidate scoping and validation of model decisions;
+    splitting this bounded planning stage would obscure the mutation boundary.
+    """
 
     def __init__(
         self,
@@ -107,6 +112,7 @@ class Reconciler:
         batch_subject_id: str | None,
         embeddings_by_text: dict[str, tuple[float, ...]],
         source_channel: str | None = None,
+        source_refs: tuple[SourceRef, ...] = (),
     ) -> ReconcilePlan:
         """Partition candidates into reinforces, direct adds, and LLM collisions.
 
@@ -146,6 +152,25 @@ class Reconciler:
                 batch_subject_id=batch_subject_id,
                 embedding=embedding,
                 source_channel=source_channel,
+            )
+            # A full name cannot replace an addressing preference, nor can a
+            # third-party/unrelated claim mutate either. Enforce this before
+            # model reconciliation, independent of model-assigned categories.
+            aspects = {
+                statement.aspect
+                for index in candidate.source_message_indexes
+                if 1 <= index <= len(source_refs)
+                for source in (source_refs[index - 1],)
+                if source.guild_id == guild_id
+                and source.author_id == cand_subject
+                and cand_speaker in {None, cand_subject}
+                for statement in name_statements(source.content_snippet)
+                if not statement.name or statement.name.casefold() in candidate.text.casefold()
+            }
+            neighbors = tuple(
+                (record, score)
+                for record, score in neighbors
+                if {item.statement.aspect for item in name_evidence(record)} == aspects
             )
             if not neighbors:
                 plan.direct_adds.append((candidate, cand_subject, cand_speaker))

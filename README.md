@@ -294,7 +294,9 @@ map for official account labels. Conversational addressing is separate:
 the current topic is unrelated. Explicit "call me …" preferences outrank
 self-introductions; corrections, withdrawals, source deletion and opt-out apply.
 A null name explicitly requests the current Discord display name. Keep your
-normal voice and preserve original speaker names in quoted evidence.
+normal voice and preserve original speaker names in quoted evidence. Reconciliation
+keeps full-name statements separate from addressing preferences before asking
+a model to merge facts; unrelated and third-party claims cannot overwrite them.
 
 Use `memory.name_context(guild_id=gid, user_ids=(uid,), audience=audience)` when
 you only need addressing preferences, such as a source-verification turn.

@@ -11,6 +11,18 @@ of `security`, `removed`, `deprecated`, `added`, `changed`, `fixed`.
 
 <!-- towncrier release notes start -->
 
+## [0.7.8](https://github.com/nulzo/icelake/tree/v0.7.8) - 2026-11-06
+
+### Fixed
+
+- Enforce the distinction between a self-stated full name and an addressing
+  preference before semantic reconciliation. A model decision can no longer
+  replace one with the other, and unrelated or third-party claims cannot mutate
+  sourced name facts. Same-aspect corrections and withdrawals still reconcile.
+- Add a regression that forces identical embeddings and an incorrect model
+  update: the preferred name survives a subsequent full-name introduction.
+  This adds no model calls, database reads or schema changes.
+
 ## [0.7.7](https://github.com/nulzo/icelake/tree/v0.7.7) - 2026-11-06
 
 ### Fixed

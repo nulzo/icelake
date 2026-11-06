@@ -203,3 +203,55 @@ async def test_incomplete_profile_abstains_instead_of_using_old_name(
     assert not result.names and result.warnings == (RecallWarning.BUDGET_TRIMMED,)
     read.assert_awaited_once()
     assert read.call_args.kwargs["include_server"] is False
+
+
+async def test_ingestion_keeps_full_name_separate_from_preference(event_factory, fixed_clock):
+    from icelake.adapters.in_memory.vectors import InMemoryVectorIndex
+
+    class CollidingEmbedder:
+        dimensions = 2
+
+        async def embed(self, texts):
+            return tuple((1.0, 0.0) for _ in texts)
+
+    responses = iter(["alice prefers Atlas", "alice's full name is Avery Example"])
+
+    def extract(_request):
+        return extraction_response(
+            [
+                {
+                    "subject_token": "p0",
+                    "text": next(responses),
+                    "category": "general",
+                    "confidence": 0.95,
+                    "source_message_indexes": [1],
+                }
+            ]
+        )
+
+    # Deliberately wrong model decision: it must never get the opportunity to
+    # replace a preferred form of address with a full-name statement.
+    llm = ScriptedLLM(
+        {
+            "extraction": extract,
+            "reconcile": '{"decisions":[{"candidate_index":0,"kind":"update","target_id":"0"}]}',
+        }
+    )
+    async with DiscordMemory(
+        make_config(),
+        llm=llm,
+        clock=fixed_clock,
+        embedder=CollidingEmbedder(),
+        vectors=InMemoryVectorIndex(),
+    ) as client:
+        for content in ("call me Atlas", "my full name is Avery Example"):
+            fixed_clock.advance(1)
+            await client.observe(event_factory(content=content))
+            assert await client.flush() == 1
+            await client.ops.recover()
+        result = await client.name_context(guild_id=GUILD, user_ids=(USER,), audience=AUDIENCE)
+        assert [n.name for n in result.names] == ["Atlas"]
+        facts = await client.facts.list_for_subject(GUILD, USER, include_server=False)
+        assert len(facts.items) == 2
+        assert all(f.expires_at is None for f in facts.items)
+        assert not any(call.purpose == "reconcile" for call in llm.calls)

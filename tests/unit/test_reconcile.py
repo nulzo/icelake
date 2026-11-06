@@ -265,3 +265,74 @@ async def test_personal_reconciliation_cannot_reinforce_server_fact() -> None:
     )
     assert not plan.reinforces and not plan.collisions
     assert len(plan.direct_adds) == 1
+
+
+@pytest.mark.parametrize(
+    ("old_source", "old_text", "new_source", "new_text", "collides"),
+    [
+        (
+            "call me Atlas",
+            "prefers Atlas",
+            "my full name is Avery Example",
+            "name is Avery Example",
+            False,
+        ),
+        (
+            "my name is Avery Example",
+            "name is Avery Example",
+            "call me Atlas",
+            "prefers Atlas",
+            False,
+        ),
+        ("call me Atlas", "prefers Atlas", "I like atlases", "likes Atlas books", False),
+        ("call me Atlas", "prefers Atlas", "my name is Avery Example", "prefers Atlas", False),
+        ("call me Atlas", "prefers Atlas", "call me Nova", "prefers Nova", True),
+        ("call me Atlas", "prefers Atlas", "stop calling me Atlas", "avoid Atlas", True),
+        ("call me Atlas", "prefers Atlas", "use my Discord name", "use Discord name", True),
+        ("my name is Avery", "name is Avery", "my name is Morgan", "name is Morgan", True),
+        (
+            "my name is Avery, call me Atlas",
+            "Avery prefers Atlas",
+            "my name is Morgan",
+            "name is Morgan",
+            False,
+        ),
+    ],
+)
+async def test_reconciliation_respects_sourced_name_aspects(
+    old_source, old_text, new_source, new_text, collides
+):
+    from icelake.models.facts import SourceRef
+
+    store, vectors = InMemoryStore(), InMemoryVectorIndex()
+    source = SourceRef(
+        guild_id=GUILD,
+        channel_id="c",
+        message_id="old",
+        author_id=USER,
+        content_snippet=old_source,
+    )
+    fact = _fact(old_text).model_copy(update={"citations": (source,)})
+    # Distinct normalized wording prevents the exact-duplicate path in the
+    # paraphrased/non-matching-source case, while vectors force a collision.
+    fact = fact.model_copy(update={"text_normalized": "original " + old_text})
+    await _seed(store, vectors, fact, (1.0, 0.0))
+    proposal = _proposal(new_text).model_copy(update={"source_message_indexes": (1,)})
+    llm = ScriptedLLM()
+    reconciler = _reconciler(store, vectors, llm, _FixedEmbedder({new_text: (1.0, 0.0)}))
+    plan = await reconciler.build_plan(
+        [(proposal, USER, USER)],
+        guild_id=GUILD,
+        batch_subject_id=USER,
+        embeddings_by_text={},
+        source_channel="c",
+        source_refs=(
+            source.model_copy(update={"message_id": "new", "content_snippet": new_source}),
+        ),
+    )
+    assert bool(plan.collisions) is collides
+    assert bool(plan.direct_adds) is not collides
+    assert not plan.reinforces
+    if not collides:
+        assert await reconciler.resolve_collisions(plan.collisions) == {}
+        assert not llm.calls

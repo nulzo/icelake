@@ -27,6 +27,11 @@ class NameStatement:
     kind: NameKind
     name: str = ""
 
+    @property
+    def aspect(self) -> NameKind:
+        """Separate self-introductions from addressing preferences and withdrawals."""
+        return NameKind.STATED if self.kind is NameKind.STATED else NameKind.PREFERRED
+
 
 @dataclass(frozen=True)
 class NameEvidence:
