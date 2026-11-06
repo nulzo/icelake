@@ -55,14 +55,19 @@ class IdentityGraphMixin:
         source: AliasSource,
         weight: float,
     ) -> None:
+        replaceable = tuple(s.value for s in AliasSource if s.rank <= source.rank)
+        placeholders = ",".join("?" for _ in replaceable)
         await self._db.execute(
-            """INSERT INTO dm_aliases (guild_id, alias_norm, user_id, source, weight,
+            f"""INSERT INTO dm_aliases (guild_id, alias_norm, user_id, source, weight,
                                        updated_at)
                VALUES (?, ?, ?, ?, ?, datetime('now'))
                ON CONFLICT(guild_id, alias_norm, user_id) DO UPDATE SET
-                 weight=MAX(weight, excluded.weight),
-                 source=excluded.source""",
-            (guild_id, alias_norm, user_id, source.value, weight),
+                 weight=excluded.weight,
+                 source=excluded.source,
+                 updated_at=excluded.updated_at
+               WHERE dm_aliases.source IN ({placeholders}) AND
+                 (dm_aliases.source != excluded.source OR dm_aliases.weight < excluded.weight)""",
+            (guild_id, alias_norm, user_id, source.value, weight, *replaceable),
         )
 
     async def resolve_alias_candidates(

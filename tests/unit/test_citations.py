@@ -57,6 +57,71 @@ def test_from_prompt_context_preserves_original_evidence() -> None:
     assert reg.sources[0].kind == "memory"
 
 
+@pytest.mark.parametrize("speaker_id", ["u1", "u2"])
+async def test_verifier_receives_subject_identity_separately_from_original_speaker(speaker_id):
+    citation = _citation("mem:1").model_copy(
+        update={
+            "subject_id": "u1",
+            "subject_name": "new_name",
+            "author_id": speaker_id,
+            "author_name": "old_name",
+            "snippet": "I like mayo",
+        }
+    )
+    received = []
+
+    class Verifier:
+        async def verify(self, candidates):
+            received.extend(candidates)
+            return CitationVerification()
+
+    result = await attribute(
+        "new_name likes mayo", Citations((citation,)), _mayo_embedder(), verifier=Verifier()
+    )
+    assert not result.used  # Identity metadata must not bypass support verification.
+    assert "Memory subject: new_name (ID u1)" in received[0].evidence
+    assert f"Speaker: old_name (ID {speaker_id})" in received[0].evidence
+    assert "Message: I like mayo" in received[0].evidence
+
+
+async def test_scoped_context_uses_official_names_but_not_private_aliases(make_client):
+    from icelake.models.identity import AliasSource
+    from icelake.permissions import Audience
+
+    memory, _ = make_client(llm=False)
+    await memory.start()
+    await memory.identity.register_alias(
+        "g1", "100000000000000101", "official_name", AliasSource.DISCORD_USERNAME
+    )
+    await memory.identity.register_alias(
+        "g1", "100000000000000101", "private_real_name", AliasSource.REAL_NAME
+    )
+    await memory.facts.remember(
+        guild_id="g1",
+        subject_id="100000000000000101",
+        text="likes mayo on sandwiches",
+        source_refs=(
+            SourceRef(
+                guild_id="g1",
+                channel_id="c1",
+                message_id="m1",
+                author_id="100000000000000101",
+                content_snippet="I like mayo",
+                author_name="old_name",
+            ),
+        ),
+    )
+    context = await memory.prompt_context(
+        guild_id="g1",
+        asker_id="100000000000000101",
+        text="mayo",
+        audience=Audience(channel_id="c1", requester_id="100000000000000101"),
+    )
+    assert context.citations[0].subject_name == "official_name"
+    assert "private_real_name" not in context.model_dump_json()
+    await memory.close()
+
+
 def test_add_source_dedupes_by_url() -> None:
     reg = Citations()
     first = reg.add_source(URL_A, title="A")

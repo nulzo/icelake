@@ -118,7 +118,10 @@ class TestExtractionEndToEnd:
             )
         )
         assert len(result.facts) == 1
-        assert result.facts[0].fact.text == "alice prefers mechanical keyboards"
+        assert result.facts[0].fact.text == "alice_u prefers mechanical keyboards"
+        # The verified account name now survives the display-name observation.
+        identity = await client.identity.resolve("500000000000000001", "alice_u")
+        assert identity.resolved.user_id == "100000000000000001"
         assert result.facts[0].fact.attribution.speaker_name == "alice"
         await client.close()
 

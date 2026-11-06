@@ -157,7 +157,7 @@ class InMemoryStore:
     ) -> None:
         key = (guild_id, f"{alias_norm}\x00{user_id}")
         existing = self._aliases.get(key)
-        if existing and existing.weight >= weight:
+        if existing and (existing.source.rank, existing.weight) >= (source.rank, weight):
             return
         self._aliases[key] = AliasRecord(
             guild_id=guild_id,

@@ -52,13 +52,19 @@ class CitationSource(FrozenModel):
     author_id: str | None = None
     author_name: str = ""
     created_at: datetime | None = None
+    subject_id: str | None = None
 
     @property
     def evidence(self) -> str:
         """Original passage with explicit speaker identity for support verification."""
         speaker = self.author_name or self.author_id
+        subject = (
+            f"Memory subject: {self.title or self.subject_id} (ID {self.subject_id})\n"
+            if self.kind == "memory" and self.subject_id
+            else ""
+        )
         return (
-            f"Speaker: {speaker or 'unknown'} (ID {self.author_id or 'unknown'})\n"
+            f"{subject}Speaker: {speaker or 'unknown'} (ID {self.author_id or 'unknown'})\n"
             f"Time: {self.created_at}\nMessage: {self.excerpt}"
         )
 
@@ -272,6 +278,7 @@ class Citations:
             author_id=citation.author_id,
             author_name=citation.author_name,
             created_at=citation.created_at,
+            subject_id=citation.subject_id,
         )
         self._sources.append(source)
         self._by_ref[ref] = source

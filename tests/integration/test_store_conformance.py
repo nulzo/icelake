@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 from icelake.models.facts import (
@@ -36,6 +37,24 @@ def make_fact(**overrides) -> FactRecord:
 
 
 class TestAliases:
+    async def test_provenance_never_downgrades_in_either_observation_order(self, store) -> None:
+        for first in AliasSource:
+            for second in AliasSource:
+                alias = f"{first.value}_{second.value}"
+                await store.upsert_alias("g1", alias, "u1", first, 0.9)
+                await store.upsert_alias("g1", alias, "u1", second, 0.5)
+                (record,) = await store.resolve_alias_candidates("g1", alias)
+                assert record.source == max((first, second), key=lambda s: s.rank)
+                assert record.weight == (0.5 if second.rank > first.rank else 0.9)
+
+    async def test_concurrent_alias_updates_preserve_authoritative_identity(self, store) -> None:
+        await store.upsert_alias("g1", "same_name", "u1", AliasSource.ENTITY_TAG, 0.1)
+        await asyncio.gather(
+            *(store.upsert_alias("g1", "same_name", "u1", source, 0.5) for source in AliasSource)
+        )
+        (record,) = await store.resolve_alias_candidates("g1", "same_name")
+        assert record.source is AliasSource.DISCORD_USERNAME
+
     async def test_upsert_and_resolve(self, store) -> None:
         await store.upsert_alias("g1", "alice", "u1", AliasSource.DISCORD_USERNAME, 1.0)
         candidates = await store.resolve_alias_candidates("g1", "alice")

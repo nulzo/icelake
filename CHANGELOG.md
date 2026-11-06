@@ -11,6 +11,20 @@ of `security`, `removed`, `deprecated`, `added`, `changed`, `fixed`.
 
 <!-- towncrier release notes start -->
 
+## [0.7.4](https://github.com/nulzo/icelake/tree/v0.7.4) - 2026-11-05
+
+### Fixed
+
+- Keep the strongest alias provenance atomically in Mongo, SQLite and the
+  reference store. Display-name backfills and inferred aliases cannot downgrade
+  verified Discord usernames. Observation now registers supplied usernames.
+- Preserve the memory subject's Discord ID and official name in citation support
+  checks, separately from the original speaker. Renamed members no longer lose
+  that identity context when original passages reach the verifier. Speaker IDs,
+  original text, permission revalidation and full-claim support remain required.
+- Scoped prompt contexts bind official Discord labels for the asker and referenced
+  members while continuing to exclude inferred/private aliases and unbound summaries.
+
 ## [0.7.3](https://github.com/nulzo/icelake/tree/v0.7.3) - 2026-11-05
 
 ### Fixed

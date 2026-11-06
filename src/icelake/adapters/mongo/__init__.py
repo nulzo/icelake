@@ -255,15 +255,30 @@ class MongoStore:
         doc = alias_to_doc(
             guild_id, alias_norm, user_id, source, weight, updated_at=datetime.now().astimezone()
         )
+        # One atomic pipeline prevents weaker concurrent observations from
+        # downgrading a verified username; equal provenance keeps the best weight.
+        replace = {
+            "$or": [
+                {
+                    "$in": [
+                        {"$ifNull": ["$source", ""]},
+                        ["", *(s.value for s in AliasSource if s.rank < source.rank)],
+                    ]
+                },
+                {"$and": [{"$eq": ["$source", source.value]}, {"$lt": ["$weight", weight]}]},
+            ]
+        }
         await self.db["dm_aliases"].update_one(
             {"guild_id": guild_id, "alias_norm": alias_norm, "user_id": user_id},
-            {
-                "$set": {
-                    "source": doc["source"],
-                    "weight": doc["weight"],
-                    "updated_at": doc["updated_at"],
+            [
+                {
+                    "$set": {
+                        "source": {"$cond": [replace, doc["source"], "$source"]},
+                        "weight": {"$cond": [replace, doc["weight"], "$weight"]},
+                        "updated_at": doc["updated_at"],
+                    }
                 }
-            },
+            ],
             upsert=True,
         )
 

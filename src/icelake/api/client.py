@@ -763,6 +763,15 @@ class DiscordMemory:
         )
         summaries["server"] = server_doc.text if server_doc else None
 
+        if audience is not None:
+            # Official Discord labels are guild-visible identity metadata. Keep
+            # inferred/private aliases excluded from scoped context as above.
+            for key, values in sections.items():
+                if values and (subject := values[0].fact.subject_id):
+                    display_names[key] = (
+                        await self.identity.display_name(guild_id, subject) or subject
+                    )
+
         block, citations, trimmed = self._injection.build(
             asker_id=asker_id,
             facts_by_section=sections,
@@ -1069,6 +1078,13 @@ class DiscordMemory:
         )
 
     async def _register_author_alias(self, event: MessageEvent) -> None:
+        if event.author_username and not event.author_username.isdigit():
+            await self.identity.register_alias(
+                event.guild_id,
+                event.author_id,
+                event.author_username,
+                source=AliasSource.DISCORD_USERNAME,
+            )
         display = event.author_display_name or event.author_username
         if display and not display.isdigit():
             await self.identity.handle_member_rename(
