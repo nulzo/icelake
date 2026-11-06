@@ -11,6 +11,13 @@ of `security`, `removed`, `deprecated`, `added`, `changed`, `fixed`.
 
 <!-- towncrier release notes start -->
 
+## [0.7.10](https://github.com/nulzo/icelake/tree/v0.7.10) - 2026-11-06
+
+### Fixed
+
+- Learn names from conversational introductions even when extraction combines the introduction with another fact. Reuse the existing self-name span parser and require matching original self-authored evidence, without another model call.
+- Cover combined introductions through ingestion, reinforcement, permanent retention and name projection. Live Pi verification also covered nickname preference, full names, withdrawals and subsequent corrections.
+
 ## [0.7.9](https://github.com/nulzo/icelake/tree/v0.7.9) - 2026-11-06
 
 ### Fixed

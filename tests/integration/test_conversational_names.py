@@ -110,14 +110,18 @@ async def test_required_audience_and_tiny_budget(make_client, fixed_clock):
 
 @pytest.mark.parametrize("category", ["personal", "general", "identity", None])
 @pytest.mark.parametrize(
-    "wording",
+    ("statement", "wording"),
     [
-        "alice prefers to be called Jo starting today",
-        "alice uses the handle Jo",
+        ("I go by Jo", "alice prefers to be called Jo starting today"),
+        ("I go by Jo", "alice uses the handle Jo"),
+        (
+            "yeah, my name is Jo and I work with databases",
+            "alice is named Jo and works with databases",
+        ),
     ],
 )
 async def test_actual_ingestion_learns_name_without_unscoped_alias(
-    make_client, event_factory, category, wording
+    make_client, event_factory, category, statement, wording
 ):
     llm = ScriptedLLM(
         {
@@ -136,9 +140,9 @@ async def test_actual_ingestion_learns_name_without_unscoped_alias(
     )
     config: MemoryConfig = make_config(access={"require_audience": True})
     client, _ = make_client(llm=llm, config=config)
-    await client.observe(event_factory(content="I go by Jo"))
+    await client.observe(event_factory(content=statement))
     await client.flush()
-    await client.observe(event_factory(content="I go by Jo"))
+    await client.observe(event_factory(content=statement))
     await client.flush()
     result = await client.name_context(guild_id=GUILD, user_ids=(USER,), audience=AUDIENCE)
     assert [n.name for n in result.names] == ["Jo"]

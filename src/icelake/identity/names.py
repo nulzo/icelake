@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 
+from icelake.identity.aliases import extract_self_name_aliases
 from icelake.models.facts import AttributionType, FactRecord
 
 
@@ -156,6 +157,24 @@ def _normalized_evidence(text: str, source: str) -> tuple[NameStatement, ...]:
         re.IGNORECASE,
     ):
         return ()
+    # Reuse the existing self-name span parser when the extractor combines the
+    # introduction with another fact. Selection must not depend on prose layout.
+    for name, _ in extract_self_name_aliases(source):
+        if name.casefold() not in text.casefold():
+            continue
+        for kind, marker in _PATTERNS:
+            if kind is NameKind.AVOID:
+                continue
+            if re.search(
+                r"(?:^|[.!;,]\s*|\b(?:actually|btw|yeah|hey)\s+)"
+                + marker
+                + r"\s+"
+                + re.escape(name)
+                + r"(?=$|[\s.!;,])",
+                source.strip(),
+                re.IGNORECASE,
+            ):
+                return (NameStatement(kind, name),)
     forms = (
         (r".+? (?:prefers to be called|goes by)", "call me"),
         (r".+?(?:'s|\u2019s) (?:(?:real|first|full) )?name is", "my name is"),

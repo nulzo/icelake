@@ -189,6 +189,12 @@ def test_natural_name_corrections_are_withdrawals(text):
     ("source", "text", "kind", "name"),
     [
         (
+            "yeah, my name is Rowan and I work with databases",
+            "identity_probe is named Rowan and works with databases",
+            NameKind.STATED,
+            "Rowan",
+        ),
+        (
             "yeah, my name is Nolan and I like camping",
             "nulzo's name is Nolan",
             NameKind.STATED,
