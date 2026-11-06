@@ -13,10 +13,10 @@ from dataclasses import dataclass, field
 
 from icelake.config import ExtractionConfig
 from icelake.identity.guards import BotGuard, ConsentPolicy, SubjectGate
-from icelake.identity.names import name_evidence, name_statements
+from icelake.identity.names import name_evidence
 from icelake.ingest.gates import normalize_text
 from icelake.models.admin import MeterPurpose
-from icelake.models.facts import FactRecord, SourceRef
+from icelake.models.facts import Attribution, FactRecord, SourceRef
 from icelake.models.operations import (
     ProposedFact,
     ReconcileDecision,
@@ -156,17 +156,20 @@ class Reconciler:
             # A full name cannot replace an addressing preference, nor can a
             # third-party/unrelated claim mutate either. Enforce this before
             # model reconciliation, independent of model-assigned categories.
-            aspects = {
-                statement.aspect
-                for index in candidate.source_message_indexes
-                if 1 <= index <= len(source_refs)
-                for source in (source_refs[index - 1],)
-                if source.guild_id == guild_id
-                and source.author_id == cand_subject
-                and cand_speaker in {None, cand_subject}
-                for statement in name_statements(source.content_snippet)
-                if not statement.name or statement.name.casefold() in candidate.text.casefold()
-            }
+            candidate_record = FactRecord(
+                id="candidate",
+                guild_id=guild_id,
+                subject_id=cand_subject,
+                text=candidate.text,
+                created_at=self._clock.now(),
+                attribution=Attribution(speaker_id=cand_speaker),
+                citations=tuple(
+                    source_refs[index - 1]
+                    for index in candidate.source_message_indexes
+                    if 1 <= index <= len(source_refs)
+                ),
+            )
+            aspects = {item.statement.aspect for item in name_evidence(candidate_record)}
             neighbors = tuple(
                 (record, score)
                 for record, score in neighbors

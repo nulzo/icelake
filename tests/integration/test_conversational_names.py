@@ -255,3 +255,92 @@ async def test_ingestion_keeps_full_name_separate_from_preference(event_factory,
         assert len(facts.items) == 2
         assert all(f.expires_at is None for f in facts.items)
         assert not any(call.purpose == "reconcile" for call in llm.calls)
+
+
+async def test_migrated_profile_uses_confirmed_name_without_discord(make_client, fixed_clock):
+    """Real incident shape: competing aliases, wrong old prose, no original name citation."""
+    client, _ = make_client(config=make_config(access={"enabled": False}))
+    for alias, source in (
+        ("nulzo", AliasSource.DISCORD_USERNAME),
+        ("Joshy Washy", AliasSource.REAL_NAME),
+        ("Nolan", AliasSource.REAL_NAME),
+    ):
+        await client.identity.register_alias(GUILD, USER, alias, source)
+    await client.facts.remember(guild_id=GUILD, subject_id=USER, text="Joshy Washy likes camping")
+    fact = await client.facts.remember(
+        guild_id=GUILD,
+        subject_id=USER,
+        actor_id=USER,
+        text="call me Nolan",
+        category=FactCategory.PERSONAL,
+        idempotency_key="confirmed-name",
+    )
+    assert fact.expires_at is None
+    assert not fact.citations
+    for audience in (None, AUDIENCE, Audience(channel_id="different", requester_id=OTHER)):
+        result = await client.prompt_context(
+            guild_id=GUILD,
+            asker_id=USER,
+            text="hello",
+            audience=audience,
+        )
+        assert [(n.user_id, n.name) for n in result.names] == [(USER, "Nolan")]
+        assert not result.warnings
+        assert '"name": "Nolan"' in result.injection_block
+    other = await client.name_context(guild_id=GUILD, user_ids=(OTHER,))
+    assert not other.names
+    await client.admin.set_opt_out(GUILD, USER, True)
+    assert not (await client.name_context(guild_id=GUILD, user_ids=(USER,))).names
+
+
+async def test_conversational_correction_survives_ingestion(make_client, event_factory):
+    llm = ScriptedLLM(
+        {
+            "extraction": extraction_response(
+                [
+                    {
+                        "subject_token": "p0",
+                        "text": "alice does not want to be called Joshy Washy",
+                        "category": "personal",
+                        "confidence": 0.95,
+                        "source_message_indexes": [1],
+                    }
+                ]
+            )
+        }
+    )
+    client, _ = make_client(llm=llm, config=make_config(access={"enabled": False}))
+    await client.observe(event_factory(content="I am not Joshy Washy, stop getting it wrong"))
+    await client.flush()
+    result = await client.name_context(guild_id=GUILD, user_ids=(USER,), audience=AUDIENCE)
+    assert len(result.names) == 1 and result.names[0].name is None
+    assert result.facts[0].fact.expires_at is None
+
+
+async def test_inferred_alias_never_labels_new_facts(fixed_clock, event_factory):
+    llm = ScriptedLLM(
+        {
+            "extraction": extraction_response(
+                [
+                    {
+                        "subject_token": "p0",
+                        "text": "p0 likes camping",
+                        "confidence": 0.95,
+                        "source_message_indexes": [1],
+                    }
+                ]
+            )
+        }
+    )
+    from icelake.adapters.in_memory.store import InMemoryStore
+
+    store = InMemoryStore()
+    async with DiscordMemory(
+        make_config(access={"enabled": False}), store=store, llm=llm, clock=fixed_clock
+    ) as client:
+        await store.upsert_alias(GUILD, "joshy washy", USER, AliasSource.REAL_NAME, 3.0)
+        await client.observe(event_factory(content="I like camping in national parks"))
+        await client.flush()
+        records = await client.facts.get_all(GUILD, USER)
+        assert records and all("joshy" not in f.text.lower() for f in records)
+        assert all("joshy" not in str(c).lower() for c in llm.calls)

@@ -74,10 +74,15 @@ class AudienceGate:
     """Default to same-channel disclosure; optionally inject a live ACL adapter."""
 
     def __init__(
-        self, authorizer: ChannelAuthorizer | None = None, *, timeout_seconds: float = 3.0
+        self,
+        authorizer: ChannelAuthorizer | None = None,
+        *,
+        timeout_seconds: float = 3.0,
+        enabled: bool = True,
     ) -> None:
         self._authorizer = authorizer
         self._timeout_seconds = timeout_seconds
+        self._enabled = enabled
 
     async def filter(
         self, guild_id: str, audience: Audience, records: tuple[FactRecord, ...]
@@ -88,6 +93,8 @@ class AudienceGate:
         self, guild_id: str, audience: Audience, records: tuple[FactRecord, ...]
     ) -> VisibilityResult:
         """Fail closed while distinguishing an empty store from an access failure."""
+        if not self._enabled:
+            return VisibilityResult(facts=tuple(r for r in records if r.guild_id == guild_id))
         if not records:
             return VisibilityResult()
         candidates = frozenset(channel for r in records for channel in source_channels(r))

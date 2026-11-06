@@ -167,3 +167,19 @@ async def test_strict_missing_audience_and_unscoped_evidence_are_restricted():
             with pytest.raises(MemoryAccessError) as error:
                 await memory.visible_facts("g", ("f",), audience=audience, strict=True)
             assert error.value.status is AccessStatus.RESTRICTED
+
+
+async def test_disabled_channel_authorization_never_calls_adapter_and_keeps_guild_boundary():
+    from unittest.mock import AsyncMock
+
+    from icelake.models.facts import FactRecord
+    from icelake.permissions import Audience, AudienceGate
+
+    authorizer = AsyncMock()
+    authorizer.allowed_channels.side_effect = AssertionError("Discord must not be queried")
+    own = FactRecord(id="legacy", guild_id="g", subject_id="u", text="uncited legacy memory")
+    foreign = own.model_copy(update={"id": "foreign", "guild_id": "other"})
+    gate = AudienceGate(authorizer, enabled=False)
+    result = await gate.check("g", Audience(channel_id="c", requester_id="u"), (own, foreign))
+    assert result.facts == (own,)
+    authorizer.allowed_channels.assert_not_called()

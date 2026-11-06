@@ -60,7 +60,6 @@ def test_direct_self_statements(text, kind, name):
         "should you call me Nolan?",
         "my brother's name is Nolan",
         "call him Nolan",
-        "my name is not Nolan",
         "call me Atlas today",
         "call me Atlas for now",
         "call me Atlas this weekend",
@@ -175,3 +174,80 @@ def test_name_reinforcement_cannot_reintroduce_expiry():
         name_is_grounded=True,
     )
     assert tier is MemoryTier.LONG_TERM and expiry is None
+
+
+@pytest.mark.parametrize(
+    "text", ["I am not Joshy Washy", "I'm not Joshy Washy", "my name is not Joshy Washy"]
+)
+def test_natural_name_corrections_are_withdrawals(text):
+    (statement,) = name_statements(text)
+    assert statement.kind is NameKind.AVOID
+    assert statement.name == "Joshy Washy"
+
+
+@pytest.mark.parametrize(
+    ("source", "text", "kind", "name"),
+    [
+        (
+            "yeah, my name is Nolan and I like camping",
+            "nulzo's name is Nolan",
+            NameKind.STATED,
+            "Nolan",
+        ),
+        (
+            "actually call me Jo, I prefer that",
+            "nulzo prefers to be called Jo",
+            NameKind.PREFERRED,
+            "Jo",
+        ),
+        (
+            "I am not Joshy Washy, stop getting it wrong",
+            "nulzo does not want to be called Joshy Washy",
+            NameKind.AVOID,
+            "Joshy Washy",
+        ),
+    ],
+)
+def test_normalized_name_is_grounded_in_conversational_self_report(source, text, kind, name):
+    (evidence,) = name_evidence(named_fact(source, text=text))
+    assert (evidence.statement.kind, evidence.statement.name) == (kind, name)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "my brother's name is Nolan",
+        "he said my name is Nolan",
+        '"my name is Nolan"',
+        "pretend my name is Nolan",
+        "is my name Nolan?",
+        "my name is NotNolan",
+        "I like camping",
+        "my name is not Nolan",
+        "today my name is Nolan",
+    ],
+)
+def test_normalized_name_cannot_promote_unsupported_identity(source):
+    assert not name_evidence(named_fact(source, text="nulzo's name is Nolan")) or all(
+        e.statement.kind is NameKind.AVOID
+        for e in name_evidence(named_fact(source, text="nulzo's name is Nolan"))
+    )
+
+
+def test_manual_self_preference_needs_no_fabricated_discord_source():
+    fact = named_fact().model_copy(
+        update={
+            "text": "call me Nolan",
+            "citations": (),
+            "created_at": NOW,
+            "attribution": Attribution(type=AttributionType.MANUAL, actor_id="u"),
+        }
+    )
+    assert choose_name((fact,)).statement.name == "Nolan"
+    assert not name_evidence(
+        fact.model_copy(
+            update={
+                "attribution": Attribution(type=AttributionType.MANUAL, actor_id="other"),
+            }
+        )
+    )

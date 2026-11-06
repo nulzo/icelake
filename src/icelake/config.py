@@ -351,6 +351,7 @@ class BudgetsConfig(FrozenModel):
 class AccessConfig(FrozenModel):
     """Require destination-aware authorization on public retrieval APIs."""
 
+    enabled: bool = True
     require_audience: bool = True
     timeout_seconds: float = Field(default=3.0, gt=0, le=30)
 

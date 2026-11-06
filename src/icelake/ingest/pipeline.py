@@ -1060,10 +1060,10 @@ class IngestPipeline:
         *,
         author_id: str | None,
     ) -> Roster:
-        """Build a participant roster with alias-enriched display names.
+        """Build a participant roster using official account labels.
 
-        Mention IDs are resolved through the alias index so the LLM sees
-        human-readable names instead of raw snowflakes.
+        Inferred real-name aliases must never rewrite the subject of new facts.
+        Conversational preferences are projected separately from sourced facts.
         """
         roster = Roster()
         seen: set[str] = set()
@@ -1074,12 +1074,13 @@ class IngestPipeline:
                 return
             seen.add(user_id)
             aliases = await self._store.aliases_for_user(guild_id, user_id)
-            best_alias = max(aliases, key=lambda r: r.weight) if aliases else None
-            name = (
-                best_alias.alias_norm
-                if best_alias and best_alias.source.rank >= 60
-                else display_name
+            official = tuple(
+                alias
+                for alias in aliases
+                if alias.source in {AliasSource.DISCORD_USERNAME, AliasSource.DISPLAY_NAME}
             )
+            best = max(official, key=lambda r: (r.source.rank, r.weight)) if official else None
+            name = best.alias_norm if best else display_name
             roster.add(user_id, name)
 
         if author_id:

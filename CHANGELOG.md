@@ -11,6 +11,21 @@ of `security`, `removed`, `deprecated`, `added`, `changed`, `fixed`.
 
 <!-- towncrier release notes start -->
 
+## [0.7.9](https://github.com/nulzo/icelake/tree/v0.7.9) - 2026-11-06
+
+### Fixed
+
+- Keep inferred aliases out of ingestion participant labels, preventing stale names from contaminating new memories.
+- Recognize natural name withdrawals and introductions embedded in conversation through their extracted, source-grounded facts.
+- Honor explicit manual self-name preferences without fabricating Discord citations; retain them as permanent, auditable facts.
+- Apply the same naming evidence rules during reconciliation and prompt projection.
+
+### Added
+
+- `access.enabled=False` supports guild-local retrieval without channel authorization or Discord REST calls. Guild isolation, consent, source revision checks and retention still apply. Channel-scoped authorization remains the default for other integrations.
+- Audit history distinguishes identity label repairs from factual reinforcement.
+
+
 ## [0.7.8](https://github.com/nulzo/icelake/tree/v0.7.8) - 2026-11-06
 
 ### Fixed

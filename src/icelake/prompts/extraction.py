@@ -30,6 +30,10 @@ RULES:
   addressing. Remember withdrawals ("stop calling me X", "use my Discord name")
   and reconcile them with the prior preference. Never learn a preferred name from
   someone else's nickname, a quote, a joke, or a hypothetical.
+  A natural correction such as "I am not Sam" is a durable withdrawal:
+  emit "alice does not want to be called Sam". Introductions can appear
+  within ordinary conversation; retain the name without surrounding chatter.
+  PARTICIPANTS labels and old memory wording are not evidence of a real name.
 - In `text`, write the PARTICIPANTS display names. Never write p0/p1 tokens,
   Discord IDs, <@mentions>, raw quotes, or questions.
 - Rewrite as third-person durable facts. Example: "alice prefers mechanical keyboards".

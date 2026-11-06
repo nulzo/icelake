@@ -268,7 +268,9 @@ class DiscordMemory:
         from icelake.adapters.rerankers import build_reranker
 
         self._audience_gate = AudienceGate(
-            overrides.get("channel_authorizer"), timeout_seconds=config.access.timeout_seconds
+            overrides.get("channel_authorizer"),
+            timeout_seconds=config.access.timeout_seconds,
+            enabled=config.access.enabled,
         )
         self._reranker: Reranker | None = (
             overrides["reranker"]
@@ -606,7 +608,11 @@ class DiscordMemory:
         async def _blocked(guild_id: str, user_id: str) -> bool:
             return await consent.is_blocked(guild_id, user_id)
 
-        if query.audience is None and self.config.access.require_audience:
+        if (
+            query.audience is None
+            and self.config.access.enabled
+            and self.config.access.require_audience
+        ):
             return RecallResult(warnings=(RecallWarning.AUDIENCE_REQUIRED,))
 
         async def _reinforce_recalled(fact_ids: list[str]) -> None:
@@ -652,7 +658,7 @@ class DiscordMemory:
         from icelake.api.names import build_name_context
 
         await self.ensure_started()
-        if audience is None and self.config.access.require_audience:
+        if audience is None and self.config.access.enabled and self.config.access.require_audience:
             return PromptContext(injection_block="", warnings=(RecallWarning.AUDIENCE_REQUIRED,))
         return await build_name_context(
             self,
@@ -687,7 +693,7 @@ class DiscordMemory:
         about who cares about the thing arrive with the context.
         """
         await self.ensure_started()
-        if audience is None and self.config.access.require_audience:
+        if audience is None and self.config.access.enabled and self.config.access.require_audience:
             return PromptContext(injection_block="", warnings=(RecallWarning.AUDIENCE_REQUIRED,))
         budget = token_budget_tokens or self.config.retrieval.default_token_budget
         subjects, resolutions, warnings_list = await self._resolve_subjects(
@@ -921,7 +927,7 @@ class DiscordMemory:
         of looking like an empty store. No denied evidence is exposed.
         """
         await self.ensure_started()
-        if audience is None and self.config.access.require_audience:
+        if audience is None and self.config.access.enabled and self.config.access.require_audience:
             if strict:
                 raise MemoryAccessError(AccessStatus.RESTRICTED)
             return ()

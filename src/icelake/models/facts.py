@@ -82,6 +82,7 @@ class FactHistoryKind(StrEnum):
     SUPERSEDED = "superseded"
     INVALIDATED = "invalidated"
     REINSTATED = "reinstated"
+    RELABELLED = "relabelled"
 
 
 class Attribution(FrozenModel):

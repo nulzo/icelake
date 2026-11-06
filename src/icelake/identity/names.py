@@ -43,9 +43,13 @@ class NameEvidence:
 
 _PREFIX = r"(?:(?:hey|hi|btw|actually)[,!]?\s+)?(?:please\s+)?"
 _PATTERNS = (
+    (
+        NameKind.AVOID,
+        r"(?:do not call me|don't call me|don\u2019t call me|stop calling me|"
+        r"i am not|i'm not|i\u2019m not|my name (?:is not|isn't|isn\u2019t))",
+    ),
     (NameKind.PREFERRED, r"(?:call me|i go by|i prefer to be called)"),
     (NameKind.STATED, r"my (?:(?:real|first|full) )?name(?: is|'s|\u2019s)"),
-    (NameKind.AVOID, r"(?:do not call me|don't call me|don\u2019t call me|stop calling me)"),
 )
 _TEMPORARY = re.compile(
     r"\b(?:today|tonight|tomorrow|this week|this weekend|this month|for now|until)\b",
@@ -105,11 +109,28 @@ def name_evidence(fact: FactRecord) -> tuple[NameEvidence, ...]:
         or fact.attribution.speaker_id not in {None, fact.subject_id}
     ):
         return ()
-    evidence = []
+    evidence: list[NameEvidence] = []
+    # Manual self-corrections are already authenticated by the host's command
+    # boundary. They need no invented Discord message or citation to be useful.
+    if (
+        fact.attribution.type is AttributionType.MANUAL
+        and fact.attribution.actor_id == fact.subject_id
+        and not fact.citations
+        and (at := fact.observed_at or fact.created_at)
+    ):
+        evidence.extend(
+            NameEvidence(statement, fact, at.replace(tzinfo=at.tzinfo or UTC), fact.id)
+            for statement in name_statements(fact.text)
+        )
     for source in fact.citations:
         if source.author_id != fact.subject_id or source.guild_id != fact.guild_id:
             continue
-        for statement in name_statements(source.content_snippet):
+        statements = tuple(
+            statement
+            for statement in name_statements(source.content_snippet)
+            if not statement.name or statement.name.casefold() in fact.text.casefold()
+        ) or _normalized_evidence(fact.text, source.content_snippet)
+        for statement in statements:
             if statement.name and statement.name.casefold() not in fact.text.casefold():
                 continue
             at = source.created_at or fact.observed_at or fact.created_at
@@ -120,6 +141,43 @@ def name_evidence(fact: FactRecord) -> tuple[NameEvidence, ...]:
                     )
                 )
     return tuple(evidence)
+
+
+def _normalized_evidence(text: str, source: str) -> tuple[NameStatement, ...]:
+    """Use the extractor's normalized name while checking the original self-report.
+
+    Ordinary prose around an introduction is allowed; the model cannot promote a
+    roster label, third-party name, question or quoted story to a self-introduction.
+    This reuses the existing fact extractor, without another model call or store.
+    """
+    if _TEMPORARY.search(source) or re.search(
+        r'[\n\r"“”`>?]|\b(?:if|pretend|imagine|joking|joke|he said|she said|they said)\b',
+        source,
+        re.IGNORECASE,
+    ):
+        return ()
+    forms = (
+        (r".+? (?:prefers to be called|goes by)", "call me"),
+        (r".+?(?:'s|\u2019s) (?:(?:real|first|full) )?name is", "my name is"),
+        (r".+? (?:is not|does not want to be called|must not be called)", "do not call me"),
+    )
+    for pattern, replacement in forms:
+        normalized = re.sub(r"^" + pattern + r"\s+", replacement + " ", text, flags=re.I)
+        for statement in name_statements(normalized):
+            if statement.kind is NameKind.DISCORD:
+                continue
+            marker = next(marker for kind, marker in _PATTERNS if kind is statement.kind)
+            if re.search(
+                r"(?:^|[.!;,]\s*|\b(?:actually|btw|yeah|hey)\s+)"
+                + marker
+                + r"\s+"
+                + re.escape(statement.name)
+                + r"(?=$|[\s.!;,])",
+                source.strip(),
+                re.IGNORECASE,
+            ):
+                return (statement,)
+    return ()
 
 
 def choose_name(records: tuple[FactRecord, ...]) -> NameEvidence | None:
