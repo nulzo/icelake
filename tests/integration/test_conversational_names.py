@@ -136,14 +136,17 @@ async def test_actual_ingestion_learns_name_without_unscoped_alias(make_client, 
     )
 
 
-async def test_name_projection_uses_every_storage_backend(store, fixed_clock):
+async def test_name_projection_uses_every_storage_backend(store, fixed_clock, monkeypatch):
     client = DiscordMemory(make_config(), store=store, clock=fixed_clock, llm=ScriptedLLM())
     try:
         await remember_name(client, fixed_clock.now())
         result = await client.name_context(guild_id=GUILD, user_ids=(USER,), audience=AUDIENCE)
         assert [n.name for n in result.names] == ["Nolan"]
     finally:
-        await client.close(drain=False)
+        # The fixture must drop its disposable Mongo DB before closing its client.
+        with monkeypatch.context() as owned_store:
+            owned_store.setattr(store, "close", AsyncMock())
+            await client.close(drain=False)
 
 
 async def test_explicit_discord_name_withdrawal_reaches_prompt(make_client, fixed_clock):
