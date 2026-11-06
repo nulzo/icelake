@@ -109,8 +109,15 @@ async def test_required_audience_and_tiny_budget(make_client, fixed_clock):
 
 
 @pytest.mark.parametrize("category", ["personal", "general", "identity", None])
+@pytest.mark.parametrize(
+    "wording",
+    [
+        "alice prefers to be called Jo starting today",
+        "alice uses the handle Jo",
+    ],
+)
 async def test_actual_ingestion_learns_name_without_unscoped_alias(
-    make_client, event_factory, category
+    make_client, event_factory, category, wording
 ):
     llm = ScriptedLLM(
         {
@@ -118,7 +125,7 @@ async def test_actual_ingestion_learns_name_without_unscoped_alias(
                 [
                     {
                         "subject_token": "p0",
-                        "text": "alice prefers to be called Jo starting today",
+                        "text": wording,
                         "category": category,
                         "confidence": 0.95,
                         "source_message_indexes": [1],

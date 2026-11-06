@@ -42,7 +42,6 @@ _PATTERNS = (
     (NameKind.STATED, r"my (?:(?:real|first|full) )?name(?: is|'s|\u2019s)"),
     (NameKind.AVOID, r"(?:do not call me|don't call me|don\u2019t call me|stop calling me)"),
 )
-_NAME_FACT = re.compile(r"\b(?:name|named|called|call|goes by|go by)\b", re.IGNORECASE)
 _TEMPORARY = re.compile(
     r"\b(?:today|tonight|tomorrow|this week|this weekend|this month|for now|until)\b",
     re.IGNORECASE,
@@ -90,12 +89,15 @@ def name_statements(text: str) -> tuple[NameStatement, ...]:
 
 
 def name_evidence(fact: FactRecord) -> tuple[NameEvidence, ...]:
-    """Require a name fact and a matching original statement by its own subject."""
+    """Require an active fact's matching original statement by its own subject.
+
+    Extracted wording and category may vary. The direct self-statement supplies
+    the naming intent; matching its name in the fact binds that evidence to it.
+    """
     if (
         not fact.subject_id
         or fact.attribution.type not in {AttributionType.SELF, AttributionType.MANUAL}
         or fact.attribution.speaker_id not in {None, fact.subject_id}
-        or not _NAME_FACT.search(fact.text)
     ):
         return ()
     evidence = []

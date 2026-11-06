@@ -11,6 +11,16 @@ of `security`, `removed`, `deprecated`, `added`, `changed`, `fixed`.
 
 <!-- towncrier release notes start -->
 
+## [0.7.7](https://github.com/nulzo/icelake/tree/v0.7.7) - 2026-11-06
+
+### Fixed
+
+- Recognize name preferences when extraction paraphrases them as a "handle" or
+  other wording. The matching direct self-statement supplies naming intent;
+  normalization no longer has to contain a specific naming verb. Regression
+  tests cover paraphrasing together with omitted/misclassified categories and
+  reinforcement, preserving source attribution and audience checks.
+
 ## [0.7.6](https://github.com/nulzo/icelake/tree/v0.7.6) - 2026-11-06
 
 ### Fixed
