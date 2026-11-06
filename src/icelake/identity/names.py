@@ -56,7 +56,9 @@ def name_statements(text: str) -> tuple[NameStatement, ...]:
     """Recognize direct English self-introductions, never arbitrary name mentions."""
     text = re.sub(r"^(?:<@!?\d+>\s*)+", "", text.strip())
     text = re.sub(r"^(?:hey|hi|btw|actually)[,!]?\s+", "", text, flags=re.IGNORECASE)
-    if any(char in text for char in ("\n", "\r", '"', "“", "”", "`", ">", "?")):
+    if _TEMPORARY.search(text) or any(
+        char in text for char in ("\n", "\r", '"', "“", "”", "`", ">", "?")
+    ):
         return ()
     statements = []
     for clause in re.split(r"[,;]\s*(?:but\s+)?", text, flags=re.IGNORECASE):
@@ -75,7 +77,6 @@ def name_statements(text: str) -> tuple[NameStatement, ...]:
             if (
                 1 <= len(name) <= 64
                 and not name.casefold().startswith(("not ", "no longer "))
-                and not _TEMPORARY.search(name)
                 and len(name.split()) <= 4
                 and any(char.isalpha() for char in name)
                 and all(char.isalnum() or char in " '-\u2019._" for char in name)
